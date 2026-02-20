@@ -36,6 +36,24 @@ logos-scaffold doctor
 - `build [project-path]` runs `setup` and then `cargo build --workspace` in the same project path.
 - `localnet start` runs standalone sequencer only.
 - `localnet logs` reads sequencer logs (`--tail` default is `200`).
+- `doctor` prints remediations for both `WARN` and `FAIL`, then shows summary and next steps.
+
+## Doctor UX
+
+`logos-scaffold doctor` now always prints actionable guidance:
+
+- remediations on `WARN` and `FAIL`
+- summary footer: `Summary: <pass> PASS, <warn> WARN, <fail> FAIL`
+- overall status: `Ready`, `Needs attention`, or `Failing checks`
+- deduplicated `Next steps` commands
+
+When localnet is down, doctor explicitly tells you to run:
+
+```bash
+logos-scaffold localnet start
+```
+
+This is required before running example binaries.
 
 ## Pinned LSSA Commit
 
