@@ -13,7 +13,7 @@ const VERSION: &str = "0.1.0";
 const LSSA_URL: &str = "https://github.com/logos-blockchain/lssa.git";
 const DEFAULT_LSSA_PIN: &str = "dee3f7fa6f2bf63abef00828f246ddacade9cdaf";
 const DEFAULT_HELLO_WORLD_IMAGE_ID_HEX: &str =
-    "5d37dae43d65ae41d701d39b16363d578c797a2efad74fa90608525c7b3d49ac";
+    "4880b298f59699c1e4263c5c2245c80123632d608b9116f4b253c63e6c340771";
 const DEFAULT_WALLET_BINARY: &str = "wallet";
 const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
 
@@ -105,9 +105,7 @@ fn print_help() {
     println!(
         "  logos-scaffold create <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
     );
-    println!(
-        "  logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
-    );
+    println!("  logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]");
     println!("  logos-scaffold build [project-path]");
     println!("  logos-scaffold setup");
     println!("  logos-scaffold localnet start");
@@ -216,6 +214,7 @@ fn cmd_new(args: &[String]) -> DynResult<()> {
         &target.join("Cargo.toml"),
         &render_project_template_cargo(&crate_name, &cfg.lssa.pin),
     )?;
+    apply_scaffold_dx_overrides(&target)?;
     write_text(
         &target.join("README.md"),
         &render_scaffolded_project_readme(),
@@ -311,8 +310,11 @@ fn cmd_build_shortcut(args: &[String]) -> DynResult<()> {
         cmd_setup(&[])?;
         let cwd = env::current_dir()?;
         run_checked(
-            Command::new("cargo").current_dir(&cwd).arg("build"),
-            "cargo build (project)",
+            Command::new("cargo")
+                .current_dir(&cwd)
+                .arg("build")
+                .arg("--workspace"),
+            "cargo build --workspace (project)",
         )?;
         Ok(())
     })
@@ -586,8 +588,7 @@ fn cmd_doctor() -> DynResult<()> {
                         name: "wallet usability".to_string(),
                         detail: one_line(&out.stderr),
                         remediation: Some(
-                            "Verify localnet, wallet config, and NSSA_WALLET_HOME_DIR"
-                                .to_string(),
+                            "Verify localnet, wallet config, and NSSA_WALLET_HOME_DIR".to_string(),
                         ),
                     });
                 }
@@ -678,12 +679,7 @@ fn ensure_repo_present(path: &Path, source: &str, label: &str) -> DynResult<()> 
         if path.join(".git").exists() {
             return Ok(());
         }
-        return Err(format!(
-            "{} exists but is not a git repo: {}",
-            label,
-            path.display()
-        )
-        .into());
+        return Err(format!("{} exists but is not a git repo: {}", label, path.display()).into());
     }
 
     if let Some(parent) = path.parent() {
@@ -1270,7 +1266,11 @@ fn edit_distance(a: &str, b: &str) -> usize {
     }
     for i in 1..=a_chars.len() {
         for j in 1..=b_chars.len() {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
             let del = dp[i - 1][j] + 1;
             let ins = dp[i][j - 1] + 1;
             let sub = dp[i - 1][j - 1] + cost;
@@ -1311,7 +1311,7 @@ fn to_cargo_crate_name(input: &str) -> String {
 
 fn render_project_template_cargo(crate_name: &str, lssa_pin: &str) -> String {
     format!(
-        "[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = {{ workspace = true }}\n\n[workspace.package]\nlicense = \"MIT or Apache-2.0\"\n\n[workspace]\nresolver = \"3\"\nmembers = [\n  \".\",\n  \"methods\",\n  \"methods/guest\",\n]\n\n[workspace.dependencies]\nnssa = {{ git = \"https://github.com/logos-blockchain/lssa.git\", rev = \"{lssa_pin}\" }}\nnssa_core = {{ git = \"https://github.com/logos-blockchain/lssa.git\", rev = \"{lssa_pin}\" }}\nwallet = {{ git = \"https://github.com/logos-blockchain/lssa.git\", rev = \"{lssa_pin}\" }}\n\nrisc0-zkvm = {{ version = \"3.0.5\", features = [\"std\"] }}\nrisc0-build = \"3.0.5\"\n\nhex = \"0.4.3\"\nbytemuck = \"1.24.0\"\ntokio = {{ version = \"1.28.2\", features = [\"macros\", \"net\", \"rt-multi-thread\", \"sync\", \"fs\"] }}\nclap = {{ version = \"4.5.42\", features = [\"derive\", \"env\"] }}\n\n[dependencies]\nnssa.workspace = true\nnssa_core.workspace = true\nwallet.workspace = true\n\nclap.workspace = true\ntokio = {{ workspace = true, features = [\"macros\"] }}\n"
+        "[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = {{ workspace = true }}\n\n[workspace.package]\nlicense = \"MIT or Apache-2.0\"\n\n[workspace]\nresolver = \"3\"\nmembers = [\n  \".\",\n  \"methods\",\n  \"methods/guest\",\n]\n\n[workspace.dependencies]\nnssa = {{ git = \"https://github.com/logos-blockchain/lssa.git\", rev = \"{lssa_pin}\" }}\nnssa_core = {{ git = \"https://github.com/logos-blockchain/lssa.git\", rev = \"{lssa_pin}\" }}\nwallet = {{ git = \"https://github.com/logos-blockchain/lssa.git\", rev = \"{lssa_pin}\" }}\n\nrisc0-zkvm = {{ version = \"3.0.5\", features = [\"std\"] }}\nrisc0-build = \"3.0.5\"\n\nhex = \"0.4.3\"\nbytemuck = \"1.24.0\"\ntokio = {{ version = \"1.28.2\", features = [\"macros\", \"net\", \"rt-multi-thread\", \"sync\", \"fs\"] }}\nclap = {{ version = \"4.5.42\", features = [\"derive\", \"env\"] }}\n\n[dependencies]\nnssa.workspace = true\nnssa_core.workspace = true\nwallet.workspace = true\nexample_program_deployment_methods = {{ path = \"methods\" }}\n\nclap.workspace = true\ntokio = {{ workspace = true, features = [\"macros\"] }}\n"
     )
 }
 
@@ -1323,9 +1323,8 @@ This project was generated by `logos-scaffold` for LSSA standalone mode only.
 ## Prerequisites
 
 - `git`, `rustc`, `cargo`
-- `cargo risczero` installed
-- Docker running (required by `cargo risczero build`)
 - `wallet` binary (installed by `logos-scaffold setup`)
+- Docker running (required by guest method builds)
 
 ## First Run
 
@@ -1333,19 +1332,19 @@ This project was generated by `logos-scaffold` for LSSA standalone mode only.
 logos-scaffold setup
 logos-scaffold localnet start
 export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
-cargo risczero build --manifest-path methods/guest/Cargo.toml
-export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv32im-risc0-zkvm-elf/docker
+logos-scaffold build
+export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release
 wallet check-health
 ```
 
 ## Deploy Guest Programs
 
 ```bash
-wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin
-wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_authorization.bin
-wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_move_function.bin
-wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin
-wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/tail_call_with_pda.bin
+wallet deploy-program "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin"
+wallet deploy-program "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_authorization.bin"
+wallet deploy-program "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_move_function.bin"
+wallet deploy-program "$EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin"
+wallet deploy-program "$EXAMPLE_PROGRAMS_BUILD_DIR/tail_call_with_pda.bin"
 ```
 
 ## Create Accounts
@@ -1366,51 +1365,45 @@ Use `wallet account new public` and `wallet account new private` enough times to
 ## Run All Example Binaries
 
 ```bash
-cargo run --bin run_hello_world \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin \
-  $PUBLIC_HELLO_ACCOUNT_ID
+cargo run --bin run_hello_world -- $PUBLIC_HELLO_ACCOUNT_ID
 
-cargo run --bin run_hello_world_private \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin \
-  $PRIVATE_HELLO_ACCOUNT_ID
+cargo run --bin run_hello_world_private -- $PRIVATE_HELLO_ACCOUNT_ID
 wallet account sync-private
 
-cargo run --bin run_hello_world_with_authorization \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_authorization.bin \
-  $PUBLIC_AUTH_ACCOUNT_ID
+cargo run --bin run_hello_world_with_authorization -- $PUBLIC_AUTH_ACCOUNT_ID
 
-cargo run --bin run_hello_world_with_move_function \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_move_function.bin \
+cargo run --bin run_hello_world_with_move_function -- \
   write-public \
   $PUBLIC_MOVE_ACCOUNT_ID \
   "hello-from-public"
 
-cargo run --bin run_hello_world_with_move_function \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_move_function.bin \
+cargo run --bin run_hello_world_with_move_function -- \
   write-private \
   $PRIVATE_MOVE_ACCOUNT_ID \
   "hello-from-private"
 wallet account sync-private
 
-cargo run --bin run_hello_world_with_move_function \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_move_function.bin \
+cargo run --bin run_hello_world_with_move_function -- \
   move-data-public-to-private \
   $PUBLIC_MOVE_ACCOUNT_ID \
   $PRIVATE_MOVE_ACCOUNT_ID
 wallet account sync-private
 
-cargo run --bin run_hello_world_through_tail_call \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin \
-  $PUBLIC_HELLO_ACCOUNT_ID
+cargo run --bin run_hello_world_through_tail_call -- $PUBLIC_HELLO_ACCOUNT_ID
 
-cargo run --bin run_hello_world_through_tail_call_private \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin \
-  $PRIVATE_MOVE_ACCOUNT_ID
+cargo run --bin run_hello_world_through_tail_call_private -- $PRIVATE_MOVE_ACCOUNT_ID
 wallet account sync-private
 
-cargo run --bin run_hello_world_with_authorization_through_tail_call_with_pda \
-  $EXAMPLE_PROGRAMS_BUILD_DIR/tail_call_with_pda.bin
+cargo run --bin run_hello_world_with_authorization_through_tail_call_with_pda
+```
+
+## Optional Program Path Overrides
+
+For testing custom binaries, pass explicit paths:
+
+```bash
+cargo run --bin run_hello_world -- --program-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" $PUBLIC_HELLO_ACCOUNT_ID
+cargo run --bin run_hello_world_through_tail_call_private -- --simple-tail-call-path "$EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin" --hello-world-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" $PRIVATE_MOVE_ACCOUNT_ID
 ```
 
 ## Main Scaffold Commands
@@ -1429,8 +1422,492 @@ logos-scaffold doctor
 
 - Standalone-only: no `logos-blockchain` dependency and no `deps` or `example` CLI groups.
 - Use `export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet` before wallet commands.
+- `logos-scaffold build` runs `setup` and then `cargo build --workspace`.
 - LSSA pin is enforced by `logos-scaffold setup`.
 - `simple_tail_call` hardcodes `HELLO_WORLD_PROGRAM_ID_HEX`. If tail-call runs fail, set it to the `hello_world.bin` ImageID from the latest `cargo risczero build` output, then rebuild methods.
+"#
+    .to_string()
+}
+
+fn apply_scaffold_dx_overrides(target: &Path) -> DynResult<()> {
+    fs::create_dir_all(target.join("src/bin"))?;
+
+    write_text(
+        &target.join(".gitignore"),
+        ".scaffold/\ntarget/\nCargo.lock.bak\n.env.local\n",
+    )?;
+
+    write_text(&target.join("src/lib.rs"), &render_runner_support_lib())?;
+    write_text(
+        &target.join("src/bin/run_hello_world.rs"),
+        &render_runner_run_hello_world(),
+    )?;
+    write_text(
+        &target.join("src/bin/run_hello_world_private.rs"),
+        &render_runner_run_hello_world_private(),
+    )?;
+    write_text(
+        &target.join("src/bin/run_hello_world_with_authorization.rs"),
+        &render_runner_run_hello_world_with_authorization(),
+    )?;
+    write_text(
+        &target.join("src/bin/run_hello_world_through_tail_call.rs"),
+        &render_runner_run_hello_world_through_tail_call(),
+    )?;
+    write_text(
+        &target.join("src/bin/run_hello_world_through_tail_call_private.rs"),
+        &render_runner_run_hello_world_through_tail_call_private(),
+    )?;
+    write_text(
+        &target.join("src/bin/run_hello_world_with_authorization_through_tail_call_with_pda.rs"),
+        &render_runner_run_hello_world_with_authorization_through_tail_call_with_pda(),
+    )?;
+    write_text(
+        &target.join("src/bin/run_hello_world_with_move_function.rs"),
+        &render_runner_run_hello_world_with_move_function(),
+    )?;
+
+    Ok(())
+}
+
+fn render_runner_support_lib() -> String {
+    r#"#[allow(dead_code)]
+pub mod runner_support {
+    use nssa::{AccountId, program::Program};
+
+    pub fn parse_account_id(raw: &str) -> AccountId {
+        let normalized = raw
+            .strip_prefix("Public/")
+            .or_else(|| raw.strip_prefix("Private/"))
+            .unwrap_or(raw);
+
+        normalized
+            .parse()
+            .unwrap_or_else(|err| panic!("invalid account_id `{raw}`: {err}"))
+    }
+
+    pub fn load_program(program_path: Option<&str>, embedded_elf: &[u8], label: &str) -> Program {
+        let bytes = if let Some(path) = program_path {
+            std::fs::read(path)
+                .unwrap_or_else(|err| panic!("failed to read {label} binary at `{path}`: {err}"))
+        } else {
+            embedded_elf.to_vec()
+        };
+
+        Program::new(bytes).unwrap_or_else(|err| panic!("failed to parse {label} program: {err}"))
+    }
+}
+"#
+    .to_string()
+}
+
+fn render_runner_run_hello_world() -> String {
+    r#"use clap::Parser;
+use example_program_deployment_methods::HELLO_WORLD_ELF;
+use nssa::{
+    PublicTransaction,
+    public_transaction::{Message, WitnessSet},
+};
+use wallet::WalletCore;
+
+#[path = "../lib.rs"]
+mod scaffold_lib;
+use scaffold_lib::runner_support::{load_program, parse_account_id};
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[arg(long)]
+    program_path: Option<String>,
+    account_id: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let wallet_core = WalletCore::from_env().unwrap();
+
+    let program = load_program(cli.program_path.as_deref(), HELLO_WORLD_ELF, "hello_world");
+    let account_id = parse_account_id(&cli.account_id);
+
+    let greeting: Vec<u8> = vec![72, 111, 108, 97, 32, 109, 117, 110, 100, 111, 33];
+    let message = Message::try_new(program.id(), vec![account_id], vec![], greeting).unwrap();
+    let witness_set = WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+
+    let _response = wallet_core.sequencer_client.send_tx_public(tx).await.unwrap();
+}
+"#
+    .to_string()
+}
+
+fn render_runner_run_hello_world_private() -> String {
+    r#"use clap::Parser;
+use example_program_deployment_methods::HELLO_WORLD_ELF;
+use nssa::program::Program;
+use wallet::{PrivacyPreservingAccount, WalletCore};
+
+#[path = "../lib.rs"]
+mod scaffold_lib;
+use scaffold_lib::runner_support::{load_program, parse_account_id};
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[arg(long)]
+    program_path: Option<String>,
+    account_id: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let wallet_core = WalletCore::from_env().unwrap();
+
+    let program = load_program(cli.program_path.as_deref(), HELLO_WORLD_ELF, "hello_world");
+    let account_id = parse_account_id(&cli.account_id);
+
+    let greeting: Vec<u8> = vec![72, 111, 108, 97, 32, 109, 117, 110, 100, 111, 33];
+    let accounts = vec![PrivacyPreservingAccount::PrivateOwned(account_id)];
+
+    wallet_core
+        .send_privacy_preserving_tx(
+            accounts,
+            Program::serialize_instruction(greeting).unwrap(),
+            &program.into(),
+        )
+        .await
+        .unwrap();
+}
+"#
+    .to_string()
+}
+
+fn render_runner_run_hello_world_with_authorization() -> String {
+    r#"use clap::Parser;
+use example_program_deployment_methods::HELLO_WORLD_WITH_AUTHORIZATION_ELF;
+use nssa::{
+    PublicTransaction,
+    public_transaction::{Message, WitnessSet},
+};
+use wallet::WalletCore;
+
+#[path = "../lib.rs"]
+mod scaffold_lib;
+use scaffold_lib::runner_support::{load_program, parse_account_id};
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[arg(long)]
+    program_path: Option<String>,
+    account_id: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let wallet_core = WalletCore::from_env().unwrap();
+
+    let program = load_program(
+        cli.program_path.as_deref(),
+        HELLO_WORLD_WITH_AUTHORIZATION_ELF,
+        "hello_world_with_authorization",
+    );
+    let account_id = parse_account_id(&cli.account_id);
+
+    let signing_key = wallet_core
+        .storage()
+        .user_data
+        .get_pub_account_signing_key(account_id)
+        .expect("Input account should be a self owned public account");
+
+    let greeting: Vec<u8> = vec![72, 111, 108, 97, 32, 109, 117, 110, 100, 111, 33];
+    let nonces = wallet_core
+        .get_accounts_nonces(vec![account_id])
+        .await
+        .expect("Node should be reachable to query account data");
+    let message = Message::try_new(program.id(), vec![account_id], nonces, greeting).unwrap();
+    let witness_set = WitnessSet::for_message(&message, &[signing_key]);
+    let tx = PublicTransaction::new(message, witness_set);
+
+    let _response = wallet_core.sequencer_client.send_tx_public(tx).await.unwrap();
+}
+"#
+    .to_string()
+}
+
+fn render_runner_run_hello_world_through_tail_call() -> String {
+    r#"use clap::Parser;
+use example_program_deployment_methods::SIMPLE_TAIL_CALL_ELF;
+use nssa::{
+    PublicTransaction,
+    public_transaction::{Message, WitnessSet},
+};
+use wallet::WalletCore;
+
+#[path = "../lib.rs"]
+mod scaffold_lib;
+use scaffold_lib::runner_support::{load_program, parse_account_id};
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[arg(long)]
+    program_path: Option<String>,
+    account_id: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let wallet_core = WalletCore::from_env().unwrap();
+
+    let program = load_program(
+        cli.program_path.as_deref(),
+        SIMPLE_TAIL_CALL_ELF,
+        "simple_tail_call",
+    );
+    let account_id = parse_account_id(&cli.account_id);
+
+    let message = Message::try_new(program.id(), vec![account_id], vec![], ()).unwrap();
+    let witness_set = WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+
+    let _response = wallet_core.sequencer_client.send_tx_public(tx).await.unwrap();
+}
+"#
+    .to_string()
+}
+
+fn render_runner_run_hello_world_through_tail_call_private() -> String {
+    r#"use std::collections::HashMap;
+
+use clap::Parser;
+use example_program_deployment_methods::{HELLO_WORLD_ELF, SIMPLE_TAIL_CALL_ELF};
+use nssa::{
+    ProgramId, privacy_preserving_transaction::circuit::ProgramWithDependencies, program::Program,
+};
+use wallet::{PrivacyPreservingAccount, WalletCore};
+
+#[path = "../lib.rs"]
+mod scaffold_lib;
+use scaffold_lib::runner_support::{load_program, parse_account_id};
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[arg(long)]
+    simple_tail_call_path: Option<String>,
+    #[arg(long)]
+    hello_world_path: Option<String>,
+    account_id: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let wallet_core = WalletCore::from_env().unwrap();
+
+    let simple_tail_call = load_program(
+        cli.simple_tail_call_path.as_deref(),
+        SIMPLE_TAIL_CALL_ELF,
+        "simple_tail_call",
+    );
+    let hello_world = load_program(
+        cli.hello_world_path.as_deref(),
+        HELLO_WORLD_ELF,
+        "hello_world",
+    );
+
+    let dependencies: HashMap<ProgramId, Program> =
+        [(hello_world.id(), hello_world)].into_iter().collect();
+    let program_with_dependencies = ProgramWithDependencies::new(simple_tail_call, dependencies);
+    let account_id = parse_account_id(&cli.account_id);
+    let accounts = vec![PrivacyPreservingAccount::PrivateOwned(account_id)];
+
+    wallet_core
+        .send_privacy_preserving_tx(
+            accounts,
+            Program::serialize_instruction(()).unwrap(),
+            &program_with_dependencies,
+        )
+        .await
+        .unwrap();
+}
+"#
+    .to_string()
+}
+
+fn render_runner_run_hello_world_with_authorization_through_tail_call_with_pda() -> String {
+    r#"use clap::Parser;
+use example_program_deployment_methods::TAIL_CALL_WITH_PDA_ELF;
+use nssa::{
+    AccountId, PublicTransaction,
+    public_transaction::{Message, WitnessSet},
+};
+use nssa_core::program::PdaSeed;
+use wallet::WalletCore;
+
+#[path = "../lib.rs"]
+mod scaffold_lib;
+use scaffold_lib::runner_support::load_program;
+
+const PDA_SEED: PdaSeed = PdaSeed::new([37; 32]);
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[arg(long)]
+    program_path: Option<String>,
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let wallet_core = WalletCore::from_env().unwrap();
+
+    let program = load_program(
+        cli.program_path.as_deref(),
+        TAIL_CALL_WITH_PDA_ELF,
+        "tail_call_with_pda",
+    );
+
+    let pda = AccountId::from((&program.id(), &PDA_SEED));
+    let message = Message::try_new(program.id(), vec![pda], vec![], ()).unwrap();
+    let witness_set = WitnessSet::for_message(&message, &[]);
+    let tx = PublicTransaction::new(message, witness_set);
+
+    let _response = wallet_core.sequencer_client.send_tx_public(tx).await.unwrap();
+    println!("The program derived account id is: {pda}");
+}
+"#
+    .to_string()
+}
+
+fn render_runner_run_hello_world_with_move_function() -> String {
+    r#"use clap::{Parser, Subcommand};
+use example_program_deployment_methods::HELLO_WORLD_WITH_MOVE_FUNCTION_ELF;
+use nssa::{PublicTransaction, program::Program, public_transaction};
+use wallet::{PrivacyPreservingAccount, WalletCore};
+
+#[path = "../lib.rs"]
+mod scaffold_lib;
+use scaffold_lib::runner_support::{load_program, parse_account_id};
+
+type Instruction = (u8, Vec<u8>);
+const WRITE_FUNCTION_ID: u8 = 0;
+const MOVE_DATA_FUNCTION_ID: u8 = 1;
+
+#[derive(Parser, Debug)]
+struct Cli {
+    #[arg(long)]
+    program_path: Option<String>,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    WritePublic {
+        account_id: String,
+        greeting: String,
+    },
+    WritePrivate {
+        account_id: String,
+        greeting: String,
+    },
+    MoveDataPublicToPublic {
+        from: String,
+        to: String,
+    },
+    MoveDataPublicToPrivate {
+        from: String,
+        to: String,
+    },
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let program = load_program(
+        cli.program_path.as_deref(),
+        HELLO_WORLD_WITH_MOVE_FUNCTION_ELF,
+        "hello_world_with_move_function",
+    );
+    let wallet_core = WalletCore::from_env().unwrap();
+
+    match cli.command {
+        Command::WritePublic {
+            account_id,
+            greeting,
+        } => {
+            let instruction: Instruction = (WRITE_FUNCTION_ID, greeting.into_bytes());
+            let account_id = parse_account_id(&account_id);
+            let message = public_transaction::Message::try_new(
+                program.id(),
+                vec![account_id],
+                vec![],
+                instruction,
+            )
+            .unwrap();
+            let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+            let tx = PublicTransaction::new(message, witness_set);
+            let _response = wallet_core
+                .sequencer_client
+                .send_tx_public(tx)
+                .await
+                .unwrap();
+        }
+        Command::WritePrivate {
+            account_id,
+            greeting,
+        } => {
+            let instruction: Instruction = (WRITE_FUNCTION_ID, greeting.into_bytes());
+            let account_id = parse_account_id(&account_id);
+            let accounts = vec![PrivacyPreservingAccount::PrivateOwned(account_id)];
+            wallet_core
+                .send_privacy_preserving_tx(
+                    accounts,
+                    Program::serialize_instruction(instruction).unwrap(),
+                    &program.into(),
+                )
+                .await
+                .unwrap();
+        }
+        Command::MoveDataPublicToPublic { from, to } => {
+            let instruction: Instruction = (MOVE_DATA_FUNCTION_ID, vec![]);
+            let from = parse_account_id(&from);
+            let to = parse_account_id(&to);
+            let message = public_transaction::Message::try_new(
+                program.id(),
+                vec![from, to],
+                vec![],
+                instruction,
+            )
+            .unwrap();
+            let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+            let tx = PublicTransaction::new(message, witness_set);
+            let _response = wallet_core
+                .sequencer_client
+                .send_tx_public(tx)
+                .await
+                .unwrap();
+        }
+        Command::MoveDataPublicToPrivate { from, to } => {
+            let instruction: Instruction = (MOVE_DATA_FUNCTION_ID, vec![]);
+            let from = parse_account_id(&from);
+            let to = parse_account_id(&to);
+            let accounts = vec![
+                PrivacyPreservingAccount::Public(from),
+                PrivacyPreservingAccount::PrivateOwned(to),
+            ];
+            wallet_core
+                .send_privacy_preserving_tx(
+                    accounts,
+                    Program::serialize_instruction(instruction).unwrap(),
+                    &program.into(),
+                )
+                .await
+                .unwrap();
+        }
+    };
+}
 "#
     .to_string()
 }

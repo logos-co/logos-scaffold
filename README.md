@@ -33,7 +33,7 @@ logos-scaffold doctor
 
 - `create` and `new` are aliases.
 - `setup` does LSSA sync to pinned commit, standalone sequencer build, wallet install.
-- `build [project-path]` runs `setup` and then `cargo build` in the same project path.
+- `build [project-path]` runs `setup` and then `cargo build --workspace` in the same project path.
 - `localnet start` runs standalone sequencer only.
 - `localnet logs` reads sequencer logs (`--tail` default is `200`).
 
@@ -51,12 +51,29 @@ cd my-app
 logos-scaffold setup
 logos-scaffold localnet start
 export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
-cargo risczero build --manifest-path methods/guest/Cargo.toml
-export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv32im-risc0-zkvm-elf/docker
+logos-scaffold build
+export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release
 wallet check-health
 ```
 
-Run examples with `cargo run --bin ...` directly from generated project.
+Run examples directly without passing `.bin` paths:
+
+```bash
+cargo run --bin run_hello_world -- <public_account_id>
+cargo run --bin run_hello_world_private -- <private_account_id>
+cargo run --bin run_hello_world_with_authorization -- <public_account_id>
+cargo run --bin run_hello_world_with_move_function -- write-public <public_account_id> <text>
+cargo run --bin run_hello_world_through_tail_call -- <public_account_id>
+cargo run --bin run_hello_world_through_tail_call_private -- <private_account_id>
+cargo run --bin run_hello_world_with_authorization_through_tail_call_with_pda
+```
+
+Optional overrides for custom binaries:
+
+```bash
+cargo run --bin run_hello_world -- --program-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <public_account_id>
+cargo run --bin run_hello_world_through_tail_call_private -- --simple-tail-call-path "$EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin" --hello-world-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <private_account_id>
+```
 
 If tail-call examples fail with `InvalidProgramBehavior`, update
 `methods/guest/src/bin/simple_tail_call.rs` constant
@@ -69,6 +86,9 @@ Generated projects:
 
 - copy from `lssa/examples/program_deployment`
 - rewrite root `Cargo.toml` to pin workspace deps to `lssa` git `rev`
+- add `example_program_deployment_methods` dependency for embedded guest ELF access
+- generate pathless runner binaries with optional program-path overrides
+- generate `.gitignore` with `.scaffold/`, `target/`, `Cargo.lock.bak`
 - include `scaffold.toml` (LSSA-only schema)
 - include a scaffold-focused `README.md`
 - do not include `GETTING_STARTED.md`
