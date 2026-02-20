@@ -99,11 +99,3 @@ logos-scaffold localnet logs --tail 200
 logos-scaffold localnet stop
 logos-scaffold doctor
 ```
-
-## Notes
-
-- Standalone-only: no `logos-blockchain` dependency and no `deps` or `example` CLI groups.
-- Use `export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet` before wallet commands.
-- `logos-scaffold build` runs `setup` and then `cargo build --workspace`.
-- LSSA pin is enforced by `logos-scaffold setup`.
-- `simple_tail_call` hardcodes `HELLO_WORLD_PROGRAM_ID_HEX`. If tail-call runs fail, set it to the `hello_world.bin` ImageID from the latest `cargo risczero build` output, then rebuild methods.

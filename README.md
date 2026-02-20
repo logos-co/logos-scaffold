@@ -97,16 +97,3 @@ If tail-call examples fail with `InvalidProgramBehavior`, update
 `methods/guest/src/bin/simple_tail_call.rs` constant
 `HELLO_WORLD_PROGRAM_ID_HEX` to the `hello_world.bin` ImageID from
 the latest `cargo risczero build` output, then rebuild methods.
-
-## Generated Project
-
-Generated projects:
-
-- copy from `lssa/examples/program_deployment`
-- apply scaffold overrides from `templates/default` (embedded at compile time)
-- override root `Cargo.toml` with pinned `lssa` git `rev` and scaffold workspace deps
-- add scaffold runner binaries with optional program-path overrides
-- override `.gitignore` with `.scaffold/`, `target/`, `Cargo.lock.bak`
-- include `scaffold.toml` (LSSA-only schema)
-- override with a scaffold-focused `README.md`
-- do not include `GETTING_STARTED.md`
