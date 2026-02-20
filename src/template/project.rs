@@ -18,7 +18,27 @@ pub(crate) fn apply_default_overlay(
     target: &Path,
     ctx: &OverlayRenderContext<'_>,
 ) -> DynResult<()> {
-    apply_overlay_variant(target, DEFAULT_TEMPLATE_VARIANT, ctx)
+    apply_overlay_variant(target, DEFAULT_TEMPLATE_VARIANT, ctx)?;
+    ensure_scaffold_in_gitignore(target)
+}
+
+fn ensure_scaffold_in_gitignore(target: &Path) -> DynResult<()> {
+    let gitignore_path = target.join(".gitignore");
+    let mut content = if gitignore_path.exists() {
+        fs::read_to_string(&gitignore_path)?
+    } else {
+        String::new()
+    };
+
+    let already_present = content.lines().any(|l| l.trim() == ".scaffold");
+    if !already_present {
+        if !content.ends_with('\n') && !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(".scaffold\n");
+        write_text(&gitignore_path, &content)?;
+    }
+    Ok(())
 }
 
 fn apply_overlay_variant(
@@ -195,6 +215,32 @@ mod tests {
             runner_text,
             include_str!("../../templates/default/src/bin/run_hello_world.rs")
         );
+
+        fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");
+    }
+
+    #[test]
+    fn gitignore_includes_scaffold_and_is_idempotent() {
+        let target = mk_temp_dir("gitignore");
+        let ctx = OverlayRenderContext {
+            crate_name: "my-app",
+            lssa_pin: "abc123",
+        };
+
+        apply_default_overlay(&target, &ctx).expect("failed to apply default overlay");
+
+        let gitignore = fs::read_to_string(target.join(".gitignore"))
+            .expect("failed to read generated .gitignore");
+        assert!(
+            gitignore.lines().any(|l| l.trim() == ".scaffold"),
+            ".gitignore should contain .scaffold, got: {gitignore:?}"
+        );
+
+        apply_default_overlay(&target, &ctx).expect("second overlay should succeed");
+        let gitignore_after = fs::read_to_string(target.join(".gitignore"))
+            .expect("failed to read .gitignore after second overlay");
+        let scaffold_count = gitignore_after.lines().filter(|l| l.trim() == ".scaffold").count();
+        assert_eq!(scaffold_count, 1, "idempotent overlay must not duplicate .scaffold");
 
         fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");
     }
