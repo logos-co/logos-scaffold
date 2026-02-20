@@ -1,22 +1,13 @@
 # logos-scaffold
 
-`logos-scaffold` is a Rust CLI scaffold for Logos v0.1 focused on one end-to-end public flow:
-- public wallet-to-wallet transaction
-- public program build, deploy, run, modify
+`logos-scaffold` is a Rust CLI for bootstrapping LSSA `program_deployment` projects in standalone mode.
 
-## What it does
+## Scope
 
-- Bootstraps a project with `scaffold.toml` and `.scaffold` runtime dirs.
-- Bootstraps directly from `lssa/examples/program_deployment` as the project template.
-- Uses a cache-first dependency layout by default:
-  - macOS: `~/Library/Caches/logos-scaffold`
-  - Linux: `$XDG_CACHE_HOME/logos-scaffold` or `~/.cache/logos-scaffold`
-  - Windows: `%LOCALAPPDATA%/logos-scaffold/Cache`
-- Supports vendor mode (`--vendor-deps`) for local reproducibility.
-- Pins explicit SHAs for `lssa` and `logos-blockchain` in `scaffold.toml`.
-- Manages localnet start/stop/status/logs in docker or manual mode.
-- Runs a simple program deployment vertical slice.
-- Provides `doctor` with PASS/WARN/FAIL checks and remediations.
+- Single external dependency: [lssa](https://github.com/logos-blockchain/lssa/)
+- Standalone sequencer flow only
+- No `logos-blockchain` dependency
+- No full-stack/circuits management
 
 ## Build
 
@@ -24,58 +15,60 @@
 cargo build
 ```
 
-## v0.1 commands
+## CLI
 
 ```bash
-scaffold new app
-cd app
-scaffold deps sync
-scaffold doctor
-scaffold localnet start
-scaffold example program-deployment run
+logos-scaffold create <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
+logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
+logos-scaffold build [project-path]
+logos-scaffold setup
+logos-scaffold localnet start
+logos-scaffold localnet stop
+logos-scaffold localnet status
+logos-scaffold localnet logs [--tail N]
+logos-scaffold doctor
 ```
 
-### Dependency commands
+## Command Semantics
+
+- `create` and `new` are aliases.
+- `setup` does LSSA sync to pinned commit, standalone sequencer build, wallet install.
+- `build [project-path]` runs `setup` and then `cargo build` in the same project path.
+- `localnet start` runs standalone sequencer only.
+- `localnet logs` reads sequencer logs (`--tail` default is `200`).
+
+## Pinned LSSA Commit
+
+Scaffold enforces this commit for standalone mode:
+
+- `dee3f7fa6f2bf63abef00828f246ddacade9cdaf`
+
+## Typical Flow
 
 ```bash
-scaffold deps sync
-scaffold deps sync --update-pins
-scaffold deps build
-scaffold deps build --reset-circuits --yes
-scaffold deps circuits import --from-global
-scaffold deps circuits import /path/to/logos-blockchain-circuits --force
+logos-scaffold new my-app
+cd my-app
+logos-scaffold setup
+logos-scaffold localnet start
+export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
+cargo risczero build --manifest-path methods/guest/Cargo.toml
+export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv32im-risc0-zkvm-elf/docker
+wallet check-health
 ```
 
-### Localnet commands
+Run examples with `cargo run --bin ...` directly from generated project.
 
-```bash
-scaffold localnet start --mode docker
-scaffold localnet start --mode manual
-scaffold localnet status
-scaffold localnet logs
-scaffold localnet logs sequencer
-scaffold localnet stop
-```
+If tail-call examples fail with `InvalidProgramBehavior`, update
+`methods/guest/src/bin/simple_tail_call.rs` constant
+`HELLO_WORLD_PROGRAM_ID_HEX` to the `hello_world.bin` ImageID from
+the latest `cargo risczero build` output, then rebuild methods.
 
-## Example behavior
+## Generated Project
 
-`scaffold example program-deployment run` does:
-1. Wallet health check.
-2. Build example guest methods (`cargo risczero build ...`).
-3. Deploy `hello_world.bin` publicly.
-4. Create public account and run `run_hello_world` (public execution).
-5. Run a public wallet-to-wallet transfer flow (`auth-transfer init/send`).
-6. Run `run_hello_world` again to modify public account state.
-7. Write artifact to `.scaffold/state/program_deployment_success.json`.
+Generated projects:
 
-The command runs against the bootstrapped project itself (its local `methods/` and `src/bin`), so generated apps can run the example flow from their own tree.
-
-## Notes
-
-- `doctor` includes wallet install remediation command:
-  - `cargo install --path wallet --force`
-- circuits reset is guarded:
-  - only `scaffold deps build --reset-circuits --yes` removes `~/.logos-blockchain-circuits`
-- offline circuits workflow:
-  - `scaffold deps circuits import --from-global`
-  - or `scaffold deps circuits import <path>`
+- copy from `lssa/examples/program_deployment`
+- rewrite root `Cargo.toml` to pin workspace deps to `lssa` git `rev`
+- include `scaffold.toml` (LSSA-only schema)
+- include a scaffold-focused `README.md`
+- do not include `GETTING_STARTED.md`

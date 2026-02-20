@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -11,16 +10,12 @@ use std::time::Duration;
 type DynResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 const VERSION: &str = "0.1.0";
+const LSSA_URL: &str = "https://github.com/logos-blockchain/lssa.git";
+const DEFAULT_LSSA_PIN: &str = "dee3f7fa6f2bf63abef00828f246ddacade9cdaf";
+const DEFAULT_HELLO_WORLD_IMAGE_ID_HEX: &str =
+    "5d37dae43d65ae41d701d39b16363d578c797a2efad74fa90608525c7b3d49ac";
 const DEFAULT_WALLET_BINARY: &str = "wallet";
 const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
-const LSSA_URL: &str = "https://github.com/logos-blockchain/lssa.git";
-const LOGOS_BLOCKCHAIN_URL: &str = "https://github.com/logos-blockchain/logos-blockchain.git";
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum LocalnetMode {
-    Docker,
-    Manual,
-}
 
 #[derive(Clone, Debug)]
 struct RepoRef {
@@ -35,8 +30,6 @@ struct Config {
     version: String,
     cache_root: String,
     lssa: RepoRef,
-    logos_blockchain: RepoRef,
-    preferred_mode: LocalnetMode,
     wallet_binary: String,
     wallet_home_dir: String,
 }
@@ -49,8 +42,7 @@ struct Project {
 
 #[derive(Clone, Debug, Default)]
 struct LocalnetState {
-    mode: Option<LocalnetMode>,
-    pids: BTreeMap<String, u32>,
+    sequencer_pid: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,10 +75,11 @@ fn run() -> DynResult<()> {
     }
 
     match args[1].as_str() {
+        "create" => cmd_new(&args[2..]),
         "new" => cmd_new(&args[2..]),
-        "deps" => cmd_deps(&args[2..]),
+        "setup" => cmd_setup(&args[2..]),
+        "build" => cmd_build_shortcut(&args[2..]),
         "localnet" => cmd_localnet(&args[2..]),
-        "example" => cmd_example(&args[2..]),
         "doctor" => cmd_doctor(),
         "-h" | "--help" => {
             print_help();
@@ -96,35 +89,45 @@ fn run() -> DynResult<()> {
             println!("{VERSION}");
             Ok(())
         }
-        other => Err(format!("unknown command: {other}").into()),
+        other => {
+            if let Some(suggested) = suggest_command(other) {
+                Err(format!("unknown command: {other}. Did you mean `{suggested}`?").into())
+            } else {
+                Err(format!("unknown command: {other}").into())
+            }
+        }
     }
 }
 
 fn print_help() {
-    println!("scaffold {VERSION}");
+    println!("logos-scaffold {VERSION}");
     println!("commands:");
-    println!("  scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--logos-blockchain-path PATH] [--cache-root PATH]");
-    println!("  scaffold deps sync [--update-pins]");
-    println!("  scaffold deps build [--reset-circuits] [--yes]");
-    println!("  scaffold deps circuits import <path> [--force]");
-    println!("  scaffold deps circuits import --from-global [--force]");
-    println!("  scaffold localnet start [--mode docker|manual]");
-    println!("  scaffold localnet stop");
-    println!("  scaffold localnet status");
-    println!("  scaffold localnet logs [component]");
-    println!("  scaffold example program-deployment run");
-    println!("  scaffold doctor");
+    println!(
+        "  logos-scaffold create <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
+    );
+    println!(
+        "  logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
+    );
+    println!("  logos-scaffold build [project-path]");
+    println!("  logos-scaffold setup");
+    println!("  logos-scaffold localnet start");
+    println!("  logos-scaffold localnet stop");
+    println!("  logos-scaffold localnet status");
+    println!("  logos-scaffold localnet logs [--tail N]");
+    println!("  logos-scaffold doctor");
 }
 
 fn cmd_new(args: &[String]) -> DynResult<()> {
     if args.is_empty() {
-        return Err("usage: scaffold new <name> ...".into());
+        return Err(
+            "usage: logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
+                .into(),
+        );
     }
 
     let name = args[0].clone();
     let mut vendor_deps = false;
     let mut lssa_path: Option<PathBuf> = None;
-    let mut logos_path: Option<PathBuf> = None;
     let mut cache_root_override: Option<PathBuf> = None;
 
     let mut i = 1;
@@ -139,13 +142,6 @@ fn cmd_new(args: &[String]) -> DynResult<()> {
                 lssa_path = Some(PathBuf::from(value));
                 i += 2;
             }
-            "--logos-blockchain-path" => {
-                let value = args
-                    .get(i + 1)
-                    .ok_or("--logos-blockchain-path requires value")?;
-                logos_path = Some(PathBuf::from(value));
-                i += 2;
-            }
             "--cache-root" => {
                 let value = args.get(i + 1).ok_or("--cache-root requires value")?;
                 cache_root_override = Some(PathBuf::from(value));
@@ -156,8 +152,16 @@ fn cmd_new(args: &[String]) -> DynResult<()> {
     }
 
     let cwd = env::current_dir()?;
-    let crate_name = to_cargo_crate_name(&name);
     let target = cwd.join(name);
+    let crate_name = {
+        let fallback = "app";
+        let file_name = target
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(fallback);
+        to_cargo_crate_name(file_name)
+    };
+
     if target.exists() {
         return Err(format!("target exists: {}", target.display()).into());
     }
@@ -175,33 +179,18 @@ fn cmd_new(args: &[String]) -> DynResult<()> {
         .or_else(|| infer_repo_path(&cwd, "lssa"))
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| LSSA_URL.to_string());
-    let logos_source = logos_path
-        .or_else(|| infer_repo_path(&cwd, "logos-blockchain"))
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| LOGOS_BLOCKCHAIN_URL.to_string());
 
-    let (lssa_repo_path, logos_repo_path) = if vendor_deps {
+    let lssa_repo_path = if vendor_deps {
         let root = target.join(".scaffold/repos");
         fs::create_dir_all(&root)?;
         let lssa_vendor = root.join("lssa");
-        let logos_vendor = root.join("logos-blockchain");
-
-        ensure_repo_present(&lssa_vendor, &lssa_source, "lssa")?;
-        ensure_repo_present(&logos_vendor, &logos_source, "logos-blockchain")?;
-
-        (lssa_vendor, logos_vendor)
+        sync_repo_to_pin_at_path(&lssa_vendor, &lssa_source, DEFAULT_LSSA_PIN, "lssa")?;
+        lssa_vendor
     } else {
         let lssa_cached = cache_root.join("repos/lssa");
-        let logos_cached = cache_root.join("repos/logos-blockchain");
-
-        ensure_repo_present(&lssa_cached, &lssa_source, "lssa")?;
-        ensure_repo_present(&logos_cached, &logos_source, "logos-blockchain")?;
-
-        (lssa_cached, logos_cached)
+        sync_repo_to_pin_at_path(&lssa_cached, &lssa_source, DEFAULT_LSSA_PIN, "lssa")?;
+        lssa_cached
     };
-
-    let lssa_pin = git_head_sha(&lssa_repo_path)?;
-    let logos_pin = git_head_sha(&logos_repo_path)?;
 
     let cfg = Config {
         version: VERSION.to_string(),
@@ -210,424 +199,188 @@ fn cmd_new(args: &[String]) -> DynResult<()> {
             url: LSSA_URL.to_string(),
             source: lssa_source,
             path: lssa_repo_path.display().to_string(),
-            pin: lssa_pin,
+            pin: DEFAULT_LSSA_PIN.to_string(),
         },
-        logos_blockchain: RepoRef {
-            url: LOGOS_BLOCKCHAIN_URL.to_string(),
-            source: logos_source,
-            path: logos_repo_path.display().to_string(),
-            pin: logos_pin,
-        },
-        preferred_mode: LocalnetMode::Docker,
         wallet_binary: DEFAULT_WALLET_BINARY.to_string(),
         wallet_home_dir: ".scaffold/wallet".to_string(),
     };
 
     let template_root = lssa_repo_path.join("examples/program_deployment");
     if !template_root.exists() {
-        return Err(format!(
-            "template not found at {}",
-            template_root.display()
-        )
-        .into());
+        return Err(format!("template not found at {}", template_root.display()).into());
     }
 
     copy_dir_contents(&template_root, &target)?;
+    patch_simple_tail_call_program_id(&target)?;
     write_text(
         &target.join("Cargo.toml"),
-        &render_project_template_cargo(&crate_name, &lssa_repo_path),
+        &render_project_template_cargo(&crate_name, &cfg.lssa.pin),
+    )?;
+    write_text(
+        &target.join("README.md"),
+        &render_scaffolded_project_readme(),
+    )?;
+    write_text(
+        &target.join(".scaffold/commands.md"),
+        "# Command References\n\n- standalone sequencer: RUST_LOG=info target/release/sequencer_runner sequencer_runner/configs/debug\n- lssa standalone docs: https://github.com/logos-blockchain/lssa/tree/main?tab=readme-ov-file#standalone-mode\n- wallet install: cargo install --path wallet --force\n- wallet home env: export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet\n",
     )?;
     write_text(
         &target.join(".env.local"),
-        "RISC0_DEV_MODE=1\nRUST_LOG=info\n",
+        "RUST_LOG=info\nRISC0_DEV_MODE=1\n",
     )?;
-    write_text(&target.join(".env.devnet"), "RUST_LOG=info\n")?;
     write_text(&target.join("scaffold.toml"), &serialize_config(&cfg))?;
-    write_text(
-        &target.join(".scaffold/commands.md"),
-        "# Command References\n\n- lssa run docs: https://github.com/logos-blockchain/lssa?tab=readme-ov-file#run-the-sequencer-and-node\n- wallet install: cargo install --path wallet --force\n",
-    )?;
+
+    let old_getting_started = target.join("GETTING_STARTED.md");
+    if old_getting_started.exists() {
+        fs::remove_file(old_getting_started)?;
+    }
 
     println!(
-        "Created scaffold project from template {} at {}",
+        "Created logos-scaffold project from template {} at {}",
         template_root.display(),
         target.display()
     );
     println!("Cache root: {}", cfg.cache_root);
     println!("Pinned lssa: {}", cfg.lssa.pin);
-    println!("Pinned logos-blockchain: {}", cfg.logos_blockchain.pin);
 
     Ok(())
 }
 
-fn cmd_deps(args: &[String]) -> DynResult<()> {
-    if args.is_empty() {
-        return Err("usage: scaffold deps <sync|build> ...".into());
+fn cmd_setup(args: &[String]) -> DynResult<()> {
+    if !args.is_empty() {
+        return Err("usage: logos-scaffold setup".into());
     }
 
     let mut project = load_project()?;
-    let circuits_dir = project.root.join(".scaffold/circuits");
-    match args[0].as_str() {
-        "sync" => {
-            let mut update_pins = false;
-            for arg in &args[1..] {
-                if arg == "--update-pins" {
-                    update_pins = true;
-                } else {
-                    return Err(format!("unknown flag for deps sync: {arg}").into());
-                }
-            }
+    sync_repo_to_pin(&mut project.config.lssa, "lssa")?;
 
-            sync_repo(&mut project.config.lssa, update_pins, "lssa")?;
-            sync_repo(
-                &mut project.config.logos_blockchain,
-                update_pins,
-                "logos-blockchain",
-            )?;
-            save_project_config(&project)?;
+    let lssa = PathBuf::from(&project.config.lssa.path);
+    ensure_dir_exists(&lssa, "lssa")?;
 
-            println!("deps sync complete");
-        }
-        "build" => {
-            let mut reset_circuits = false;
-            let mut yes = false;
-            for arg in &args[1..] {
-                match arg.as_str() {
-                    "--reset-circuits" => reset_circuits = true,
-                    "--yes" => yes = true,
-                    other => return Err(format!("unknown flag for deps build: {other}").into()),
-                }
-            }
+    run_checked(
+        Command::new("cargo")
+            .current_dir(&lssa)
+            .arg("build")
+            .arg("--release")
+            .arg("--features")
+            .arg("standalone")
+            .arg("-p")
+            .arg("sequencer_runner"),
+        "build sequencer_runner (standalone)",
+    )?;
 
-            let lssa = PathBuf::from(&project.config.lssa.path);
-            let logos = PathBuf::from(&project.config.logos_blockchain.path);
-            ensure_dir_exists(&lssa, "lssa")?;
-            ensure_dir_exists(&logos, "logos-blockchain")?;
+    run_checked(
+        Command::new("cargo")
+            .current_dir(&lssa)
+            .arg("install")
+            .arg("--path")
+            .arg("wallet")
+            .arg("--force"),
+        "install wallet",
+    )?;
 
-            if reset_circuits {
-                if circuits_dir.exists() {
-                    if !yes {
-                        return Err(format!(
-                            "refusing to remove {} without --yes",
-                            circuits_dir.display()
-                        )
-                        .into());
-                    }
-                    println!("$ rm -rf {}", circuits_dir.display());
-                    fs::remove_dir_all(&circuits_dir)?;
-                }
-            }
+    let wallet_home = project.root.join(&project.config.wallet_home_dir);
+    prepare_wallet_home(&lssa, &wallet_home)?;
 
-            run_checked(
-                Command::new("cargo").current_dir(&logos).arg("clean"),
-                "cargo clean (logos-blockchain)",
-            )?;
-
-            if !circuits_dir.exists() {
-                let global_circuits = home_dir()?.join(".logos-blockchain-circuits");
-                if global_circuits.exists() {
-                    copy_dir_recursive(&global_circuits, &circuits_dir)?;
-                }
-            }
-
-            if !circuits_dir.exists() {
-                if let Err(err) = run_checked(
-                    Command::new("bash")
-                        .current_dir(&logos)
-                        .arg("-lc")
-                        .arg(format!(
-                            "./scripts/setup-logos-blockchain-circuits.sh v0.4.1 {}",
-                            shell_quote(&circuits_dir.display().to_string())
-                        )),
-                    "setup logos-blockchain circuits",
-                ) {
-                    return Err(format!(
-                        "failed to provision circuits automatically: {err}. Use `scaffold deps circuits import <path>` or `scaffold deps circuits import --from-global`"
-                    ).into());
-                }
-            } else {
-                println!(
-                    "Using existing circuits dir {} (skip setup)",
-                    circuits_dir.display()
-                );
-            }
-            validate_circuits_dir(&circuits_dir)?;
-            run_checked(
-                Command::new("cargo")
-                    .current_dir(&logos)
-                    .env(
-                        "LOGOS_BLOCKCHAIN_CIRCUITS",
-                        circuits_dir.display().to_string(),
-                    )
-                    .arg("build")
-                    .arg("--all-features"),
-                "build logos-blockchain",
-            )?;
-            run_checked(
-                Command::new("cargo")
-                    .current_dir(&lssa)
-                    .arg("build")
-                    .arg("--release")
-                    .arg("-p")
-                    .arg("indexer_service"),
-                "build indexer_service",
-            )?;
-            run_checked(
-                Command::new("cargo")
-                    .current_dir(&lssa)
-                    .arg("build")
-                    .arg("--release")
-                    .arg("-p")
-                    .arg("sequencer_runner"),
-                "build sequencer_runner",
-            )?;
-            if let Err(err) = run_checked(
-                Command::new("cargo")
-                    .current_dir(&lssa)
-                    .arg("install")
-                    .arg("--path")
-                    .arg("wallet")
-                    .arg("--force"),
-                "install wallet",
-            ) {
-                if which(DEFAULT_WALLET_BINARY).is_some() {
-                    println!(
-                        "WARN: wallet install failed but `wallet` already exists on PATH: {err}"
-                    );
-                } else {
-                    return Err(format!(
-                        "wallet install failed and wallet is not on PATH: {err}. Run `cargo install --path wallet --force` in {}",
-                        lssa.display()
-                    )
-                    .into());
-                }
-            }
-
-            println!("deps build complete");
-        }
-        "circuits" => {
-            if args.len() < 2 {
-                return Err("usage: scaffold deps circuits import <path>|--from-global [--force]".into());
-            }
-            match args[1].as_str() {
-                "import" => {
-                    let mut from_global = false;
-                    let mut source_path: Option<PathBuf> = None;
-                    let mut force = false;
-
-                    let mut i = 2;
-                    while i < args.len() {
-                        match args[i].as_str() {
-                            "--from-global" => {
-                                from_global = true;
-                                i += 1;
-                            }
-                            "--force" => {
-                                force = true;
-                                i += 1;
-                            }
-                            value => {
-                                if source_path.is_none() {
-                                    source_path = Some(PathBuf::from(value));
-                                    i += 1;
-                                } else {
-                                    return Err(format!("unexpected argument: {value}").into());
-                                }
-                            }
-                        }
-                    }
-
-                    let source = if from_global {
-                        if source_path.is_some() {
-                            return Err("cannot use both --from-global and explicit path".into());
-                        }
-                        home_dir()?.join(".logos-blockchain-circuits")
-                    } else {
-                        source_path.ok_or("missing source path for circuits import")?
-                    };
-
-                    if !source.exists() {
-                        return Err(format!("circuits source does not exist: {}", source.display()).into());
-                    }
-
-                    if circuits_dir.exists() {
-                        if !force {
-                            return Err(format!(
-                                "circuits target already exists at {} (use --force to replace)",
-                                circuits_dir.display()
-                            ).into());
-                        }
-                        fs::remove_dir_all(&circuits_dir)?;
-                    }
-
-                    copy_dir_recursive(&source, &circuits_dir)?;
-                    validate_circuits_dir(&circuits_dir)?;
-                    println!(
-                        "Imported circuits from {} to {}",
-                        source.display(),
-                        circuits_dir.display()
-                    );
-                }
-                other => {
-                    return Err(format!("unknown deps circuits command: {other}").into());
-                }
-            }
-        }
-        other => return Err(format!("unknown deps command: {other}").into()),
-    }
+    save_project_config(&project)?;
+    println!("setup complete");
 
     Ok(())
+}
+
+fn cmd_build_shortcut(args: &[String]) -> DynResult<()> {
+    let mut project_dir: Option<PathBuf> = None;
+
+    for arg in args {
+        if arg.starts_with("--") {
+            return Err(format!("unknown flag for build: {arg}").into());
+        }
+
+        if project_dir.is_none() {
+            project_dir = Some(PathBuf::from(arg));
+        } else {
+            return Err(format!(
+                "unexpected argument `{}`. Usage: logos-scaffold build [project-path]",
+                arg
+            )
+            .into());
+        }
+    }
+
+    run_in_project_dir(project_dir.as_deref(), || {
+        cmd_setup(&[])?;
+        let cwd = env::current_dir()?;
+        run_checked(
+            Command::new("cargo").current_dir(&cwd).arg("build"),
+            "cargo build (project)",
+        )?;
+        Ok(())
+    })
 }
 
 fn cmd_localnet(args: &[String]) -> DynResult<()> {
     if args.is_empty() {
-        return Err("usage: scaffold localnet <start|stop|status|logs> ...".into());
+        return Err("usage: logos-scaffold localnet <start|stop|status|logs> ...".into());
     }
 
     let project = load_project()?;
     let lssa = PathBuf::from(&project.config.lssa.path);
-    let logos = PathBuf::from(&project.config.logos_blockchain.path);
-    let circuits_dir = project.root.join(".scaffold/circuits");
     let state_path = project.root.join(".scaffold/state/localnet.state");
     let logs_dir = project.root.join(".scaffold/logs");
     fs::create_dir_all(&logs_dir)?;
 
     match args[0].as_str() {
         "start" => {
-            let mut mode: Option<LocalnetMode> = None;
-            let mut i = 1;
-            while i < args.len() {
-                if args[i] == "--mode" {
-                    let value = args.get(i + 1).ok_or("--mode requires docker|manual")?;
-                    mode = Some(parse_mode(value)?);
-                    i += 2;
-                } else {
-                    return Err(format!("unknown flag for localnet start: {}", args[i]).into());
+            if args.len() != 1 {
+                return Err("usage: logos-scaffold localnet start".into());
+            }
+
+            ensure_dir_exists(&lssa, "lssa")?;
+            let sequencer_bin = lssa.join("target/release/sequencer_runner");
+            if !sequencer_bin.exists() {
+                return Err(format!(
+                    "missing sequencer binary {}; run `logos-scaffold setup`",
+                    sequencer_bin.display()
+                )
+                .into());
+            }
+
+            let state = read_localnet_state(&state_path).unwrap_or_default();
+            if let Some(pid) = state.sequencer_pid {
+                if pid_alive(pid) {
+                    println!("sequencer already running with pid={pid}");
+                    return Ok(());
                 }
             }
 
-            let selected = match mode {
-                Some(v) => v,
-                None => {
-                    if docker_available() {
-                        LocalnetMode::Docker
-                    } else {
-                        LocalnetMode::Manual
-                    }
-                }
+            let sequencer_pid = spawn_to_log(
+                Command::new(sequencer_bin)
+                    .current_dir(&lssa)
+                    .arg("sequencer_runner/configs/debug")
+                    .env("RUST_LOG", "info")
+                    .env("RISC0_DEV_MODE", "1"),
+                &logs_dir.join("sequencer.log"),
+            )?;
+
+            let state = LocalnetState {
+                sequencer_pid: Some(sequencer_pid),
             };
-
-            match selected {
-                LocalnetMode::Docker => {
-                    run_checked(
-                        Command::new("docker")
-                            .current_dir(&lssa)
-                            .arg("compose")
-                            .arg("up")
-                            .arg("-d"),
-                        "localnet docker up",
-                    )?;
-
-                    let state = LocalnetState {
-                        mode: Some(LocalnetMode::Docker),
-                        pids: BTreeMap::new(),
-                    };
-                    write_localnet_state(&state_path, &state)?;
-                }
-                LocalnetMode::Manual => {
-                    ensure_dir_exists(&lssa, "lssa")?;
-                    ensure_dir_exists(&logos, "logos-blockchain")?;
-
-                    let node_bin = logos.join("target/debug/logos-blockchain-node");
-                    if !node_bin.exists() {
-                        return Err(format!(
-                            "missing node binary {}; run `scaffold deps build`",
-                            node_bin.display()
-                        )
-                        .into());
-                    }
-
-                    let node_pid = spawn_to_log(
-                        Command::new(node_bin)
-                            .current_dir(&logos)
-                            .env(
-                                "LOGOS_BLOCKCHAIN_CIRCUITS",
-                                circuits_dir.display().to_string(),
-                            )
-                            .arg("--deployment")
-                            .arg("nodes/node/standalone-deployment-config.yaml")
-                            .arg("nodes/node/standalone-node-config.yaml"),
-                        &logs_dir.join("node.log"),
-                    )?;
-
-                    let indexer_bin = lssa.join("target/release/indexer_service");
-                    if !indexer_bin.exists() {
-                        return Err(format!(
-                            "missing indexer binary {}; run `scaffold deps build`",
-                            indexer_bin.display()
-                        )
-                        .into());
-                    }
-                    let indexer_pid = spawn_to_log(
-                        Command::new(indexer_bin)
-                            .current_dir(&lssa)
-                            .arg("indexer/service/configs/indexer_config.json")
-                            .env("RUST_LOG", "info"),
-                        &logs_dir.join("indexer.log"),
-                    )?;
-
-                    let sequencer_bin = lssa.join("target/release/sequencer_runner");
-                    if !sequencer_bin.exists() {
-                        return Err(format!(
-                            "missing sequencer binary {}; run `scaffold deps build`",
-                            sequencer_bin.display()
-                        )
-                        .into());
-                    }
-                    let sequencer_pid = spawn_to_log(
-                        Command::new(sequencer_bin)
-                            .current_dir(&lssa)
-                            .arg("sequencer_runner/configs/debug")
-                            .env("RUST_LOG", "info")
-                            .env("RISC0_DEV_MODE", "1"),
-                        &logs_dir.join("sequencer.log"),
-                    )?;
-
-                    let mut pids = BTreeMap::new();
-                    pids.insert("node".to_string(), node_pid);
-                    pids.insert("indexer".to_string(), indexer_pid);
-                    pids.insert("sequencer".to_string(), sequencer_pid);
-
-                    let state = LocalnetState {
-                        mode: Some(LocalnetMode::Manual),
-                        pids,
-                    };
-                    write_localnet_state(&state_path, &state)?;
-                }
-            }
+            write_localnet_state(&state_path, &state)?;
 
             thread::sleep(Duration::from_secs(2));
-            println!("localnet start requested in {} mode", mode_to_str(&selected));
+            println!("localnet start requested (sequencer pid={sequencer_pid})");
         }
         "stop" => {
+            if args.len() != 1 {
+                return Err("usage: logos-scaffold localnet stop".into());
+            }
+
             let state = read_localnet_state(&state_path).unwrap_or_default();
-            match state.mode {
-                Some(LocalnetMode::Docker) => {
-                    run_checked(
-                        Command::new("docker")
-                            .current_dir(&lssa)
-                            .arg("compose")
-                            .arg("down"),
-                        "localnet docker down",
-                    )?;
-                }
-                Some(LocalnetMode::Manual) => {
-                    for (name, pid) in state.pids {
-                        println!("$ kill {pid} # {name}");
-                        let _ = Command::new("kill").arg(pid.to_string()).status();
-                    }
-                }
-                None => println!("no localnet state found"),
+            if let Some(pid) = state.sequencer_pid {
+                println!("$ kill {pid} # sequencer");
+                let _ = Command::new("kill").arg(pid.to_string()).status();
+            } else {
+                println!("no localnet state found");
             }
 
             if state_path.exists() {
@@ -635,64 +388,44 @@ fn cmd_localnet(args: &[String]) -> DynResult<()> {
             }
         }
         "status" => {
-            let state = read_localnet_state(&state_path).unwrap_or_default();
-            match state.mode {
-                Some(LocalnetMode::Docker) => {
-                    println!("mode: docker");
-                    let out = run_capture(
-                        Command::new("docker")
-                            .current_dir(&lssa)
-                            .arg("compose")
-                            .arg("ps"),
-                        "docker compose ps",
-                    )?;
-                    print!("{}", out.stdout);
-                }
-                Some(LocalnetMode::Manual) => {
-                    println!("mode: manual");
-                    for (name, pid) in state.pids {
-                        println!("{name}: pid={pid} running={}", pid_alive(pid));
-                    }
-                }
-                None => println!("mode: unknown (state missing)"),
+            if args.len() != 1 {
+                return Err("usage: logos-scaffold localnet status".into());
             }
 
+            let state = read_localnet_state(&state_path).unwrap_or_default();
+            if let Some(pid) = state.sequencer_pid {
+                println!("sequencer: pid={pid} running={}", pid_alive(pid));
+            } else {
+                println!("sequencer: not tracked (state missing)");
+            }
             println!("port 3040 sequencer: {}", port_open("127.0.0.1:3040"));
-            println!("port 8779 indexer: {}", port_open("127.0.0.1:8779"));
-            println!("port 18080 node(docker): {}", port_open("127.0.0.1:18080"));
-            println!("port 8080 node(manual): {}", port_open("127.0.0.1:8080"));
         }
         "logs" => {
-            let component = args.get(1).cloned();
-            let state = read_localnet_state(&state_path).unwrap_or_default();
-            match state.mode {
-                Some(LocalnetMode::Docker) => {
-                    let mut cmd = Command::new("docker");
-                    cmd.current_dir(&lssa)
-                        .arg("compose")
-                        .arg("logs")
-                        .arg("--tail")
-                        .arg("200");
-                    if let Some(c) = component {
-                        cmd.arg(c);
+            let mut tail: usize = 200;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--tail" => {
+                        let value = args.get(i + 1).ok_or("--tail requires value")?;
+                        tail = value
+                            .parse::<usize>()
+                            .map_err(|_| "--tail expects positive integer")?;
+                        i += 2;
                     }
-                    let out = run_capture(&mut cmd, "docker compose logs")?;
-                    print!("{}", out.stdout);
+                    other => return Err(format!("unknown flag for localnet logs: {other}").into()),
                 }
-                Some(LocalnetMode::Manual) => {
-                    let selected = component.unwrap_or_else(|| "sequencer".to_string());
-                    let path = logs_dir.join(format!("{selected}.log"));
-                    if !path.exists() {
-                        return Err(format!("missing log file: {}", path.display()).into());
-                    }
-                    let content = fs::read_to_string(path)?;
-                    let lines: Vec<&str> = content.lines().collect();
-                    let start = lines.len().saturating_sub(200);
-                    for line in &lines[start..] {
-                        println!("{line}");
-                    }
-                }
-                None => println!("no localnet state found"),
+            }
+
+            let log_path = logs_dir.join("sequencer.log");
+            if !log_path.exists() {
+                return Err(format!("missing log file: {}", log_path.display()).into());
+            }
+
+            let content = fs::read_to_string(log_path)?;
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(tail);
+            for line in &lines[start..] {
+                println!("{line}");
             }
         }
         other => return Err(format!("unknown localnet command: {other}").into()),
@@ -701,167 +434,9 @@ fn cmd_localnet(args: &[String]) -> DynResult<()> {
     Ok(())
 }
 
-fn cmd_example(args: &[String]) -> DynResult<()> {
-    if args.len() != 2 || args[0] != "program-deployment" || args[1] != "run" {
-        return Err("usage: scaffold example program-deployment run".into());
-    }
-
-    let project = load_project()?;
-    let lssa = PathBuf::from(&project.config.lssa.path);
-    let wallet_bin = project.config.wallet_binary.clone();
-    let wallet_home = project.root.join(&project.config.wallet_home_dir);
-    fs::create_dir_all(&wallet_home)?;
-
-    prepare_wallet_home(&lssa, &wallet_home)?;
-
-    run_wallet(&wallet_bin, &wallet_home, &["check-health"])?;
-
-    run_checked(
-        Command::new("cargo")
-            .current_dir(&project.root)
-            .arg("risczero")
-            .arg("build")
-            .arg("--manifest-path")
-            .arg("methods/guest/Cargo.toml"),
-        "build example program methods",
-    )?;
-
-    let hello_bin = project
-        .root
-        .join("target/riscv32im-risc0-zkvm-elf/docker/hello_world.bin");
-    if !hello_bin.exists() {
-        return Err(format!("missing compiled binary: {}", hello_bin.display()).into());
-    }
-
-    run_wallet(
-        &wallet_bin,
-        &wallet_home,
-        &["deploy-program", hello_bin.to_str().ok_or("invalid hello_world path")?],
-    )?;
-
-    let output_new = run_wallet(&wallet_bin, &wallet_home, &["account", "new", "public"])?;
-    let app_account = parse_public_id(&output_new.stdout)?;
-
-    run_checked(
-        Command::new("cargo")
-            .current_dir(&project.root)
-            .env("NSSA_WALLET_HOME_DIR", wallet_home.display().to_string())
-            .arg("run")
-            .arg("--bin")
-            .arg("run_hello_world")
-            .arg(hello_bin.to_str().ok_or("invalid hello_world path")?)
-            .arg(&app_account),
-        "run hello_world (first)",
-    )?;
-
-    let first_state = run_wallet(
-        &wallet_bin,
-        &wallet_home,
-        &[
-            "account",
-            "get",
-            "--raw",
-            "--account-id",
-            &format!("Public/{app_account}"),
-        ],
-    )?;
-    if first_state.stdout.contains("Uninitialized") {
-        return Err("public program run did not modify account".into());
-    }
-
-    let transfer_from = parse_public_id(
-        &run_wallet(&wallet_bin, &wallet_home, &["account", "new", "public"])?
-            .stdout,
-    )?;
-    let transfer_to = parse_public_id(
-        &run_wallet(&wallet_bin, &wallet_home, &["account", "new", "public"])?
-            .stdout,
-    )?;
-
-    run_wallet(
-        &wallet_bin,
-        &wallet_home,
-        &[
-            "auth-transfer",
-            "init",
-            "--account-id",
-            &format!("Public/{transfer_from}"),
-        ],
-    )?;
-    run_wallet(
-        &wallet_bin,
-        &wallet_home,
-        &[
-            "auth-transfer",
-            "init",
-            "--account-id",
-            &format!("Public/{transfer_to}"),
-        ],
-    )?;
-    run_wallet(
-        &wallet_bin,
-        &wallet_home,
-        &[
-            "auth-transfer",
-            "send",
-            "--from",
-            &format!("Public/{transfer_from}"),
-            "--to",
-            &format!("Public/{transfer_to}"),
-            "--amount",
-            "0",
-        ],
-    )?;
-
-    run_checked(
-        Command::new("cargo")
-            .current_dir(&project.root)
-            .env("NSSA_WALLET_HOME_DIR", wallet_home.display().to_string())
-            .arg("run")
-            .arg("--bin")
-            .arg("run_hello_world")
-            .arg(hello_bin.to_str().ok_or("invalid hello_world path")?)
-            .arg(&app_account),
-        "run hello_world (second modify)",
-    )?;
-
-    let second_state = run_wallet(
-        &wallet_bin,
-        &wallet_home,
-        &[
-            "account",
-            "get",
-            "--raw",
-            "--account-id",
-            &format!("Public/{app_account}"),
-        ],
-    )?;
-
-    if first_state.stdout.trim() == second_state.stdout.trim() {
-        return Err("expected account state change after second modification run".into());
-    }
-
-    let artifact_path = project
-        .root
-        .join(".scaffold/state/program_deployment_success.json");
-    let artifact = format!(
-        "{{\n  \"example\": \"program-deployment\",\n  \"version\": \"v0.1\",\n  \"program\": \"hello_world\",\n  \"app_account\": \"{}\",\n  \"public_transfer\": {{\n    \"from\": \"{}\",\n    \"to\": \"{}\",\n    \"amount\": 0\n  }},\n  \"first_state\": {},\n  \"second_state\": {}\n}}\n",
-        app_account,
-        transfer_from,
-        transfer_to,
-        json_string(first_state.stdout.trim()),
-        json_string(second_state.stdout.trim())
-    );
-    write_text(&artifact_path, &artifact)?;
-    println!("success artifact: {}", artifact_path.display());
-
-    Ok(())
-}
-
 fn cmd_doctor() -> DynResult<()> {
     let project = load_project()?;
     let lssa = PathBuf::from(&project.config.lssa.path);
-    let logos = PathBuf::from(&project.config.logos_blockchain.path);
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     let localnet_state_path = project.root.join(".scaffold/state/localnet.state");
 
@@ -870,91 +445,53 @@ fn cmd_doctor() -> DynResult<()> {
     rows.push(check_binary("git", true));
     rows.push(check_binary("rustc", true));
     rows.push(check_binary("cargo", true));
-    rows.push(check_binary("docker", false));
+    rows.push(check_binary(&project.config.wallet_binary, true));
 
     rows.push(check_repo("lssa", &lssa, &project.config.lssa.pin));
-    rows.push(check_repo(
-        "logos-blockchain",
-        &logos,
-        &project.config.logos_blockchain.pin,
-    ));
 
-    rows.push(check_path(
-        "node binary",
-        &logos.join("target/debug/logos-blockchain-node"),
-        "Run `scaffold deps build`",
-    ));
-    rows.push(check_path(
-        "indexer binary",
-        &lssa.join("target/release/indexer_service"),
-        "Run `scaffold deps build`",
-    ));
+    rows.push(CheckRow {
+        status: if project.config.lssa.pin == DEFAULT_LSSA_PIN {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Warn
+        },
+        name: "lssa standalone pin".to_string(),
+        detail: format!(
+            "configured pin={} expected={}",
+            project.config.lssa.pin, DEFAULT_LSSA_PIN
+        ),
+        remediation: if project.config.lssa.pin == DEFAULT_LSSA_PIN {
+            None
+        } else {
+            Some(format!(
+                "Set repos.lssa.pin in scaffold.toml to {}",
+                DEFAULT_LSSA_PIN
+            ))
+        },
+    });
+
+    rows.push(check_standalone_support(&lssa));
+
     rows.push(check_path(
         "sequencer binary",
         &lssa.join("target/release/sequencer_runner"),
-        "Run `scaffold deps build`",
+        "Run `logos-scaffold setup`",
     ));
 
-    let local_circuits = project.root.join(".scaffold/circuits");
-    if local_circuits.exists() {
-        rows.push(CheckRow {
-            status: CheckStatus::Pass,
-            name: "local circuits cache".to_string(),
-            detail: format!("exists at {}", local_circuits.display()),
-            remediation: None,
-        });
-    } else {
-        rows.push(CheckRow {
-            status: CheckStatus::Warn,
-            name: "local circuits cache".to_string(),
-            detail: "missing .scaffold/circuits".to_string(),
-            remediation: Some(
-                "Run `scaffold deps circuits import --from-global` or `scaffold deps build`"
-                    .to_string(),
-            ),
-        });
-    }
-
-    let global_circuits = home_dir()?.join(".logos-blockchain-circuits");
-    if global_circuits.exists() {
-        rows.push(CheckRow {
-            status: CheckStatus::Warn,
-            name: "global circuits cache".to_string(),
-            detail: format!("exists at {}", global_circuits.display()),
-            remediation: Some(
-                "scaffold uses .scaffold/circuits; global cache is ignored unless your environment overrides it"
-                    .to_string(),
-            ),
-        });
-    }
-
-    rows.push(check_port("sequencer port 3040", "127.0.0.1:3040"));
-    rows.push(check_port("indexer port 8779", "127.0.0.1:8779"));
-    rows.push(CheckRow {
-        status: if port_open("127.0.0.1:18080") || port_open("127.0.0.1:8080") {
-            CheckStatus::Pass
-        } else {
-            CheckStatus::Fail
-        },
-        name: "node port 18080/8080".to_string(),
-        detail: "docker node or manual node port".to_string(),
-        remediation: Some("Run `scaffold localnet start`".to_string()),
-    });
+    rows.push(check_port_warn(
+        "sequencer port 3040",
+        "127.0.0.1:3040",
+        "Run `logos-scaffold localnet start`",
+    ));
 
     if localnet_state_path.exists() {
         match read_localnet_state(&localnet_state_path) {
             Ok(state) => {
-                let detail = match state.mode {
-                    Some(LocalnetMode::Docker) => "state file mode=docker".to_string(),
-                    Some(LocalnetMode::Manual) => {
-                        let mut chunks = Vec::new();
-                        for (name, pid) in state.pids {
-                            chunks.push(format!("{name}:{}", if pid_alive(pid) { "up" } else { "down" }));
-                        }
-                        format!("state file mode=manual ({})", chunks.join(", "))
-                    }
-                    None => "state file present with no mode".to_string(),
+                let detail = match state.sequencer_pid {
+                    Some(pid) => format!("sequencer pid={pid} running={}", pid_alive(pid)),
+                    None => "state file present but sequencer pid missing".to_string(),
                 };
+
                 rows.push(CheckRow {
                     status: CheckStatus::Pass,
                     name: "runtime state file".to_string(),
@@ -966,7 +503,7 @@ fn cmd_doctor() -> DynResult<()> {
                 status: CheckStatus::Warn,
                 name: "runtime state file".to_string(),
                 detail: err.to_string(),
-                remediation: Some("Recreate state via `scaffold localnet start`".to_string()),
+                remediation: Some("Recreate state via `logos-scaffold localnet start`".to_string()),
             }),
         }
     } else {
@@ -974,18 +511,7 @@ fn cmd_doctor() -> DynResult<()> {
             status: CheckStatus::Warn,
             name: "runtime state file".to_string(),
             detail: "missing .scaffold/state/localnet.state".to_string(),
-            remediation: Some("Run `scaffold localnet start`".to_string()),
-        });
-    }
-
-    rows.push(check_binary(&project.config.wallet_binary, true));
-
-    if which(&project.config.wallet_binary).is_none() {
-        rows.push(CheckRow {
-            status: CheckStatus::Fail,
-            name: "wallet install command".to_string(),
-            detail: "wallet binary is missing".to_string(),
-            remediation: Some("cargo install --path wallet --force".to_string()),
+            remediation: Some("Run `logos-scaffold localnet start`".to_string()),
         });
     }
 
@@ -1015,7 +541,7 @@ fn cmd_doctor() -> DynResult<()> {
             status: CheckStatus::Warn,
             name: "wallet network config".to_string(),
             detail: "missing .scaffold/wallet/config.json".to_string(),
-            remediation: Some("Run `scaffold example program-deployment run` once".to_string()),
+            remediation: Some("Run `logos-scaffold setup`".to_string()),
         });
     }
 
@@ -1059,7 +585,10 @@ fn cmd_doctor() -> DynResult<()> {
                         status: CheckStatus::Fail,
                         name: "wallet usability".to_string(),
                         detail: one_line(&out.stderr),
-                        remediation: Some("Verify localnet, wallet config, and NSSA_WALLET_HOME_DIR".to_string()),
+                        remediation: Some(
+                            "Verify localnet, wallet config, and NSSA_WALLET_HOME_DIR"
+                                .to_string(),
+                        ),
                     });
                 }
             }
@@ -1081,41 +610,64 @@ fn cmd_doctor() -> DynResult<()> {
     Ok(())
 }
 
-fn sync_repo(repo: &mut RepoRef, update_pins: bool, label: &str) -> DynResult<()> {
+fn sync_repo_to_pin(repo: &mut RepoRef, label: &str) -> DynResult<()> {
     let path = PathBuf::from(&repo.path);
-    if !path.exists() {
-        ensure_repo_present(&path, &repo.source, label)?;
+    sync_repo_to_pin_at_path(&path, &repo.source, &repo.pin, label)?;
+    repo.pin = git_head_sha(&path)?;
+    Ok(())
+}
+
+fn sync_repo_to_pin_at_path(path: &Path, source: &str, pin: &str, label: &str) -> DynResult<()> {
+    ensure_repo_present(path, source, label)?;
+
+    let _ = run_checked(
+        Command::new("git")
+            .current_dir(path)
+            .arg("fetch")
+            .arg("--all")
+            .arg("--tags"),
+        &format!("git fetch ({label})"),
+    );
+
+    ensure_pin_exists(path, pin, label)?;
+
+    run_checked(
+        Command::new("git")
+            .current_dir(path)
+            .arg("checkout")
+            .arg(pin),
+        &format!("git checkout pin ({label})"),
+    )?;
+
+    let head = git_head_sha(path)?;
+    if head != pin {
+        return Err(format!(
+            "{label} pin mismatch after checkout (expected {}, got {})",
+            pin, head
+        )
+        .into());
     }
 
-    if !update_pins {
-        let _ = run_checked(
-            Command::new("git")
-                .current_dir(&path)
-                .arg("fetch")
-                .arg("--all")
-                .arg("--tags"),
-            &format!("git fetch ({label})"),
-        );
+    Ok(())
+}
 
-        run_checked(
-            Command::new("git")
-                .current_dir(&path)
-                .arg("checkout")
-                .arg(&repo.pin),
-            &format!("git checkout pin ({label})"),
-        )?;
-
-        let head = git_head_sha(&path)?;
-        if head != repo.pin {
-            return Err(format!(
-                "{label} pin mismatch after checkout (expected {}, got {})",
-                repo.pin, head
-            )
-            .into());
-        }
-    } else {
-        let head = git_head_sha(&path)?;
-        repo.pin = head;
+fn ensure_pin_exists(path: &Path, pin: &str, label: &str) -> DynResult<()> {
+    let rev = format!("{pin}^{{commit}}");
+    if run_capture(
+        Command::new("git")
+            .current_dir(path)
+            .arg("rev-parse")
+            .arg("--verify")
+            .arg(&rev),
+        &format!("verify pin ({label})"),
+    )
+    .is_err()
+    {
+        return Err(format!(
+            "configured {label} pin {pin} is not available in {}. Ensure the repo source contains this commit (try `--lssa-path` pointing to a repo that has it).",
+            path.display()
+        )
+        .into());
     }
 
     Ok(())
@@ -1150,11 +702,27 @@ fn ensure_repo_present(path: &Path, source: &str, label: &str) -> DynResult<()> 
 
 fn load_project() -> DynResult<Project> {
     let cwd = env::current_dir()?;
-    let root = find_project_root(cwd).ok_or("no scaffold.toml in current dir or parents")?;
+    let root = find_project_root(cwd.clone()).ok_or_else(|| {
+        format!(
+            "Not a logos-scaffold project at {}. Run `logos-scaffold create <name>` (or `logos-scaffold new <name>`) first.",
+            cwd.display()
+        )
+    })?;
+
     let config_path = root.join("scaffold.toml");
     let cfg_text = fs::read_to_string(&config_path)?;
     let cfg = parse_config(&cfg_text)?;
     Ok(Project { root, config: cfg })
+}
+
+fn run_in_project_dir(path: Option<&Path>, op: impl FnOnce() -> DynResult<()>) -> DynResult<()> {
+    let original = env::current_dir()?;
+    if let Some(path) = path {
+        env::set_current_dir(path)?;
+    }
+    let result = op();
+    let _ = env::set_current_dir(original);
+    result
 }
 
 fn save_project_config(project: &Project) -> DynResult<()> {
@@ -1226,12 +794,6 @@ fn parse_config(text: &str) -> DynResult<Config> {
     let mut lssa_path = String::new();
     let mut lssa_pin = String::new();
 
-    let mut logos_url = String::new();
-    let mut logos_source = String::new();
-    let mut logos_path = String::new();
-    let mut logos_pin = String::new();
-
-    let mut preferred = String::new();
     let mut wallet_binary = String::new();
     let mut wallet_home_dir = String::new();
 
@@ -1240,6 +802,7 @@ fn parse_config(text: &str) -> DynResult<Config> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+
         if line.starts_with('[') && line.ends_with(']') {
             section = line[1..line.len() - 1].to_string();
             continue;
@@ -1268,22 +831,6 @@ fn parse_config(text: &str) -> DynResult<Config> {
                     lssa_pin = value;
                 }
             }
-            "repos.logos_blockchain" => {
-                if key == "url" {
-                    logos_url = value;
-                } else if key == "source" {
-                    logos_source = value;
-                } else if key == "path" {
-                    logos_path = value;
-                } else if key == "pin" {
-                    logos_pin = value;
-                }
-            }
-            "runtime" => {
-                if key == "preferred_mode" {
-                    preferred = value;
-                }
-            }
             "wallet" => {
                 if key == "binary" {
                     wallet_binary = value;
@@ -1295,20 +842,23 @@ fn parse_config(text: &str) -> DynResult<Config> {
         }
     }
 
-    if version.is_empty()
-        || cache_root.is_empty()
-        || lssa_url.is_empty()
-        || lssa_source.is_empty()
-        || lssa_path.is_empty()
-        || lssa_pin.is_empty()
-        || logos_url.is_empty()
-        || logos_source.is_empty()
-        || logos_path.is_empty()
-        || logos_pin.is_empty()
-        || wallet_binary.is_empty()
-        || wallet_home_dir.is_empty()
-    {
-        return Err("invalid scaffold.toml: missing required keys".into());
+    if version.is_empty() || cache_root.is_empty() {
+        return Err("invalid scaffold.toml: missing [scaffold] keys".into());
+    }
+
+    if lssa_url.is_empty() {
+        lssa_url = LSSA_URL.to_string();
+    }
+
+    if lssa_source.is_empty() || lssa_path.is_empty() || lssa_pin.is_empty() {
+        return Err("invalid scaffold.toml: missing required repos.lssa keys".into());
+    }
+
+    if wallet_binary.is_empty() {
+        wallet_binary = DEFAULT_WALLET_BINARY.to_string();
+    }
+    if wallet_home_dir.is_empty() {
+        wallet_home_dir = ".scaffold/wallet".to_string();
     }
 
     Ok(Config {
@@ -1320,16 +870,6 @@ fn parse_config(text: &str) -> DynResult<Config> {
             path: lssa_path,
             pin: lssa_pin,
         },
-        logos_blockchain: RepoRef {
-            url: logos_url,
-            source: logos_source,
-            path: logos_path,
-            pin: logos_pin,
-        },
-        preferred_mode: match preferred.as_str() {
-            "manual" => LocalnetMode::Manual,
-            _ => LocalnetMode::Docker,
-        },
         wallet_binary,
         wallet_home_dir,
     })
@@ -1337,36 +877,16 @@ fn parse_config(text: &str) -> DynResult<Config> {
 
 fn serialize_config(cfg: &Config) -> String {
     format!(
-        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[repos.logos_blockchain]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[runtime]\npreferred_mode = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \"{}\"\n",
+        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \"{}\"\n",
         escape_toml_string(&cfg.version),
         escape_toml_string(&cfg.cache_root),
         escape_toml_string(&cfg.lssa.url),
         escape_toml_string(&cfg.lssa.source),
         escape_toml_string(&cfg.lssa.path),
         escape_toml_string(&cfg.lssa.pin),
-        escape_toml_string(&cfg.logos_blockchain.url),
-        escape_toml_string(&cfg.logos_blockchain.source),
-        escape_toml_string(&cfg.logos_blockchain.path),
-        escape_toml_string(&cfg.logos_blockchain.pin),
-        mode_to_str(&cfg.preferred_mode),
         escape_toml_string(&cfg.wallet_binary),
         escape_toml_string(&cfg.wallet_home_dir),
     )
-}
-
-fn parse_mode(value: &str) -> DynResult<LocalnetMode> {
-    match value {
-        "docker" => Ok(LocalnetMode::Docker),
-        "manual" => Ok(LocalnetMode::Manual),
-        _ => Err("mode must be docker or manual".into()),
-    }
-}
-
-fn mode_to_str(mode: &LocalnetMode) -> &'static str {
-    match mode {
-        LocalnetMode::Docker => "docker",
-        LocalnetMode::Manual => "manual",
-    }
 }
 
 fn unquote(value: &str) -> String {
@@ -1478,17 +998,6 @@ fn spawn_to_log(cmd: &mut Command, log_path: &Path) -> DynResult<u32> {
     Ok(child.id())
 }
 
-fn docker_available() -> bool {
-    Command::new("docker")
-        .arg("compose")
-        .arg("version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 fn pid_alive(pid: u32) -> bool {
     Command::new("kill")
         .arg("-0")
@@ -1518,11 +1027,8 @@ fn write_text(path: &Path, text: &str) -> DynResult<()> {
 
 fn write_localnet_state(path: &Path, state: &LocalnetState) -> DynResult<()> {
     let mut content = String::new();
-    if let Some(mode) = &state.mode {
-        content.push_str(&format!("mode={}\n", mode_to_str(mode)));
-    }
-    for (name, pid) in &state.pids {
-        content.push_str(&format!("pid.{name}={pid}\n"));
+    if let Some(pid) = state.sequencer_pid {
+        content.push_str(&format!("sequencer_pid={pid}\n"));
     }
     write_text(path, &content)
 }
@@ -1537,19 +1043,10 @@ fn read_localnet_state(path: &Path) -> DynResult<LocalnetState> {
         if line.is_empty() {
             continue;
         }
-        if let Some(mode) = line.strip_prefix("mode=") {
-            state.mode = Some(parse_mode(mode)?);
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("pid.") {
-            let mut parts = rest.splitn(2, '=');
-            let name = parts.next().unwrap_or("").to_string();
-            let pid: u32 = parts
-                .next()
-                .unwrap_or("")
-                .parse()
-                .map_err(|_| "invalid pid in localnet state")?;
-            state.pids.insert(name, pid);
+
+        if let Some(rest) = line.strip_prefix("sequencer_pid=") {
+            let pid: u32 = rest.parse().map_err(|_| "invalid sequencer pid")?;
+            state.sequencer_pid = Some(pid);
         }
     }
 
@@ -1567,48 +1064,6 @@ fn prepare_wallet_home(lssa_repo: &Path, wallet_home: &Path) -> DynResult<()> {
         fs::copy(cfg_src, cfg_dst)?;
     }
     Ok(())
-}
-
-fn run_wallet(wallet_bin: &str, wallet_home: &Path, args: &[&str]) -> DynResult<Captured> {
-    let mut cmd = Command::new(wallet_bin);
-    cmd.env("NSSA_WALLET_HOME_DIR", wallet_home.display().to_string())
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let out = run_with_stdin(cmd, format!("{DEFAULT_WALLET_PASSWORD}\n"))?;
-    print!("{}", out.stdout);
-    eprint!("{}", out.stderr);
-
-    if !out.status.success() {
-        return Err("wallet command failed".into());
-    }
-
-    Ok(out)
-}
-
-fn parse_public_id(output: &str) -> DynResult<String> {
-    let marker = "Public/";
-    let start = output
-        .find(marker)
-        .ok_or("could not parse Public/<account_id> from wallet output")?;
-    let tail = &output[start + marker.len()..];
-
-    let mut id = String::new();
-    for ch in tail.chars() {
-        if ch.is_ascii_alphanumeric() {
-            id.push(ch);
-        } else {
-            break;
-        }
-    }
-
-    if id.is_empty() {
-        return Err("could not parse public account id from wallet output".into());
-    }
-
-    Ok(id)
 }
 
 fn which(binary: &str) -> Option<PathBuf> {
@@ -1641,7 +1096,6 @@ fn check_binary(binary: &str, required: bool) -> CheckRow {
             detail: "not found on PATH".to_string(),
             remediation: Some(match binary {
                 "wallet" => "Run `cargo install --path wallet --force`".to_string(),
-                "docker" => "Install Docker and verify `docker compose version`".to_string(),
                 _ => format!("Install `{binary}`"),
             }),
         }
@@ -1654,7 +1108,7 @@ fn check_repo(name: &str, path: &Path, pin: &str) -> CheckRow {
             status: CheckStatus::Fail,
             name: format!("repo {name}"),
             detail: format!("missing {}", path.display()),
-            remediation: Some("Run `scaffold deps sync`".to_string()),
+            remediation: Some("Run `logos-scaffold setup`".to_string()),
         };
     }
 
@@ -1681,7 +1135,7 @@ fn check_repo(name: &str, path: &Path, pin: &str) -> CheckRow {
                 name: format!("repo {name}"),
                 detail,
                 remediation: if status == CheckStatus::Fail {
-                    Some("Run `scaffold deps sync` or `scaffold deps sync --update-pins`".to_string())
+                    Some("Run `logos-scaffold setup`".to_string())
                 } else {
                     None
                 },
@@ -1714,7 +1168,7 @@ fn check_path(name: &str, path: &Path, remediation: &str) -> CheckRow {
     }
 }
 
-fn check_port(name: &str, addr: &str) -> CheckRow {
+fn check_port_warn(name: &str, addr: &str, remediation: &str) -> CheckRow {
     if port_open(addr) {
         CheckRow {
             status: CheckStatus::Pass,
@@ -1724,11 +1178,42 @@ fn check_port(name: &str, addr: &str) -> CheckRow {
         }
     } else {
         CheckRow {
-            status: CheckStatus::Fail,
+            status: CheckStatus::Warn,
             name: name.to_string(),
             detail: format!("{addr} not reachable"),
-            remediation: Some("Run `scaffold localnet start`".to_string()),
+            remediation: Some(remediation.to_string()),
         }
+    }
+}
+
+fn check_standalone_support(lssa_path: &Path) -> CheckRow {
+    let files = [
+        lssa_path.join("Cargo.toml"),
+        lssa_path.join("sequencer_runner/Cargo.toml"),
+        lssa_path.join("README.md"),
+    ];
+
+    for path in files {
+        if let Ok(text) = fs::read_to_string(path) {
+            if text.contains("standalone") {
+                return CheckRow {
+                    status: CheckStatus::Pass,
+                    name: "standalone support marker".to_string(),
+                    detail: "found `standalone` marker in lssa repository".to_string(),
+                    remediation: None,
+                };
+            }
+        }
+    }
+
+    CheckRow {
+        status: CheckStatus::Fail,
+        name: "standalone support marker".to_string(),
+        detail: "could not find `standalone` marker in lssa repo".to_string(),
+        remediation: Some(format!(
+            "Use an lssa source that contains standalone mode and pin {}",
+            DEFAULT_LSSA_PIN
+        )),
     }
 }
 
@@ -1755,13 +1240,44 @@ fn one_line(text: &str) -> String {
     text.replace('\n', " ").replace('\r', " ")
 }
 
-fn json_string(value: &str) -> String {
-    let escaped = value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r");
-    format!("\"{escaped}\"")
+fn suggest_command(cmd: &str) -> Option<&'static str> {
+    let known = [
+        "create", "new", "build", "setup", "localnet", "doctor", "help",
+    ];
+    let mut best: Option<(&str, usize)> = None;
+    for candidate in known {
+        let dist = edit_distance(cmd, candidate);
+        match best {
+            Some((_, best_dist)) if dist >= best_dist => {}
+            _ => best = Some((candidate, dist)),
+        }
+    }
+    match best {
+        Some((candidate, dist)) if dist <= 3 => Some(candidate),
+        _ => None,
+    }
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut dp = vec![vec![0usize; b_chars.len() + 1]; a_chars.len() + 1];
+    for (i, row) in dp.iter_mut().enumerate().take(a_chars.len() + 1) {
+        row[0] = i;
+    }
+    for j in 0..=b_chars.len() {
+        dp[0][j] = j;
+    }
+    for i in 1..=a_chars.len() {
+        for j in 1..=b_chars.len() {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let del = dp[i - 1][j] + 1;
+            let ins = dp[i][j - 1] + 1;
+            let sub = dp[i - 1][j - 1] + cost;
+            dp[i][j] = del.min(ins).min(sub);
+        }
+    }
+    dp[a_chars.len()][b_chars.len()]
 }
 
 fn to_cargo_crate_name(input: &str) -> String {
@@ -1793,11 +1309,168 @@ fn to_cargo_crate_name(input: &str) -> String {
     }
 }
 
-fn render_project_template_cargo(crate_name: &str, lssa_repo: &Path) -> String {
-    let lssa = lssa_repo.display().to_string();
+fn render_project_template_cargo(crate_name: &str, lssa_pin: &str) -> String {
     format!(
-        "[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = {{ workspace = true }}\n\n[workspace.package]\nlicense = \"MIT or Apache-2.0\"\n\n[workspace]\nresolver = \"3\"\nmembers = [\n  \".\",\n  \"methods\",\n  \"methods/guest\",\n]\n\n[workspace.dependencies]\nnssa = {{ path = \"{lssa}/nssa\" }}\nnssa_core = {{ path = \"{lssa}/nssa/core\" }}\nwallet = {{ path = \"{lssa}/wallet\" }}\n\nrisc0-zkvm = {{ version = \"3.0.5\", features = [\"std\"] }}\nrisc0-build = \"3.0.5\"\n\nhex = \"0.4.3\"\nbytemuck = \"1.24.0\"\ntokio = {{ version = \"1.28.2\", features = [\"macros\", \"net\", \"rt-multi-thread\", \"sync\", \"fs\"] }}\nclap = {{ version = \"4.5.42\", features = [\"derive\", \"env\"] }}\n\n[dependencies]\nnssa.workspace = true\nnssa_core.workspace = true\nwallet.workspace = true\n\nclap.workspace = true\ntokio = {{ workspace = true, features = [\"macros\"] }}\n"
+        "[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\nlicense = {{ workspace = true }}\n\n[workspace.package]\nlicense = \"MIT or Apache-2.0\"\n\n[workspace]\nresolver = \"3\"\nmembers = [\n  \".\",\n  \"methods\",\n  \"methods/guest\",\n]\n\n[workspace.dependencies]\nnssa = {{ git = \"https://github.com/logos-blockchain/lssa.git\", rev = \"{lssa_pin}\" }}\nnssa_core = {{ git = \"https://github.com/logos-blockchain/lssa.git\", rev = \"{lssa_pin}\" }}\nwallet = {{ git = \"https://github.com/logos-blockchain/lssa.git\", rev = \"{lssa_pin}\" }}\n\nrisc0-zkvm = {{ version = \"3.0.5\", features = [\"std\"] }}\nrisc0-build = \"3.0.5\"\n\nhex = \"0.4.3\"\nbytemuck = \"1.24.0\"\ntokio = {{ version = \"1.28.2\", features = [\"macros\", \"net\", \"rt-multi-thread\", \"sync\", \"fs\"] }}\nclap = {{ version = \"4.5.42\", features = [\"derive\", \"env\"] }}\n\n[dependencies]\nnssa.workspace = true\nnssa_core.workspace = true\nwallet.workspace = true\n\nclap.workspace = true\ntokio = {{ workspace = true, features = [\"macros\"] }}\n"
     )
+}
+
+fn render_scaffolded_project_readme() -> String {
+    r#"# Program Deployment Scaffold
+
+This project was generated by `logos-scaffold` for LSSA standalone mode only.
+
+## Prerequisites
+
+- `git`, `rustc`, `cargo`
+- `cargo risczero` installed
+- Docker running (required by `cargo risczero build`)
+- `wallet` binary (installed by `logos-scaffold setup`)
+
+## First Run
+
+```bash
+logos-scaffold setup
+logos-scaffold localnet start
+export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
+cargo risczero build --manifest-path methods/guest/Cargo.toml
+export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv32im-risc0-zkvm-elf/docker
+wallet check-health
+```
+
+## Deploy Guest Programs
+
+```bash
+wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin
+wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_authorization.bin
+wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_move_function.bin
+wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin
+wallet deploy-program $EXAMPLE_PROGRAMS_BUILD_DIR/tail_call_with_pda.bin
+```
+
+## Create Accounts
+
+Create fresh accounts and assign their IDs to shell vars:
+
+```bash
+# copy IDs from wallet output
+PUBLIC_HELLO_ACCOUNT_ID="<public-account-id>"
+PRIVATE_HELLO_ACCOUNT_ID="<private-account-id>"
+PUBLIC_AUTH_ACCOUNT_ID="<public-account-id>"
+PUBLIC_MOVE_ACCOUNT_ID="<public-account-id>"
+PRIVATE_MOVE_ACCOUNT_ID="<private-account-id>"
+```
+
+Use `wallet account new public` and `wallet account new private` enough times to fill those values.
+
+## Run All Example Binaries
+
+```bash
+cargo run --bin run_hello_world \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin \
+  $PUBLIC_HELLO_ACCOUNT_ID
+
+cargo run --bin run_hello_world_private \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin \
+  $PRIVATE_HELLO_ACCOUNT_ID
+wallet account sync-private
+
+cargo run --bin run_hello_world_with_authorization \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_authorization.bin \
+  $PUBLIC_AUTH_ACCOUNT_ID
+
+cargo run --bin run_hello_world_with_move_function \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_move_function.bin \
+  write-public \
+  $PUBLIC_MOVE_ACCOUNT_ID \
+  "hello-from-public"
+
+cargo run --bin run_hello_world_with_move_function \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_move_function.bin \
+  write-private \
+  $PRIVATE_MOVE_ACCOUNT_ID \
+  "hello-from-private"
+wallet account sync-private
+
+cargo run --bin run_hello_world_with_move_function \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world_with_move_function.bin \
+  move-data-public-to-private \
+  $PUBLIC_MOVE_ACCOUNT_ID \
+  $PRIVATE_MOVE_ACCOUNT_ID
+wallet account sync-private
+
+cargo run --bin run_hello_world_through_tail_call \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin \
+  $PUBLIC_HELLO_ACCOUNT_ID
+
+cargo run --bin run_hello_world_through_tail_call_private \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin \
+  $PRIVATE_MOVE_ACCOUNT_ID
+wallet account sync-private
+
+cargo run --bin run_hello_world_with_authorization_through_tail_call_with_pda \
+  $EXAMPLE_PROGRAMS_BUILD_DIR/tail_call_with_pda.bin
+```
+
+## Main Scaffold Commands
+
+```bash
+logos-scaffold setup
+logos-scaffold build [project-path]
+logos-scaffold localnet start
+logos-scaffold localnet status
+logos-scaffold localnet logs --tail 200
+logos-scaffold localnet stop
+logos-scaffold doctor
+```
+
+## Notes
+
+- Standalone-only: no `logos-blockchain` dependency and no `deps` or `example` CLI groups.
+- Use `export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet` before wallet commands.
+- LSSA pin is enforced by `logos-scaffold setup`.
+- `simple_tail_call` hardcodes `HELLO_WORLD_PROGRAM_ID_HEX`. If tail-call runs fail, set it to the `hello_world.bin` ImageID from the latest `cargo risczero build` output, then rebuild methods.
+"#
+    .to_string()
+}
+
+fn patch_simple_tail_call_program_id(project_root: &Path) -> DynResult<()> {
+    let path = project_root.join("methods/guest/src/bin/simple_tail_call.rs");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&path)?;
+    let marker = "const HELLO_WORLD_PROGRAM_ID_HEX: &str =";
+    let marker_pos = match content.find(marker) {
+        Some(pos) => pos,
+        None => return Ok(()),
+    };
+
+    let from_marker = &content[marker_pos..];
+    let open_quote_rel = from_marker
+        .find('"')
+        .ok_or("failed to locate opening quote for HELLO_WORLD_PROGRAM_ID_HEX")?;
+    let open_quote = marker_pos + open_quote_rel + 1;
+
+    let after_open = &content[open_quote..];
+    let close_quote_rel = after_open
+        .find('"')
+        .ok_or("failed to locate closing quote for HELLO_WORLD_PROGRAM_ID_HEX")?;
+    let close_quote = open_quote + close_quote_rel;
+
+    if &content[open_quote..close_quote] == DEFAULT_HELLO_WORLD_IMAGE_ID_HEX {
+        return Ok(());
+    }
+
+    let mut patched = String::with_capacity(content.len());
+    patched.push_str(&content[..open_quote]);
+    patched.push_str(DEFAULT_HELLO_WORLD_IMAGE_ID_HEX);
+    patched.push_str(&content[close_quote..]);
+
+    write_text(&path, &patched)?;
+    Ok(())
 }
 
 fn copy_dir_contents(src: &Path, dst: &Path) -> DynResult<()> {
@@ -1813,32 +1486,6 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> DynResult<()> {
         }
     }
     Ok(())
-}
-
-fn validate_circuits_dir(path: &Path) -> DynResult<()> {
-    let required = [
-        "poc/witness_generator",
-        "poq/witness_generator",
-        "pol/witness_generator",
-        "zksign/witness_generator",
-    ];
-    for rel in required {
-        let entry = path.join(rel);
-        if !entry.exists() {
-            return Err(format!(
-                "invalid circuits directory {} (missing {})",
-                path.display(),
-                rel
-            )
-            .into());
-        }
-    }
-    Ok(())
-}
-
-fn shell_quote(input: &str) -> String {
-    let escaped = input.replace('\'', "'\"'\"'");
-    format!("'{escaped}'")
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> DynResult<()> {
