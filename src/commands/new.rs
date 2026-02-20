@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::serialize_config;
 use crate::constants::{
@@ -130,12 +130,17 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
     }
 
     copy_dir_contents(&template_root, &target)?;
-    patch_simple_tail_call_program_id(&target)?;
+    if template_variant == FRAMEWORK_KIND_DEFAULT {
+        patch_simple_tail_call_program_id(&target)?;
+    }
     let overlay_ctx = OverlayRenderContext {
         crate_name: &crate_name,
         lssa_pin: &cfg.lssa.pin,
     };
     apply_overlay(&target, &template_variant, &overlay_ctx)?;
+    if template_variant == FRAMEWORK_KIND_LSSA_LANG {
+        cleanup_lssa_lang_hello_artifacts(&target)?;
+    }
     write_text(&target.join("scaffold.toml"), &serialize_config(&cfg))?;
 
     let old_getting_started = target.join("GETTING_STARTED.md");
@@ -151,6 +156,34 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
     println!("Cache root: {}", cfg.cache_root);
     println!("Pinned lssa: {}", cfg.lssa.pin);
     println!("Template variant: {}", cfg.framework.kind);
+
+    Ok(())
+}
+
+fn cleanup_lssa_lang_hello_artifacts(project_root: &Path) -> DynResult<()> {
+    const RUNNER_FILES: &[&str] = &[
+        "src/bin/run_hello_world.rs",
+        "src/bin/run_hello_world_private.rs",
+        "src/bin/run_hello_world_with_authorization.rs",
+        "src/bin/run_hello_world_with_move_function.rs",
+        "src/bin/run_hello_world_through_tail_call.rs",
+        "src/bin/run_hello_world_through_tail_call_private.rs",
+        "src/bin/run_hello_world_with_authorization_through_tail_call_with_pda.rs",
+    ];
+    const GUEST_METHOD_FILES: &[&str] = &[
+        "methods/guest/src/bin/hello_world.rs",
+        "methods/guest/src/bin/hello_world_with_authorization.rs",
+        "methods/guest/src/bin/hello_world_with_move_function.rs",
+        "methods/guest/src/bin/simple_tail_call.rs",
+        "methods/guest/src/bin/tail_call_with_pda.rs",
+    ];
+
+    for rel_path in RUNNER_FILES.iter().chain(GUEST_METHOD_FILES) {
+        let path = project_root.join(rel_path);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+    }
 
     Ok(())
 }

@@ -1,18 +1,23 @@
 # logos-scaffold
 
-`logos-scaffold` is a Rust CLI for bootstrapping LSSA `program_deployment` projects in standalone mode.
+`logos-scaffold` is a Rust CLI that bootstraps local LSSA development projects.
+It supports two templates:
 
-## Scope
+- `default`: hello-world style examples from `program_deployment`.
+- `lssa-lang`: Anchor-inspired DX with annotation metadata, IDL generation, and generated Rust clients.
 
-- Single external dependency: [lssa](https://github.com/logos-blockchain/lssa/)
-- Standalone sequencer flow only
-- No `logos-blockchain` dependency
-- No full-stack/circuits management
+## Prerequisites
 
-## Build
+- `git`
+- `rustup`, `rustc`, `cargo`
+- Docker (required for guest method builds)
+
+## Install / Build
 
 ```bash
 cargo build
+# or run directly from source
+cargo run -- --help
 ```
 
 ## CLI
@@ -23,7 +28,6 @@ logos-scaffold new <name> [--template default|lssa-lang] [--vendor-deps] [--lssa
 logos-scaffold build [project-path]
 logos-scaffold idl build [project-path]
 logos-scaffold client build [project-path]
-logos-scaffold migrate --to lssa-lang [project-path] [--dry-run]
 logos-scaffold setup
 logos-scaffold localnet start
 logos-scaffold localnet stop
@@ -32,75 +36,67 @@ logos-scaffold localnet logs [--tail N]
 logos-scaffold doctor
 ```
 
-## Command Semantics
-
-- `create` and `new` are aliases.
-- `--template default|lssa-lang` selects scaffold variant (`default` is backward-compatible baseline).
-- `setup` does LSSA sync to pinned commit, standalone sequencer build, wallet install.
-- `idl build` extracts IDL JSON from hidden metadata tests and writes deterministic JSON to `idl/`.
-- `client build` generates typed Rust clients to `src/generated/` from `idl/*.json`.
-- `migrate --to lssa-lang` upgrades an existing scaffold project to framework mode (`--dry-run` supported).
-- `build [project-path]` runs `setup` and `cargo build --workspace`; if framework kind is `lssa-lang`, it also runs `idl build` then `client build`.
-- `localnet start` runs standalone sequencer only.
-- `localnet logs` reads sequencer logs (`--tail` default is `200`).
-- `doctor` prints remediations for both `WARN` and `FAIL`, then shows summary and next steps.
-
-## Doctor UX
-
-`logos-scaffold doctor` now always prints actionable guidance:
-
-- remediations on `WARN` and `FAIL`
-- summary footer: `Summary: <pass> PASS, <warn> WARN, <fail> FAIL`
-- overall status: `Ready`, `Needs attention`, or `Failing checks`
-- deduplicated `Next steps` commands
-
-When localnet is down, doctor explicitly tells you to run:
+## Quickstart: `lssa-lang` (Token Pilot)
 
 ```bash
+logos-scaffold new my-token-app --template lssa-lang
+cd my-token-app
+
+logos-scaffold setup
 logos-scaffold localnet start
+export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
+
+# Build workspace, then generate IDL + client
+logos-scaffold build
+
+# Create accounts (copy account IDs from wallet output)
+wallet account new public
+wallet account new public
+wallet account new private
+
+# Example flow
+cargo run --bin run_token_pilot -- init --to <public_account_id>
+cargo run --bin run_token_pilot -- transfer --from <public_sender_id> --to <public_recipient_id> --amount 10
+cargo run --bin run_token_pilot -- transfer --from <public_sender_id> --to Private/<private_recipient_id> --amount 7
+wallet account sync-private
 ```
 
-This is required before running example binaries.
-
-## Pinned LSSA Commit
-
-Scaffold enforces this commit for standalone mode:
-
-- `dee3f7fa6f2bf63abef00828f246ddacade9cdaf`
-
-## Typical Flow
+## Quickstart: `default` (Hello World)
 
 ```bash
-logos-scaffold new my-app
-cd my-app
+logos-scaffold new my-hello-app --template default
+cd my-hello-app
+
 logos-scaffold setup
 logos-scaffold localnet start
 export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
 logos-scaffold build
-export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release
-wallet check-health
-```
 
-Run examples directly without passing `.bin` paths:
-
-```bash
+wallet account new public
 cargo run --bin run_hello_world -- <public_account_id>
-cargo run --bin run_hello_world_private -- <private_account_id>
-cargo run --bin run_hello_world_with_authorization -- <public_account_id>
-cargo run --bin run_hello_world_with_move_function -- write-public <public_account_id> <text>
-cargo run --bin run_hello_world_through_tail_call -- <public_account_id>
-cargo run --bin run_hello_world_through_tail_call_private -- <private_account_id>
-cargo run --bin run_hello_world_with_authorization_through_tail_call_with_pda
 ```
 
-Optional overrides for custom binaries:
+## Which Template Should I Use?
+
+- Choose `lssa-lang` if you want typed instruction/account metadata, generated IDL, and generated Rust clients.
+- Choose `default` if you want the raw hello-world style examples and manual runner flow.
+
+## Template Guides
+
+- `default` guide: `templates/default/README.md`
+- `lssa-lang` guide: `templates/lssa-lang/README.md`
+- `lssa-lang` macro guide section: `templates/lssa-lang/README.md#macro-guide`
+
+## Troubleshooting
 
 ```bash
-cargo run --bin run_hello_world -- --program-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <public_account_id>
-cargo run --bin run_hello_world_through_tail_call_private -- --simple-tail-call-path "$EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin" --hello-world-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <private_account_id>
+logos-scaffold doctor
+logos-scaffold localnet status
+logos-scaffold localnet logs --tail 200
 ```
 
-If tail-call examples fail with `InvalidProgramBehavior`, update
-`methods/guest/src/bin/simple_tail_call.rs` constant
-`HELLO_WORLD_PROGRAM_ID_HEX` to the `hello_world.bin` ImageID from
-the latest `cargo risczero build` output, then rebuild methods.
+If localnet is down, start it:
+
+```bash
+logos-scaffold localnet start
+```

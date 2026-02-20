@@ -7,12 +7,6 @@ use crate::state::write_text;
 use crate::DynResult;
 static TEMPLATES_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OverlayWriteMode {
-    Overwrite,
-    SkipExisting,
-}
-
 pub(crate) struct OverlayRenderContext<'a> {
     pub(crate) crate_name: &'a str,
     pub(crate) lssa_pin: &'a str,
@@ -23,26 +17,8 @@ pub(crate) fn apply_overlay(
     variant: &str,
     ctx: &OverlayRenderContext<'_>,
 ) -> DynResult<()> {
-    apply_overlay_variant(target, variant, ctx, OverlayWriteMode::Overwrite)?;
+    apply_overlay_variant(target, variant, ctx)?;
     ensure_scaffold_in_gitignore(target)
-}
-
-pub(crate) fn apply_overlay_if_missing(
-    target: &Path,
-    variant: &str,
-    ctx: &OverlayRenderContext<'_>,
-) -> DynResult<()> {
-    apply_overlay_variant(target, variant, ctx, OverlayWriteMode::SkipExisting)?;
-    ensure_scaffold_in_gitignore(target)
-}
-
-pub(crate) fn overlay_variant_files(variant: &str) -> DynResult<Vec<PathBuf>> {
-    let variant_dir = TEMPLATES_DIR
-        .get_dir(variant)
-        .ok_or_else(|| format!("template variant not found: {variant}"))?;
-    let mut out = Vec::new();
-    collect_file_paths(variant_dir, &PathBuf::new(), &mut out)?;
-    Ok(out)
 }
 
 fn ensure_scaffold_in_gitignore(target: &Path) -> DynResult<()> {
@@ -68,13 +44,12 @@ fn apply_overlay_variant(
     target: &Path,
     variant: &str,
     ctx: &OverlayRenderContext<'_>,
-    mode: OverlayWriteMode,
 ) -> DynResult<()> {
     let variant_dir = TEMPLATES_DIR
         .get_dir(variant)
         .ok_or_else(|| format!("template variant not found: {variant}"))?;
 
-    apply_dir_recursive(variant_dir, target, &PathBuf::new(), ctx, mode)
+    apply_dir_recursive(variant_dir, target, &PathBuf::new(), ctx)
 }
 
 fn apply_dir_recursive(
@@ -82,7 +57,6 @@ fn apply_dir_recursive(
     target_root: &Path,
     relative: &Path,
     ctx: &OverlayRenderContext<'_>,
-    mode: OverlayWriteMode,
 ) -> DynResult<()> {
     for file in dir.files() {
         let file_name = file
@@ -95,10 +69,6 @@ fn apply_dir_recursive(
 
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)?;
-        }
-
-        if mode == OverlayWriteMode::SkipExisting && output_path.exists() {
-            continue;
         }
 
         let raw = file
@@ -115,28 +85,7 @@ fn apply_dir_recursive(
             .file_name()
             .ok_or_else(|| format!("invalid template dir path: {}", child.path().display()))?;
         let child_relative = relative.join(dir_name);
-        apply_dir_recursive(child, target_root, &child_relative, ctx, mode)?;
-    }
-
-    Ok(())
-}
-
-fn collect_file_paths(dir: &Dir<'_>, relative: &Path, out: &mut Vec<PathBuf>) -> DynResult<()> {
-    for file in dir.files() {
-        let file_name = file
-            .path()
-            .file_name()
-            .ok_or_else(|| format!("invalid template file path: {}", file.path().display()))?;
-        out.push(relative.join(file_name));
-    }
-
-    for child in dir.dirs() {
-        let dir_name = child
-            .path()
-            .file_name()
-            .ok_or_else(|| format!("invalid template dir path: {}", child.path().display()))?;
-        let child_relative = relative.join(dir_name);
-        collect_file_paths(child, &child_relative, out)?;
+        apply_dir_recursive(child, target_root, &child_relative, ctx)?;
     }
 
     Ok(())
