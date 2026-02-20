@@ -239,8 +239,14 @@ mod tests {
         apply_default_overlay(&target, &ctx).expect("second overlay should succeed");
         let gitignore_after = fs::read_to_string(target.join(".gitignore"))
             .expect("failed to read .gitignore after second overlay");
-        let scaffold_count = gitignore_after.lines().filter(|l| l.trim() == ".scaffold").count();
-        assert_eq!(scaffold_count, 1, "idempotent overlay must not duplicate .scaffold");
+        let scaffold_count = gitignore_after
+            .lines()
+            .filter(|l| l.trim() == ".scaffold")
+            .count();
+        assert_eq!(
+            scaffold_count, 1,
+            "idempotent overlay must not duplicate .scaffold"
+        );
 
         fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");
     }

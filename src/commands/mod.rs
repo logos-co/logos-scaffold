@@ -1,5 +1,10 @@
 pub(crate) mod build;
+pub(crate) mod deploy;
 pub(crate) mod doctor;
+pub(crate) mod interact;
 pub(crate) mod localnet;
 pub(crate) mod new;
 pub(crate) mod setup;
+pub(crate) mod slice;
+pub(crate) mod verify;
+pub(crate) mod wallet;

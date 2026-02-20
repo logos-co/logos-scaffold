@@ -2,10 +2,14 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::commands::localnet::cmd_localnet;
+use crate::commands::setup::cmd_setup;
+use crate::commands::slice::cmd_slice;
+use crate::commands::wallet::cmd_wallet;
 use crate::config::serialize_config;
 use crate::constants::{DEFAULT_LSSA_PIN, DEFAULT_WALLET_BINARY, LSSA_URL, VERSION};
 use crate::model::{Config, RepoRef};
-use crate::project::{default_cache_root, infer_repo_path};
+use crate::project::{default_cache_root, infer_repo_path, run_in_project_dir};
 use crate::repo::sync_repo_to_pin_at_path;
 use crate::state::write_text;
 use crate::template::copy::{copy_dir_contents, patch_simple_tail_call_program_id};
@@ -15,7 +19,7 @@ use crate::DynResult;
 pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
     if args.is_empty() {
         return Err(
-            "usage: logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
+            "usage: logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH] [--bootstrap]"
                 .into(),
         );
     }
@@ -24,6 +28,7 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
     let mut vendor_deps = false;
     let mut lssa_path: Option<PathBuf> = None;
     let mut cache_root_override: Option<PathBuf> = None;
+    let mut bootstrap = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -41,6 +46,10 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
                 let value = args.get(i + 1).ok_or("--cache-root requires value")?;
                 cache_root_override = Some(PathBuf::from(value));
                 i += 2;
+            }
+            "--bootstrap" => {
+                bootstrap = true;
+                i += 1;
             }
             other => return Err(format!("unknown flag for new: {other}").into()),
         }
@@ -126,6 +135,20 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
     );
     println!("Cache root: {}", cfg.cache_root);
     println!("Pinned lssa: {}", cfg.lssa.pin);
+
+    if bootstrap {
+        println!("Running bootstrap workflow...");
+        run_in_project_dir(Some(&target), || {
+            cmd_setup(&[])?;
+            let localnet_start = vec!["start".to_string()];
+            cmd_localnet(&localnet_start)?;
+            let wallet_init = vec!["init".to_string()];
+            cmd_wallet(&wallet_init)?;
+            let slice_run = vec!["run".to_string()];
+            cmd_slice(&slice_run)?;
+            Ok(())
+        })?;
+    }
 
     Ok(())
 }

@@ -1,13 +1,20 @@
 # logos-scaffold
 
-`logos-scaffold` is a Rust CLI for bootstrapping LSSA `program_deployment` projects in standalone mode.
+`logos-scaffold` is a Rust CLI for bootstrapping and validating a local-only LSSA `program_deployment` vertical slice.
 
-## Scope
+## v0.1 Scope (Local-Only)
 
 - Single external dependency: [lssa](https://github.com/logos-blockchain/lssa/)
-- Standalone sequencer flow only
+- Local sequencer runtime only (`http://127.0.0.1:3040`)
+- Deterministic wallet bootstrap + local topup flow
+- One end-to-end hello-world path: deploy, interact, verify
 - No `logos-blockchain` dependency
-- No full-stack/circuits management
+- No DevNet runtime in v0.1
+
+## Deferred to v0.2
+
+- DevNet vertical slice and multi-network profile support
+- DevNet-oriented wallet/RPC safety controls beyond local defaults
 
 ## Build
 
@@ -18,82 +25,67 @@ cargo build
 ## CLI
 
 ```bash
-logos-scaffold create <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
-logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
+logos-scaffold create <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH] [--bootstrap]
+logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH] [--bootstrap]
 logos-scaffold build [project-path]
 logos-scaffold setup
 logos-scaffold localnet start
 logos-scaffold localnet stop
 logos-scaffold localnet status
 logos-scaffold localnet logs [--tail N]
+logos-scaffold localnet reset
+logos-scaffold wallet init
+logos-scaffold wallet topup --to <Public/...>
+logos-scaffold deploy hello-world
+logos-scaffold interact hello-world --account-id <Public/...>
+logos-scaffold verify hello-world --account-id <Public/...>
+logos-scaffold slice run [--repeat N]
 logos-scaffold doctor
 ```
 
-## Command Semantics
-
-- `create` and `new` are aliases.
-- `setup` does LSSA sync to pinned commit, standalone sequencer build, wallet install.
-- `build [project-path]` runs `setup` and then `cargo build --workspace` in the same project path.
-- `localnet start` runs standalone sequencer only.
-- `localnet logs` reads sequencer logs (`--tail` default is `200`).
-- `doctor` prints remediations for both `WARN` and `FAIL`, then shows summary and next steps.
-
-## Doctor UX
-
-`logos-scaffold doctor` now always prints actionable guidance:
-
-- remediations on `WARN` and `FAIL`
-- summary footer: `Summary: <pass> PASS, <warn> WARN, <fail> FAIL`
-- overall status: `Ready`, `Needs attention`, or `Failing checks`
-- deduplicated `Next steps` commands
-
-When localnet is down, doctor explicitly tells you to run:
+## Normative Success Path
 
 ```bash
-logos-scaffold localnet start
+logos-scaffold new my-app --bootstrap
 ```
 
-This is required before running example binaries.
+`--bootstrap` runs:
 
-## Pinned LSSA Commit
+1. `logos-scaffold setup`
+2. `logos-scaffold localnet start`
+3. `logos-scaffold wallet init`
+4. `logos-scaffold slice run`
 
-Scaffold enforces this commit for standalone mode:
-
-- `dee3f7fa6f2bf63abef00828f246ddacade9cdaf`
-
-## Typical Flow
+## Manual Vertical Slice
 
 ```bash
 logos-scaffold new my-app
 cd my-app
 logos-scaffold setup
 logos-scaffold localnet start
-export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
-logos-scaffold build
-export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release
-wallet check-health
+logos-scaffold wallet init
+logos-scaffold wallet topup --to <Public/account_id>
+logos-scaffold deploy hello-world
+logos-scaffold interact hello-world --account-id <Public/account_id>
+logos-scaffold verify hello-world --account-id <Public/account_id>
 ```
 
-Run examples directly without passing `.bin` paths:
+## Reliability Check (3x)
 
 ```bash
-cargo run --bin run_hello_world -- <public_account_id>
-cargo run --bin run_hello_world_private -- <private_account_id>
-cargo run --bin run_hello_world_with_authorization -- <public_account_id>
-cargo run --bin run_hello_world_with_move_function -- write-public <public_account_id> <text>
-cargo run --bin run_hello_world_through_tail_call -- <public_account_id>
-cargo run --bin run_hello_world_through_tail_call_private -- <private_account_id>
-cargo run --bin run_hello_world_with_authorization_through_tail_call_with_pda
+logos-scaffold slice run --repeat 3
 ```
 
-Optional overrides for custom binaries:
+Latest slice artifact is written to `.scaffold/state/slice-last.json`.
 
-```bash
-cargo run --bin run_hello_world -- --program-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <public_account_id>
-cargo run --bin run_hello_world_through_tail_call_private -- --simple-tail-call-path "$EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin" --hello-world-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <private_account_id>
-```
+## Wallet Config Compatibility
 
-If tail-call examples fail with `InvalidProgramBehavior`, update
-`methods/guest/src/bin/simple_tail_call.rs` constant
-`HELLO_WORLD_PROGRAM_ID_HEX` to the `hello_world.bin` ImageID from
-the latest `cargo risczero build` output, then rebuild methods.
+v0.1 standardizes wallet config at `.scaffold/wallet/wallet_config.json`.
+
+Legacy `.scaffold/wallet/config.json` is still supported and migrated by `logos-scaffold wallet init`.
+
+## Pinned LSSA Commit
+
+Scaffold enforces:
+
+- `dee3f7fa6f2bf63abef00828f246ddacade9cdaf`

@@ -2,7 +2,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use crate::constants::{DEFAULT_LSSA_PIN, DEFAULT_WALLET_PASSWORD};
+use crate::constants::{
+    DEFAULT_LSSA_PIN, DEFAULT_WALLET_PASSWORD, LEGACY_WALLET_CONFIG_FILENAME,
+    WALLET_CONFIG_FILENAME,
+};
 use crate::doctor_checks::{
     check_binary, check_path, check_port_warn, check_repo, check_standalone_support, one_line,
     print_rows,
@@ -10,7 +13,7 @@ use crate::doctor_checks::{
 use crate::model::{CheckRow, CheckStatus};
 use crate::process::{pid_alive, run_capture, run_with_stdin, which};
 use crate::project::load_project;
-use crate::state::read_localnet_state;
+use crate::state::{legacy_wallet_config_path, read_localnet_state, wallet_config_path};
 use crate::DynResult;
 
 const STEP_SETUP: &str = "logos-scaffold setup";
@@ -122,9 +125,39 @@ pub(crate) fn cmd_doctor() -> DynResult<()> {
         });
     }
 
-    let wallet_cfg = wallet_home.join("config.json");
-    if wallet_cfg.exists() {
-        let cfg_text = fs::read_to_string(&wallet_cfg)?;
+    let wallet_cfg_primary = wallet_config_path(&wallet_home);
+    let wallet_cfg_legacy = legacy_wallet_config_path(&wallet_home);
+    let wallet_cfg = if wallet_cfg_primary.exists() {
+        Some((wallet_cfg_primary, false))
+    } else if wallet_cfg_legacy.exists() {
+        Some((wallet_cfg_legacy, true))
+    } else {
+        None
+    };
+
+    if let Some((wallet_cfg_path, using_legacy_name)) = wallet_cfg {
+        if using_legacy_name {
+            rows.push(CheckRow {
+                status: CheckStatus::Warn,
+                name: "wallet config filename".to_string(),
+                detail: format!(
+                    "using legacy `{LEGACY_WALLET_CONFIG_FILENAME}`; expected `{WALLET_CONFIG_FILENAME}`"
+                ),
+                remediation: Some(
+                    "Run `logos-scaffold wallet init` to migrate wallet config naming"
+                        .to_string(),
+                ),
+            });
+        } else {
+            rows.push(CheckRow {
+                status: CheckStatus::Pass,
+                name: "wallet config filename".to_string(),
+                detail: format!("using `{WALLET_CONFIG_FILENAME}`").to_string(),
+                remediation: None,
+            });
+        }
+
+        let cfg_text = fs::read_to_string(&wallet_cfg_path)?;
         if cfg_text.contains("127.0.0.1:3040") || cfg_text.contains("localhost:3040") {
             rows.push(CheckRow {
                 status: CheckStatus::Pass,
@@ -138,7 +171,7 @@ pub(crate) fn cmd_doctor() -> DynResult<()> {
                 name: "wallet network config".to_string(),
                 detail: "wallet may point to non-local sequencer".to_string(),
                 remediation: Some(
-                    "Set .scaffold/wallet/config.json sequencer_addr=http://127.0.0.1:3040"
+                    "Set .scaffold/wallet/wallet_config.json sequencer_addr=http://127.0.0.1:3040"
                         .to_string(),
                 ),
             });
@@ -147,7 +180,7 @@ pub(crate) fn cmd_doctor() -> DynResult<()> {
         rows.push(CheckRow {
             status: CheckStatus::Warn,
             name: "wallet network config".to_string(),
-            detail: "missing .scaffold/wallet/config.json".to_string(),
+            detail: "missing .scaffold/wallet/wallet_config.json".to_string(),
             remediation: Some("Run `logos-scaffold setup`".to_string()),
         });
     }

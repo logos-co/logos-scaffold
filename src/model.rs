@@ -26,6 +26,8 @@ pub(crate) struct Project {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LocalnetState {
     pub(crate) sequencer_pid: Option<u32>,
+    pub(crate) runtime_config_path: Option<String>,
+    pub(crate) runtime_home_dir: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
