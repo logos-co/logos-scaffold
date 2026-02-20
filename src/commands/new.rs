@@ -9,9 +9,7 @@ use crate::project::{default_cache_root, infer_repo_path};
 use crate::repo::sync_repo_to_pin_at_path;
 use crate::state::write_text;
 use crate::template::copy::{copy_dir_contents, patch_simple_tail_call_program_id};
-use crate::template::project::{
-    apply_scaffold_dx_overrides, render_project_template_cargo, render_scaffolded_project_readme,
-};
+use crate::template::project::{apply_default_overlay, OverlayRenderContext};
 use crate::DynResult;
 
 pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
@@ -109,23 +107,11 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
 
     copy_dir_contents(&template_root, &target)?;
     patch_simple_tail_call_program_id(&target)?;
-    write_text(
-        &target.join("Cargo.toml"),
-        &render_project_template_cargo(&crate_name, &cfg.lssa.pin),
-    )?;
-    apply_scaffold_dx_overrides(&target)?;
-    write_text(
-        &target.join("README.md"),
-        &render_scaffolded_project_readme(),
-    )?;
-    write_text(
-        &target.join(".scaffold/commands.md"),
-        "# Command References\n\n- standalone sequencer: RUST_LOG=info target/release/sequencer_runner sequencer_runner/configs/debug\n- lssa standalone docs: https://github.com/logos-blockchain/lssa/tree/main?tab=readme-ov-file#standalone-mode\n- wallet install: cargo install --path wallet --force\n- wallet home env: export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet\n",
-    )?;
-    write_text(
-        &target.join(".env.local"),
-        "RUST_LOG=info\nRISC0_DEV_MODE=1\n",
-    )?;
+    let overlay_ctx = OverlayRenderContext {
+        crate_name: &crate_name,
+        lssa_pin: &cfg.lssa.pin,
+    };
+    apply_default_overlay(&target, &overlay_ctx)?;
     write_text(&target.join("scaffold.toml"), &serialize_config(&cfg))?;
 
     let old_getting_started = target.join("GETTING_STARTED.md");

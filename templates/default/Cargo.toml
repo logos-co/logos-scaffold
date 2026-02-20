@@ -1,0 +1,38 @@
+[package]
+name = "{{crate_name}}"
+version = "0.1.0"
+edition = "2024"
+license = { workspace = true }
+
+[workspace.package]
+license = "MIT or Apache-2.0"
+
+[workspace]
+resolver = "3"
+members = [
+  ".",
+  "methods",
+  "methods/guest",
+]
+
+[workspace.dependencies]
+nssa = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
+nssa_core = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
+wallet = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
+
+risc0-zkvm = { version = "3.0.5", features = ["std"] }
+risc0-build = "3.0.5"
+
+hex = "0.4.3"
+bytemuck = "1.24.0"
+tokio = { version = "1.28.2", features = ["macros", "net", "rt-multi-thread", "sync", "fs"] }
+clap = { version = "4.5.42", features = ["derive", "env"] }
+
+[dependencies]
+nssa.workspace = true
+nssa_core.workspace = true
+wallet.workspace = true
+example_program_deployment_methods = { path = "methods" }
+
+clap.workspace = true
+tokio = { workspace = true, features = ["macros"] }

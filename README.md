@@ -103,10 +103,10 @@ the latest `cargo risczero build` output, then rebuild methods.
 Generated projects:
 
 - copy from `lssa/examples/program_deployment`
-- rewrite root `Cargo.toml` to pin workspace deps to `lssa` git `rev`
-- add `example_program_deployment_methods` dependency for embedded guest ELF access
-- generate pathless runner binaries with optional program-path overrides
-- generate `.gitignore` with `.scaffold/`, `target/`, `Cargo.lock.bak`
+- apply scaffold overrides from `templates/default` (embedded at compile time)
+- override root `Cargo.toml` with pinned `lssa` git `rev` and scaffold workspace deps
+- add scaffold runner binaries with optional program-path overrides
+- override `.gitignore` with `.scaffold/`, `target/`, `Cargo.lock.bak`
 - include `scaffold.toml` (LSSA-only schema)
-- include a scaffold-focused `README.md`
+- override with a scaffold-focused `README.md`
 - do not include `GETTING_STARTED.md`
