@@ -3,19 +3,23 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::config::serialize_config;
-use crate::constants::{DEFAULT_LSSA_PIN, DEFAULT_WALLET_BINARY, LSSA_URL, VERSION};
-use crate::model::{Config, RepoRef};
+use crate::constants::{
+    DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
+    DEFAULT_LSSA_PIN, DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LSSA_LANG,
+    LSSA_URL, VERSION,
+};
+use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, RepoRef};
 use crate::project::{default_cache_root, infer_repo_path};
 use crate::repo::sync_repo_to_pin_at_path;
 use crate::state::write_text;
 use crate::template::copy::{copy_dir_contents, patch_simple_tail_call_program_id};
-use crate::template::project::{apply_default_overlay, OverlayRenderContext};
+use crate::template::project::{apply_overlay, OverlayRenderContext};
 use crate::DynResult;
 
 pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
     if args.is_empty() {
         return Err(
-            "usage: logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
+            "usage: logos-scaffold new <name> [--template default|lssa-lang] [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
                 .into(),
         );
     }
@@ -24,10 +28,22 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
     let mut vendor_deps = false;
     let mut lssa_path: Option<PathBuf> = None;
     let mut cache_root_override: Option<PathBuf> = None;
+    let mut template_variant = FRAMEWORK_KIND_DEFAULT.to_string();
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--template" => {
+                let value = args.get(i + 1).ok_or("--template requires value")?;
+                if value != FRAMEWORK_KIND_DEFAULT && value != FRAMEWORK_KIND_LSSA_LANG {
+                    return Err(format!(
+                        "unsupported template `{value}`. Expected `default` or `lssa-lang`."
+                    )
+                    .into());
+                }
+                template_variant = value.clone();
+                i += 2;
+            }
             "--vendor-deps" => {
                 vendor_deps = true;
                 i += 1;
@@ -98,6 +114,14 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
         },
         wallet_binary: DEFAULT_WALLET_BINARY.to_string(),
         wallet_home_dir: ".scaffold/wallet".to_string(),
+        framework: FrameworkConfig {
+            kind: template_variant.clone(),
+            version: DEFAULT_FRAMEWORK_VERSION.to_string(),
+            idl: FrameworkIdlConfig {
+                spec: DEFAULT_FRAMEWORK_IDL_SPEC.to_string(),
+                path: DEFAULT_FRAMEWORK_IDL_PATH.to_string(),
+            },
+        },
     };
 
     let template_root = lssa_repo_path.join("examples/program_deployment");
@@ -111,7 +135,7 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
         crate_name: &crate_name,
         lssa_pin: &cfg.lssa.pin,
     };
-    apply_default_overlay(&target, &overlay_ctx)?;
+    apply_overlay(&target, &template_variant, &overlay_ctx)?;
     write_text(&target.join("scaffold.toml"), &serialize_config(&cfg))?;
 
     let old_getting_started = target.join("GETTING_STARTED.md");
@@ -126,6 +150,7 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
     );
     println!("Cache root: {}", cfg.cache_root);
     println!("Pinned lssa: {}", cfg.lssa.pin);
+    println!("Template variant: {}", cfg.framework.kind);
 
     Ok(())
 }

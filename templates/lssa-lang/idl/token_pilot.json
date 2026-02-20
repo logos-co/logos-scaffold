@@ -1,0 +1,94 @@
+{
+  "errors": [],
+  "instructions": [
+    {
+      "accounts": [
+        {
+          "auth": true,
+          "claim_if_default": true,
+          "mutable": true,
+          "name": "target",
+          "ty": "String",
+          "visibility": [
+            "public",
+            "private_owned"
+          ]
+        }
+      ],
+      "args": [],
+      "discriminator": [
+        220,
+        59,
+        207,
+        236,
+        108,
+        250,
+        47,
+        100
+      ],
+      "execution": {
+        "private_owned": true,
+        "public": true
+      },
+      "name": "init",
+      "variant": "Initialize"
+    },
+    {
+      "accounts": [
+        {
+          "auth": true,
+          "claim_if_default": false,
+          "mutable": true,
+          "name": "sender",
+          "ty": "String",
+          "visibility": [
+            "public",
+            "private_owned"
+          ]
+        },
+        {
+          "auth": false,
+          "claim_if_default": true,
+          "mutable": true,
+          "name": "recipient",
+          "ty": "String",
+          "visibility": [
+            "public",
+            "private_owned"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "ty": "u128"
+        }
+      ],
+      "discriminator": [
+        163,
+        52,
+        200,
+        231,
+        140,
+        3,
+        69,
+        186
+      ],
+      "execution": {
+        "private_owned": true,
+        "public": true
+      },
+      "name": "transfer",
+      "variant": "Transfer"
+    }
+  ],
+  "metadata": {
+    "name": "token_pilot",
+    "version": "0.1.0"
+  },
+  "program": {
+    "name": "token_pilot"
+  },
+  "spec": "lssa-idl/0.1.0",
+  "types": []
+}

@@ -1,0 +1,9 @@
+[package]
+name = "lssa-client-gen"
+version = "0.1.0"
+edition = "2024"
+license = { workspace = true }
+
+[dependencies]
+lssa_idl_spec.workspace = true
+serde_json.workspace = true

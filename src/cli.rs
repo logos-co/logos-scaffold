@@ -1,6 +1,9 @@
 use crate::commands::build::cmd_build_shortcut;
+use crate::commands::client::cmd_client;
 use crate::commands::doctor::cmd_doctor;
+use crate::commands::idl::cmd_idl;
 use crate::commands::localnet::cmd_localnet;
+use crate::commands::migrate::cmd_migrate;
 use crate::commands::new::cmd_new;
 use crate::commands::setup::cmd_setup;
 use crate::constants::VERSION;
@@ -17,6 +20,9 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         "new" => cmd_new(&args[2..]),
         "setup" => cmd_setup(&args[2..]),
         "build" => cmd_build_shortcut(&args[2..]),
+        "idl" => cmd_idl(&args[2..]),
+        "client" => cmd_client(&args[2..]),
+        "migrate" => cmd_migrate(&args[2..]),
         "localnet" => cmd_localnet(&args[2..]),
         "doctor" => cmd_doctor(),
         "-h" | "--help" => {
@@ -41,10 +47,15 @@ pub(crate) fn print_help() {
     println!("logos-scaffold {VERSION}");
     println!("commands:");
     println!(
-        "  logos-scaffold create <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
+        "  logos-scaffold create <name> [--template default|lssa-lang] [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
     );
-    println!("  logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]");
+    println!(
+        "  logos-scaffold new <name> [--template default|lssa-lang] [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
+    );
     println!("  logos-scaffold build [project-path]");
+    println!("  logos-scaffold idl build [project-path]");
+    println!("  logos-scaffold client build [project-path]");
+    println!("  logos-scaffold migrate --to lssa-lang [project-path] [--dry-run]");
     println!("  logos-scaffold setup");
     println!("  logos-scaffold localnet start");
     println!("  logos-scaffold localnet stop");
@@ -55,7 +66,7 @@ pub(crate) fn print_help() {
 
 pub(crate) fn suggest_command(cmd: &str) -> Option<&'static str> {
     let known = [
-        "create", "new", "build", "setup", "localnet", "doctor", "help",
+        "create", "new", "build", "idl", "client", "migrate", "setup", "localnet", "doctor", "help",
     ];
     let mut best: Option<(&str, usize)> = None;
     for candidate in known {

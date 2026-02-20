@@ -1,0 +1,10 @@
+[package]
+name = "lssa_lang"
+version = "0.1.0"
+edition = "2024"
+license = { workspace = true }
+
+[dependencies]
+lssa_idl_spec.workspace = true
+lssa_lang_macros.workspace = true
+sha2.workspace = true

@@ -5,21 +5,44 @@ use include_dir::{include_dir, Dir};
 
 use crate::state::write_text;
 use crate::DynResult;
-
-const DEFAULT_TEMPLATE_VARIANT: &str = "default";
 static TEMPLATES_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverlayWriteMode {
+    Overwrite,
+    SkipExisting,
+}
 
 pub(crate) struct OverlayRenderContext<'a> {
     pub(crate) crate_name: &'a str,
     pub(crate) lssa_pin: &'a str,
 }
 
-pub(crate) fn apply_default_overlay(
+pub(crate) fn apply_overlay(
     target: &Path,
+    variant: &str,
     ctx: &OverlayRenderContext<'_>,
 ) -> DynResult<()> {
-    apply_overlay_variant(target, DEFAULT_TEMPLATE_VARIANT, ctx)?;
+    apply_overlay_variant(target, variant, ctx, OverlayWriteMode::Overwrite)?;
     ensure_scaffold_in_gitignore(target)
+}
+
+pub(crate) fn apply_overlay_if_missing(
+    target: &Path,
+    variant: &str,
+    ctx: &OverlayRenderContext<'_>,
+) -> DynResult<()> {
+    apply_overlay_variant(target, variant, ctx, OverlayWriteMode::SkipExisting)?;
+    ensure_scaffold_in_gitignore(target)
+}
+
+pub(crate) fn overlay_variant_files(variant: &str) -> DynResult<Vec<PathBuf>> {
+    let variant_dir = TEMPLATES_DIR
+        .get_dir(variant)
+        .ok_or_else(|| format!("template variant not found: {variant}"))?;
+    let mut out = Vec::new();
+    collect_file_paths(variant_dir, &PathBuf::new(), &mut out)?;
+    Ok(out)
 }
 
 fn ensure_scaffold_in_gitignore(target: &Path) -> DynResult<()> {
@@ -45,12 +68,13 @@ fn apply_overlay_variant(
     target: &Path,
     variant: &str,
     ctx: &OverlayRenderContext<'_>,
+    mode: OverlayWriteMode,
 ) -> DynResult<()> {
     let variant_dir = TEMPLATES_DIR
         .get_dir(variant)
         .ok_or_else(|| format!("template variant not found: {variant}"))?;
 
-    apply_dir_recursive(variant_dir, target, &PathBuf::new(), ctx)
+    apply_dir_recursive(variant_dir, target, &PathBuf::new(), ctx, mode)
 }
 
 fn apply_dir_recursive(
@@ -58,6 +82,7 @@ fn apply_dir_recursive(
     target_root: &Path,
     relative: &Path,
     ctx: &OverlayRenderContext<'_>,
+    mode: OverlayWriteMode,
 ) -> DynResult<()> {
     for file in dir.files() {
         let file_name = file
@@ -70,6 +95,10 @@ fn apply_dir_recursive(
 
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)?;
+        }
+
+        if mode == OverlayWriteMode::SkipExisting && output_path.exists() {
+            continue;
         }
 
         let raw = file
@@ -86,7 +115,28 @@ fn apply_dir_recursive(
             .file_name()
             .ok_or_else(|| format!("invalid template dir path: {}", child.path().display()))?;
         let child_relative = relative.join(dir_name);
-        apply_dir_recursive(child, target_root, &child_relative, ctx)?;
+        apply_dir_recursive(child, target_root, &child_relative, ctx, mode)?;
+    }
+
+    Ok(())
+}
+
+fn collect_file_paths(dir: &Dir<'_>, relative: &Path, out: &mut Vec<PathBuf>) -> DynResult<()> {
+    for file in dir.files() {
+        let file_name = file
+            .path()
+            .file_name()
+            .ok_or_else(|| format!("invalid template file path: {}", file.path().display()))?;
+        out.push(relative.join(file_name));
+    }
+
+    for child in dir.dirs() {
+        let dir_name = child
+            .path()
+            .file_name()
+            .ok_or_else(|| format!("invalid template dir path: {}", child.path().display()))?;
+        let child_relative = relative.join(dir_name);
+        collect_file_paths(child, &child_relative, out)?;
     }
 
     Ok(())
@@ -105,14 +155,34 @@ fn render_template_text(raw: &str, ctx: &OverlayRenderContext<'_>) -> DynResult<
 }
 
 fn find_unresolved_placeholder(text: &str) -> Option<&str> {
-    let start = text.find("{{")?;
-    let after_open = &text[start + 2..];
+    let mut offset = 0usize;
+    while let Some(rel_start) = text[offset..].find("{{") {
+        let start = offset + rel_start;
+        let after_open = &text[start + 2..];
+        let Some(end_rel) = after_open.find("}}") else {
+            break;
+        };
 
-    if let Some(end_rel) = after_open.find("}}") {
-        Some(&text[start..start + 2 + end_rel + 2])
-    } else {
-        Some(&text[start..])
+        let end = start + 2 + end_rel + 2;
+        let token = &text[start + 2..start + 2 + end_rel];
+        if is_placeholder_token(token) {
+            return Some(&text[start..end]);
+        }
+
+        offset = end;
     }
+
+    None
+}
+
+fn is_placeholder_token(token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+
+    token
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 #[cfg(test)]
@@ -121,7 +191,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{apply_default_overlay, render_template_text, OverlayRenderContext};
+    use super::{apply_overlay, render_template_text, OverlayRenderContext};
 
     fn mk_temp_dir(suffix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -144,7 +214,7 @@ mod tests {
             lssa_pin: "abc123",
         };
 
-        apply_default_overlay(&target, &ctx).expect("failed to apply default overlay");
+        apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
 
         let expected = [
             "Cargo.toml",
@@ -177,7 +247,7 @@ mod tests {
             lssa_pin: "deadbeef",
         };
 
-        apply_default_overlay(&target, &ctx).expect("failed to apply default overlay");
+        apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
 
         let cargo = fs::read_to_string(target.join("Cargo.toml"))
             .expect("failed to read generated Cargo.toml");
@@ -196,7 +266,7 @@ mod tests {
             lssa_pin: "abc123",
         };
 
-        apply_default_overlay(&target, &ctx).expect("failed to apply default overlay");
+        apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
 
         let env_text = fs::read_to_string(target.join(".env.local"))
             .expect("failed to read generated .env.local");
@@ -227,7 +297,7 @@ mod tests {
             lssa_pin: "abc123",
         };
 
-        apply_default_overlay(&target, &ctx).expect("failed to apply default overlay");
+        apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
 
         let gitignore = fs::read_to_string(target.join(".gitignore"))
             .expect("failed to read generated .gitignore");
@@ -236,11 +306,17 @@ mod tests {
             ".gitignore should contain .scaffold, got: {gitignore:?}"
         );
 
-        apply_default_overlay(&target, &ctx).expect("second overlay should succeed");
+        apply_overlay(&target, "default", &ctx).expect("second overlay should succeed");
         let gitignore_after = fs::read_to_string(target.join(".gitignore"))
             .expect("failed to read .gitignore after second overlay");
-        let scaffold_count = gitignore_after.lines().filter(|l| l.trim() == ".scaffold").count();
-        assert_eq!(scaffold_count, 1, "idempotent overlay must not duplicate .scaffold");
+        let scaffold_count = gitignore_after
+            .lines()
+            .filter(|l| l.trim() == ".scaffold")
+            .count();
+        assert_eq!(
+            scaffold_count, 1,
+            "idempotent overlay must not duplicate .scaffold"
+        );
 
         fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");
     }

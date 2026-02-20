@@ -1,0 +1,15 @@
+[package]
+name = "example_program_deployment_programs"
+version = "0.1.0"
+edition = "2024"
+license = { workspace = true }
+
+[dependencies]
+nssa_core.workspace = true
+
+hex.workspace = true
+bytemuck.workspace = true
+risc0-zkvm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+lssa_lang.workspace = true

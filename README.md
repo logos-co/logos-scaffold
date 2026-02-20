@@ -18,9 +18,12 @@ cargo build
 ## CLI
 
 ```bash
-logos-scaffold create <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
-logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
+logos-scaffold create <name> [--template default|lssa-lang] [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
+logos-scaffold new <name> [--template default|lssa-lang] [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
 logos-scaffold build [project-path]
+logos-scaffold idl build [project-path]
+logos-scaffold client build [project-path]
+logos-scaffold migrate --to lssa-lang [project-path] [--dry-run]
 logos-scaffold setup
 logos-scaffold localnet start
 logos-scaffold localnet stop
@@ -32,8 +35,12 @@ logos-scaffold doctor
 ## Command Semantics
 
 - `create` and `new` are aliases.
+- `--template default|lssa-lang` selects scaffold variant (`default` is backward-compatible baseline).
 - `setup` does LSSA sync to pinned commit, standalone sequencer build, wallet install.
-- `build [project-path]` runs `setup` and then `cargo build --workspace` in the same project path.
+- `idl build` extracts IDL JSON from hidden metadata tests and writes deterministic JSON to `idl/`.
+- `client build` generates typed Rust clients to `src/generated/` from `idl/*.json`.
+- `migrate --to lssa-lang` upgrades an existing scaffold project to framework mode (`--dry-run` supported).
+- `build [project-path]` runs `setup` and `cargo build --workspace`; if framework kind is `lssa-lang`, it also runs `idl build` then `client build`.
 - `localnet start` runs standalone sequencer only.
 - `localnet logs` reads sequencer logs (`--tail` default is `200`).
 - `doctor` prints remediations for both `WARN` and `FAIL`, then shows summary and next steps.
