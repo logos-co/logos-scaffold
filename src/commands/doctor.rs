@@ -2,13 +2,15 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use anyhow::bail;
+
 use crate::constants::{DEFAULT_LSSA_PIN, DEFAULT_WALLET_PASSWORD};
 use crate::doctor_checks::{
     check_binary, check_path, check_port_warn, check_repo, check_standalone_support, one_line,
     print_rows,
 };
-use crate::model::{CheckRow, CheckStatus};
-use crate::process::{pid_alive, run_capture, run_with_stdin, which};
+use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
+use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo, which};
 use crate::project::load_project;
 use crate::state::read_localnet_state;
 use crate::DynResult;
@@ -18,7 +20,21 @@ const STEP_LOCALNET_START: &str = "logos-scaffold localnet start";
 const STEP_EXPORT_WALLET_HOME: &str = "export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet";
 const STEP_DOCTOR: &str = "logos-scaffold doctor";
 
-pub(crate) fn cmd_doctor() -> DynResult<()> {
+pub(crate) fn cmd_doctor(as_json: bool) -> DynResult<()> {
+    if as_json {
+        set_command_echo(false);
+    }
+
+    let result = cmd_doctor_inner(as_json);
+
+    if as_json {
+        set_command_echo(true);
+    }
+
+    result
+}
+
+fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
     let project = load_project()?;
     let lssa = PathBuf::from(&project.config.lssa.path);
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
@@ -73,7 +89,7 @@ pub(crate) fn cmd_doctor() -> DynResult<()> {
             Ok(state) => {
                 let (status, detail, remediation) = match state.sequencer_pid {
                     Some(pid) => {
-                        let running = pid_alive(pid);
+                        let running = pid_running(pid);
                         let status = if running {
                             CheckStatus::Pass
                         } else {
@@ -191,9 +207,8 @@ pub(crate) fn cmd_doctor() -> DynResult<()> {
                     rows.push(CheckRow {
                         status: CheckStatus::Warn,
                         name: "wallet usability".to_string(),
-                        detail:
-                            "wallet cannot reach local sequencer at http://127.0.0.1:3040"
-                                .to_string(),
+                        detail: "wallet cannot reach local sequencer at http://127.0.0.1:3040"
+                            .to_string(),
                         remediation: Some(
                             "Run `logos-scaffold localnet start` (required before running example binaries), then `logos-scaffold doctor`"
                                 .to_string(),
@@ -223,33 +238,52 @@ pub(crate) fn cmd_doctor() -> DynResult<()> {
         }
     }
 
-    print_rows(&rows);
+    let summary = DoctorSummary {
+        pass: rows
+            .iter()
+            .filter(|r| matches!(r.status, CheckStatus::Pass))
+            .count(),
+        warn: rows
+            .iter()
+            .filter(|r| matches!(r.status, CheckStatus::Warn))
+            .count(),
+        fail: rows
+            .iter()
+            .filter(|r| matches!(r.status, CheckStatus::Fail))
+            .count(),
+    };
 
-    let pass_count = rows
-        .iter()
-        .filter(|r| matches!(r.status, CheckStatus::Pass))
-        .count();
-    let warn_count = rows
-        .iter()
-        .filter(|r| matches!(r.status, CheckStatus::Warn))
-        .count();
-    let fail_count = rows
-        .iter()
-        .filter(|r| matches!(r.status, CheckStatus::Fail))
-        .count();
-
-    println!("Summary: {pass_count} PASS, {warn_count} WARN, {fail_count} FAIL");
-
-    let doctor_status = if fail_count > 0 {
+    let doctor_status = if summary.fail > 0 {
         "Failing checks"
-    } else if warn_count > 0 {
+    } else if summary.warn > 0 {
         "Needs attention"
     } else {
         "Ready"
     };
-    println!("Doctor status: {doctor_status}");
 
     let next_steps = derive_next_steps(&rows);
+
+    if as_json {
+        let report = DoctorReport {
+            status: doctor_status.to_string(),
+            summary,
+            checks: rows,
+            next_steps,
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        if report.summary.fail > 0 {
+            bail!("doctor reported FAIL checks");
+        }
+        return Ok(());
+    }
+
+    print_rows(&rows);
+    println!(
+        "Summary: {} PASS, {} WARN, {} FAIL",
+        summary.pass, summary.warn, summary.fail
+    );
+    println!("Doctor status: {doctor_status}");
+
     if !next_steps.is_empty() {
         println!("Next steps:");
         for step in next_steps {
@@ -257,8 +291,8 @@ pub(crate) fn cmd_doctor() -> DynResult<()> {
         }
     }
 
-    if fail_count > 0 {
-        return Err("doctor reported FAIL checks".into());
+    if summary.fail > 0 {
+        bail!("doctor reported FAIL checks");
     }
 
     Ok(())
@@ -272,7 +306,7 @@ fn is_localnet_connectivity_failure(stdout: &str, stderr: &str) -> bool {
         || text.contains("localhost:3040")
 }
 
-fn derive_next_steps(rows: &[CheckRow]) -> Vec<&'static str> {
+fn derive_next_steps(rows: &[CheckRow]) -> Vec<String> {
     let mut has_warn_or_fail = false;
     let mut include_setup = false;
     let mut include_localnet_start = false;
@@ -301,16 +335,16 @@ fn derive_next_steps(rows: &[CheckRow]) -> Vec<&'static str> {
 
     let mut out = Vec::new();
     if include_setup {
-        out.push(STEP_SETUP);
+        out.push(STEP_SETUP.to_string());
     }
     if include_localnet_start {
-        out.push(STEP_LOCALNET_START);
+        out.push(STEP_LOCALNET_START.to_string());
     }
     if include_wallet_home {
-        out.push(STEP_EXPORT_WALLET_HOME);
+        out.push(STEP_EXPORT_WALLET_HOME.to_string());
     }
     if has_warn_or_fail {
-        out.push(STEP_DOCTOR);
+        out.push(STEP_DOCTOR.to_string());
     }
     out
 }

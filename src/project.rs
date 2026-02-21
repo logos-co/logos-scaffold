@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use anyhow::{anyhow, bail};
+
 use crate::config::{parse_config, serialize_config};
 use crate::model::Project;
 use crate::state::write_text;
@@ -10,7 +12,7 @@ use crate::DynResult;
 pub(crate) fn load_project() -> DynResult<Project> {
     let cwd = env::current_dir()?;
     let root = find_project_root(cwd.clone()).ok_or_else(|| {
-        format!(
+        anyhow!(
             "Not a logos-scaffold project at {}. Run `logos-scaffold create <name>` (or `logos-scaffold new <name>`) first.",
             cwd.display()
         )
@@ -90,12 +92,12 @@ pub(crate) fn home_dir() -> DynResult<PathBuf> {
     if let Ok(home) = env::var("HOME") {
         return Ok(PathBuf::from(home));
     }
-    Err("HOME is not set".into())
+    bail!("HOME is not set")
 }
 
 pub(crate) fn ensure_dir_exists(path: &Path, label: &str) -> DynResult<()> {
     if !path.exists() {
-        return Err(format!("missing {label} at {}", path.display()).into());
+        bail!("missing {label} at {}", path.display());
     }
     Ok(())
 }

@@ -2,6 +2,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::bail;
+
 use crate::model::RepoRef;
 use crate::process::{run_capture, run_checked};
 use crate::DynResult;
@@ -42,11 +44,11 @@ pub(crate) fn sync_repo_to_pin_at_path(
 
     let head = git_head_sha(path)?;
     if head != pin {
-        return Err(format!(
+        bail!(
             "{label} pin mismatch after checkout (expected {}, got {})",
-            pin, head
-        )
-        .into());
+            pin,
+            head
+        );
     }
 
     Ok(())
@@ -64,11 +66,10 @@ pub(crate) fn ensure_pin_exists(path: &Path, pin: &str, label: &str) -> DynResul
     )
     .is_err()
     {
-        return Err(format!(
+        bail!(
             "configured {label} pin {pin} is not available in {}. Ensure the repo source contains this commit (try `--lssa-path` pointing to a repo that has it).",
             path.display()
-        )
-        .into());
+        );
     }
 
     Ok(())
@@ -79,7 +80,7 @@ pub(crate) fn ensure_repo_present(path: &Path, source: &str, label: &str) -> Dyn
         if path.join(".git").exists() {
             return Ok(());
         }
-        return Err(format!("{} exists but is not a git repo: {}", label, path.display()).into());
+        bail!("{} exists but is not a git repo: {}", label, path.display());
     }
 
     if let Some(parent) = path.parent() {

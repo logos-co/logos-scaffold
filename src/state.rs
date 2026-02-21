@@ -2,6 +2,8 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
 
+use anyhow::{anyhow, bail};
+
 use crate::model::LocalnetState;
 use crate::DynResult;
 
@@ -33,7 +35,7 @@ pub(crate) fn read_localnet_state(path: &Path) -> DynResult<LocalnetState> {
         }
 
         if let Some(rest) = line.strip_prefix("sequencer_pid=") {
-            let pid: u32 = rest.parse().map_err(|_| "invalid sequencer pid")?;
+            let pid: u32 = rest.parse().map_err(|_| anyhow!("invalid sequencer pid"))?;
             state.sequencer_pid = Some(pid);
         }
     }
@@ -47,7 +49,7 @@ pub(crate) fn prepare_wallet_home(lssa_repo: &Path, wallet_home: &Path) -> DynRe
     if !cfg_dst.exists() {
         let cfg_src = lssa_repo.join("wallet/configs/debug/wallet_config.json");
         if !cfg_src.exists() {
-            return Err("missing wallet debug config in lssa repo".into());
+            bail!("missing wallet debug config in lssa repo");
         }
         fs::copy(cfg_src, cfg_dst)?;
     }

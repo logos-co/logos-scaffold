@@ -1,3 +1,4 @@
+use anyhow::{Context, anyhow};
 use clap::Parser;
 use example_program_deployment_methods::HELLO_WORLD_WITH_AUTHORIZATION_ELF;
 use nssa::{
@@ -18,31 +19,44 @@ struct Cli {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let wallet_core = WalletCore::from_env().unwrap();
+    let wallet_core = WalletCore::from_env().context("failed to initialize wallet from environment")?;
 
     let program = load_program(
         cli.program_path.as_deref(),
         HELLO_WORLD_WITH_AUTHORIZATION_ELF,
         "hello_world_with_authorization",
-    );
-    let account_id = parse_account_id(&cli.account_id);
+    )?;
+    let account_id = parse_account_id(&cli.account_id)?;
 
     let signing_key = wallet_core
         .storage()
         .user_data
         .get_pub_account_signing_key(account_id)
-        .expect("Input account should be a self owned public account");
+        .ok_or_else(|| anyhow!("input account must be a self-owned public account"))?;
 
     let greeting: Vec<u8> = vec![72, 111, 108, 97, 32, 109, 117, 110, 100, 111, 33];
     let nonces = wallet_core
         .get_accounts_nonces(vec![account_id])
         .await
-        .expect("Node should be reachable to query account data");
-    let message = Message::try_new(program.id(), vec![account_id], nonces, greeting).unwrap();
+        .context("failed to query account nonce from sequencer")?;
+    let message = Message::try_new(program.id(), vec![account_id], nonces, greeting)
+        .context("failed to build authorized transaction message")?;
     let witness_set = WitnessSet::for_message(&message, &[signing_key]);
     let tx = PublicTransaction::new(message, witness_set);
 
-    let _response = wallet_core.sequencer_client.send_tx_public(tx).await.unwrap();
+    let response = wallet_core
+        .sequencer_client
+        .send_tx_public(tx)
+        .await
+        .context("failed to submit public transaction to localnet")?;
+
+    println!(
+        "submitted transaction: status={} tx_hash={}",
+        response.status, response.tx_hash
+    );
+    println!("verification hint: wallet account get --account-id {}", cli.account_id);
+
+    Ok(())
 }
