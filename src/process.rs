@@ -92,6 +92,7 @@ pub(crate) fn spawn_to_log(cmd: &mut Command, log_path: &Path) -> DynResult<u32>
     Ok(child.id())
 }
 
+#[cfg(unix)]
 pub(crate) fn pid_alive(pid: u32) -> bool {
     Command::new("kill")
         .arg("-0")
@@ -103,6 +104,12 @@ pub(crate) fn pid_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(unix))]
+pub(crate) fn pid_alive(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(unix)]
 fn pid_is_zombie(pid: u32) -> bool {
     let output = Command::new("ps")
         .arg("-o")
@@ -128,8 +135,19 @@ fn pid_is_zombie(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(unix))]
+fn pid_is_zombie(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(unix)]
 pub(crate) fn pid_running(pid: u32) -> bool {
     pid_alive(pid) && !pid_is_zombie(pid)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn pid_running(_pid: u32) -> bool {
+    false
 }
 
 pub(crate) fn port_open(addr: &str) -> bool {
@@ -140,6 +158,7 @@ pub(crate) fn port_open(addr: &str) -> bool {
     TcpStream::connect_timeout(&parsed, Duration::from_millis(500)).is_ok()
 }
 
+#[cfg(unix)]
 pub(crate) fn listener_pid(port: u16) -> Option<u32> {
     let output = Command::new("lsof")
         .arg("-nP")
@@ -159,6 +178,11 @@ pub(crate) fn listener_pid(port: u16) -> Option<u32> {
     stdout
         .lines()
         .find_map(|line| line.trim().parse::<u32>().ok())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn listener_pid(_port: u16) -> Option<u32> {
+    None
 }
 
 pub(crate) fn which(binary: &str) -> Option<PathBuf> {

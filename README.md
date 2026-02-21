@@ -2,6 +2,11 @@
 
 `logos-scaffold` is a Rust CLI for bootstrapping LSSA `program_deployment` projects in standalone mode.
 
+## Platform
+
+The CLI is currently Unix-only.
+Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
+
 ## Scope
 
 - Single external dependency: [lssa](https://github.com/logos-blockchain/lssa/)
