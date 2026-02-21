@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::Path;
 
+use anyhow::{anyhow, bail};
+
 use crate::constants::DEFAULT_HELLO_WORLD_IMAGE_ID_HEX;
 use crate::state::write_text;
 use crate::DynResult;
@@ -21,13 +23,13 @@ pub(crate) fn patch_simple_tail_call_program_id(project_root: &Path) -> DynResul
     let from_marker = &content[marker_pos..];
     let open_quote_rel = from_marker
         .find('"')
-        .ok_or("failed to locate opening quote for HELLO_WORLD_PROGRAM_ID_HEX")?;
+        .ok_or_else(|| anyhow!("failed to locate opening quote for HELLO_WORLD_PROGRAM_ID_HEX"))?;
     let open_quote = marker_pos + open_quote_rel + 1;
 
     let after_open = &content[open_quote..];
     let close_quote_rel = after_open
         .find('"')
-        .ok_or("failed to locate closing quote for HELLO_WORLD_PROGRAM_ID_HEX")?;
+        .ok_or_else(|| anyhow!("failed to locate closing quote for HELLO_WORLD_PROGRAM_ID_HEX"))?;
     let close_quote = open_quote + close_quote_rel;
 
     if &content[open_quote..close_quote] == DEFAULT_HELLO_WORLD_IMAGE_ID_HEX {
@@ -60,7 +62,7 @@ pub(crate) fn copy_dir_contents(src: &Path, dst: &Path) -> DynResult<()> {
 
 pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> DynResult<()> {
     if !src.exists() {
-        return Err(format!("copy source does not exist: {}", src.display()).into());
+        bail!("copy source does not exist: {}", src.display());
     }
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {

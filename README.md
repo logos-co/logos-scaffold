@@ -20,40 +20,24 @@ cargo build
 ```bash
 logos-scaffold create <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
 logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
+logos-scaffold setup [--wallet-install auto|always|never]
 logos-scaffold build [project-path]
-logos-scaffold setup
-logos-scaffold localnet start
+logos-scaffold localnet start [--timeout-sec N]
 logos-scaffold localnet stop
-logos-scaffold localnet status
+logos-scaffold localnet status [--json]
 logos-scaffold localnet logs [--tail N]
-logos-scaffold doctor
+logos-scaffold doctor [--json]
+logos-scaffold help
 ```
 
 ## Command Semantics
 
 - `create` and `new` are aliases.
-- `setup` does LSSA sync to pinned commit, standalone sequencer build, wallet install.
-- `build [project-path]` runs `setup` and then `cargo build --workspace` in the same project path.
-- `localnet start` runs standalone sequencer only.
-- `localnet logs` reads sequencer logs (`--tail` default is `200`).
-- `doctor` prints remediations for both `WARN` and `FAIL`, then shows summary and next steps.
-
-## Doctor UX
-
-`logos-scaffold doctor` now always prints actionable guidance:
-
-- remediations on `WARN` and `FAIL`
-- summary footer: `Summary: <pass> PASS, <warn> WARN, <fail> FAIL`
-- overall status: `Ready`, `Needs attention`, or `Failing checks`
-- deduplicated `Next steps` commands
-
-When localnet is down, doctor explicitly tells you to run:
-
-```bash
-logos-scaffold localnet start
-```
-
-This is required before running example binaries.
+- `setup` syncs LSSA to pinned commit, builds standalone `sequencer_runner`, and installs wallet based on `--wallet-install` policy.
+- `build [project-path]` runs `setup` with wallet policy `auto` and then `cargo build --workspace`.
+- `localnet start` waits until localnet is actually ready (`pid alive` + `127.0.0.1:3040` reachable), otherwise fails with diagnostics.
+- `localnet status` distinguishes managed process, stale state, and foreign listeners.
+- `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
 
 ## Pinned LSSA Commit
 
@@ -61,7 +45,7 @@ Scaffold enforces this commit for standalone mode:
 
 - `dee3f7fa6f2bf63abef00828f246ddacade9cdaf`
 
-## Typical Flow
+## First Success Path
 
 ```bash
 logos-scaffold new my-app
@@ -73,6 +57,38 @@ logos-scaffold build
 export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release
 wallet check-health
 ```
+
+Checkpoint commands:
+
+```bash
+logos-scaffold localnet status
+logos-scaffold doctor
+```
+
+## Troubleshooting
+
+- If `localnet start` fails, inspect:
+
+```bash
+logos-scaffold localnet logs --tail 200
+```
+
+- If status reports `ownership: foreign`, stop external listeners on `127.0.0.1:3040` before starting scaffold localnet.
+- If status reports stale state, run:
+
+```bash
+logos-scaffold localnet stop
+logos-scaffold localnet start
+```
+
+- JSON status for tooling:
+
+```bash
+logos-scaffold localnet status --json
+logos-scaffold doctor --json
+```
+
+## Example Runs
 
 Run examples directly without passing `.bin` paths:
 
@@ -92,8 +108,3 @@ Optional overrides for custom binaries:
 cargo run --bin run_hello_world -- --program-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <public_account_id>
 cargo run --bin run_hello_world_through_tail_call_private -- --simple-tail-call-path "$EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin" --hello-world-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <private_account_id>
 ```
-
-If tail-call examples fail with `InvalidProgramBehavior`, update
-`methods/guest/src/bin/simple_tail_call.rs` constant
-`HELLO_WORLD_PROGRAM_ID_HEX` to the `hello_world.bin` ImageID from
-the latest `cargo risczero build` output, then rebuild methods.

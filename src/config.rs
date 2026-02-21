@@ -1,3 +1,5 @@
+use anyhow::bail;
+
 use crate::constants::{DEFAULT_WALLET_BINARY, LSSA_URL};
 use crate::model::{Config, RepoRef};
 use crate::DynResult;
@@ -62,7 +64,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     }
 
     if version.is_empty() || cache_root.is_empty() {
-        return Err("invalid scaffold.toml: missing [scaffold] keys".into());
+        bail!("invalid scaffold.toml: missing [scaffold] keys");
     }
 
     if lssa_url.is_empty() {
@@ -70,7 +72,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     }
 
     if lssa_source.is_empty() || lssa_path.is_empty() || lssa_pin.is_empty() {
-        return Err("invalid scaffold.toml: missing required repos.lssa keys".into());
+        bail!("invalid scaffold.toml: missing required repos.lssa keys");
     }
 
     if wallet_binary.is_empty() {
