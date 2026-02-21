@@ -255,7 +255,8 @@ fn build_status_report(state_path: &Path, log_path: &Path) -> LocalnetStatusRepo
     let ownership = match (tracked_pid, tracked_running, listener_present) {
         (Some(pid), true, true) => match listener_pid {
             Some(listener) if listener == pid => LocalnetOwnership::Managed,
-            Some(_) | None => LocalnetOwnership::Managed,
+            Some(_) => LocalnetOwnership::Foreign,
+            None => LocalnetOwnership::ManagedNotReady,
         },
         (Some(_), true, false) => LocalnetOwnership::ManagedNotReady,
         (Some(_), false, _) => LocalnetOwnership::StaleState,
