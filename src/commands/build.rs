@@ -4,33 +4,17 @@ use std::process::Command;
 
 use crate::commands::client::build_clients_for_current_project;
 use crate::commands::idl::build_idl_for_current_project;
-use crate::commands::setup::cmd_setup;
+use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
 use crate::constants::FRAMEWORK_KIND_LSSA_LANG;
 use crate::process::run_checked;
 use crate::project::{load_project, run_in_project_dir};
 use crate::DynResult;
 
-pub(crate) fn cmd_build_shortcut(args: &[String]) -> DynResult<()> {
-    let mut project_dir: Option<PathBuf> = None;
-
-    for arg in args {
-        if arg.starts_with("--") {
-            return Err(format!("unknown flag for build: {arg}").into());
-        }
-
-        if project_dir.is_none() {
-            project_dir = Some(PathBuf::from(arg));
-        } else {
-            return Err(format!(
-                "unexpected argument `{}`. Usage: logos-scaffold build [project-path]",
-                arg
-            )
-            .into());
-        }
-    }
-
+pub(crate) fn cmd_build_shortcut(project_dir: Option<PathBuf>) -> DynResult<()> {
     run_in_project_dir(project_dir.as_deref(), || {
-        cmd_setup(&[])?;
+        cmd_setup(SetupCommand {
+            wallet_install: WalletInstallMode::Auto,
+        })?;
         let cwd = env::current_dir()?;
         run_checked(
             Command::new("cargo")
@@ -45,6 +29,7 @@ pub(crate) fn cmd_build_shortcut(args: &[String]) -> DynResult<()> {
             build_idl_for_current_project()?;
             build_clients_for_current_project()?;
         }
+
         Ok(())
     })
 }

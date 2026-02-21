@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use anyhow::{anyhow, bail};
 use include_dir::{include_dir, Dir};
 
 use crate::state::write_text;
@@ -47,7 +48,7 @@ fn apply_overlay_variant(
 ) -> DynResult<()> {
     let variant_dir = TEMPLATES_DIR
         .get_dir(variant)
-        .ok_or_else(|| format!("template variant not found: {variant}"))?;
+        .ok_or_else(|| anyhow!("template variant not found: {variant}"))?;
 
     apply_dir_recursive(variant_dir, target, &PathBuf::new(), ctx)
 }
@@ -62,7 +63,7 @@ fn apply_dir_recursive(
         let file_name = file
             .path()
             .file_name()
-            .ok_or_else(|| format!("invalid template file path: {}", file.path().display()))?;
+            .ok_or_else(|| anyhow!("invalid template file path: {}", file.path().display()))?;
 
         let rel_path = relative.join(file_name);
         let output_path = target_root.join(&rel_path);
@@ -73,7 +74,7 @@ fn apply_dir_recursive(
 
         let raw = file
             .contents_utf8()
-            .ok_or_else(|| format!("template is not valid UTF-8: {}", file.path().display()))?;
+            .ok_or_else(|| anyhow!("template is not valid UTF-8: {}", file.path().display()))?;
         let rendered = render_template_text(raw, ctx)?;
 
         write_text(&output_path, &rendered)?;
@@ -83,7 +84,7 @@ fn apply_dir_recursive(
         let dir_name = child
             .path()
             .file_name()
-            .ok_or_else(|| format!("invalid template dir path: {}", child.path().display()))?;
+            .ok_or_else(|| anyhow!("invalid template dir path: {}", child.path().display()))?;
         let child_relative = relative.join(dir_name);
         apply_dir_recursive(child, target_root, &child_relative, ctx)?;
     }
@@ -97,7 +98,7 @@ fn render_template_text(raw: &str, ctx: &OverlayRenderContext<'_>) -> DynResult<
         .replace("{{lssa_pin}}", ctx.lssa_pin);
 
     if let Some(token) = find_unresolved_placeholder(&rendered) {
-        return Err(format!("unresolved template token `{token}`").into());
+        bail!("unresolved template token `{token}`");
     }
 
     Ok(rendered)

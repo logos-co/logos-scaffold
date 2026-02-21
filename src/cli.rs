@@ -1,97 +1,205 @@
+use std::path::PathBuf;
+
+use anyhow::anyhow;
+use clap::{CommandFactory, Parser, Subcommand};
+
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::client::cmd_client;
 use crate::commands::doctor::cmd_doctor;
 use crate::commands::idl::cmd_idl;
-use crate::commands::localnet::cmd_localnet;
-use crate::commands::new::cmd_new;
-use crate::commands::setup::cmd_setup;
-use crate::constants::VERSION;
+use crate::commands::localnet::{cmd_localnet, LocalnetAction};
+use crate::commands::new::{cmd_new, NewCommand};
+use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
+use crate::constants::{FRAMEWORK_KIND_DEFAULT, VERSION};
 use crate::DynResult;
 
+#[derive(Debug, Parser)]
+#[command(
+    name = "logos-scaffold",
+    version = VERSION,
+    disable_help_subcommand = true
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    #[command(about = "Create a new logos-scaffold project")]
+    Create(NewArgs),
+    #[command(about = "Alias for `create`")]
+    New(NewArgs),
+    Setup(SetupArgs),
+    Build(BuildArgs),
+    Idl(IdlArgs),
+    Client(ClientArgs),
+    Localnet(LocalnetArgs),
+    Doctor(DoctorArgs),
+    #[command(hide = true)]
+    Help,
+}
+
+#[derive(Debug, clap::Args)]
+struct NewArgs {
+    name: String,
+    #[arg(long, default_value = FRAMEWORK_KIND_DEFAULT)]
+    template: String,
+    #[arg(long)]
+    vendor_deps: bool,
+    #[arg(long)]
+    lssa_path: Option<PathBuf>,
+    #[arg(long)]
+    cache_root: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct SetupArgs {
+    #[arg(long, value_enum, default_value_t = WalletInstallMode::Auto)]
+    wallet_install: WalletInstallMode,
+}
+
+#[derive(Debug, clap::Args)]
+struct BuildArgs {
+    project_path: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct DoctorArgs {
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct IdlArgs {
+    #[command(subcommand)]
+    command: IdlSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum IdlSubcommand {
+    Build(IdlBuildArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct IdlBuildArgs {
+    project_path: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct ClientArgs {
+    #[command(subcommand)]
+    command: ClientSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ClientSubcommand {
+    Build(ClientBuildArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct ClientBuildArgs {
+    project_path: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct LocalnetArgs {
+    #[command(subcommand)]
+    command: LocalnetSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalnetSubcommand {
+    Start(LocalnetStartArgs),
+    Stop,
+    Status(LocalnetStatusArgs),
+    Logs(LocalnetLogsArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct LocalnetStartArgs {
+    #[arg(long, default_value_t = 20)]
+    timeout_sec: u64,
+}
+
+#[derive(Debug, clap::Args)]
+struct LocalnetStatusArgs {
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct LocalnetLogsArgs {
+    #[arg(long, default_value_t = 200)]
+    tail: usize,
+}
+
 pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
-    if args.len() < 2 {
-        print_help();
-        return Ok(());
-    }
-
-    match args[1].as_str() {
-        "create" => cmd_new(&args[2..]),
-        "new" => cmd_new(&args[2..]),
-        "setup" => cmd_setup(&args[2..]),
-        "build" => cmd_build_shortcut(&args[2..]),
-        "idl" => cmd_idl(&args[2..]),
-        "client" => cmd_client(&args[2..]),
-        "localnet" => cmd_localnet(&args[2..]),
-        "doctor" => cmd_doctor(),
-        "-h" | "--help" => {
-            print_help();
-            Ok(())
-        }
-        "-V" | "--version" => {
-            println!("{VERSION}");
-            Ok(())
-        }
-        other => {
-            if let Some(suggested) = suggest_command(other) {
-                Err(format!("unknown command: {other}. Did you mean `{suggested}`?").into())
-            } else {
-                Err(format!("unknown command: {other}").into())
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(err) => match err.kind() {
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
+                print!("{err}");
+                return Ok(());
             }
+            _ => return Err(anyhow!(err.to_string())),
+        },
+    };
+
+    match cli.command {
+        Some(Commands::Create(args)) | Some(Commands::New(args)) => cmd_new(NewCommand {
+            name: args.name,
+            template: args.template,
+            vendor_deps: args.vendor_deps,
+            lssa_path: args.lssa_path,
+            cache_root: args.cache_root,
+        }),
+        Some(Commands::Setup(args)) => cmd_setup(SetupCommand {
+            wallet_install: args.wallet_install,
+        }),
+        Some(Commands::Build(args)) => cmd_build_shortcut(args.project_path),
+        Some(Commands::Idl(idl)) => {
+            let forwarded = match idl.command {
+                IdlSubcommand::Build(args) => subcommand_with_optional_project("build", args.project_path),
+            };
+            cmd_idl(&forwarded)
         }
+        Some(Commands::Client(client)) => {
+            let forwarded = match client.command {
+                ClientSubcommand::Build(args) => {
+                    subcommand_with_optional_project("build", args.project_path)
+                }
+            };
+            cmd_client(&forwarded)
+        }
+        Some(Commands::Localnet(localnet)) => {
+            let action = match localnet.command {
+                LocalnetSubcommand::Start(args) => LocalnetAction::Start {
+                    timeout_sec: args.timeout_sec,
+                },
+                LocalnetSubcommand::Stop => LocalnetAction::Stop,
+                LocalnetSubcommand::Status(args) => LocalnetAction::Status { json: args.json },
+                LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
+            };
+            cmd_localnet(action)
+        }
+        Some(Commands::Doctor(args)) => cmd_doctor(args.json),
+        Some(Commands::Help) => print_help(),
+        None => print_help(),
     }
 }
 
-pub(crate) fn print_help() {
-    println!("logos-scaffold {VERSION}");
-    println!("commands:");
-    println!(
-        "  logos-scaffold create <name> [--template default|lssa-lang] [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
-    );
-    println!(
-        "  logos-scaffold new <name> [--template default|lssa-lang] [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
-    );
-    println!("  logos-scaffold build [project-path]");
-    println!("  logos-scaffold idl build [project-path]");
-    println!("  logos-scaffold client build [project-path]");
-    println!("  logos-scaffold setup");
-    println!("  logos-scaffold localnet start");
-    println!("  logos-scaffold localnet stop");
-    println!("  logos-scaffold localnet status");
-    println!("  logos-scaffold localnet logs [--tail N]");
-    println!("  logos-scaffold doctor");
+fn subcommand_with_optional_project(subcommand: &str, project_path: Option<PathBuf>) -> Vec<String> {
+    let mut forwarded = vec![subcommand.to_string()];
+    if let Some(path) = project_path {
+        forwarded.push(path.display().to_string());
+    }
+    forwarded
 }
 
-pub(crate) fn suggest_command(cmd: &str) -> Option<&'static str> {
-    let known = [
-        "create", "new", "build", "idl", "client", "setup", "localnet", "doctor", "help",
-    ];
-    let mut best: Option<(&str, usize)> = None;
-    for candidate in known {
-        let dist = edit_distance(cmd, candidate);
-        match best {
-            Some((_, best_dist)) if dist >= best_dist => {}
-            _ => best = Some((candidate, dist)),
-        }
-    }
-
-    match best {
-        Some((candidate, dist)) if dist <= 4 => Some(candidate),
-        _ => None,
-    }
-}
-
-pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut curr = vec![0; b.len() + 1];
-
-    for (i, ca) in a.chars().enumerate() {
-        curr[0] = i + 1;
-        for (j, cb) in b.chars().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-
-    prev[b.len()]
+pub(crate) fn print_help() -> DynResult<()> {
+    let mut cmd = Cli::command();
+    cmd.print_help()?;
+    println!();
+    Ok(())
 }

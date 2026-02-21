@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use anyhow::{bail, Context};
+
 use crate::config::serialize_config;
 use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
@@ -16,54 +18,27 @@ use crate::template::copy::{copy_dir_contents, patch_simple_tail_call_program_id
 use crate::template::project::{apply_overlay, OverlayRenderContext};
 use crate::DynResult;
 
-pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
-    if args.is_empty() {
-        return Err(
-            "usage: logos-scaffold new <name> [--template default|lssa-lang] [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]"
-                .into(),
-        );
-    }
+#[derive(Debug)]
+pub(crate) struct NewCommand {
+    pub(crate) name: String,
+    pub(crate) template: String,
+    pub(crate) vendor_deps: bool,
+    pub(crate) lssa_path: Option<PathBuf>,
+    pub(crate) cache_root: Option<PathBuf>,
+}
 
-    let name = args[0].clone();
-    let mut vendor_deps = false;
-    let mut lssa_path: Option<PathBuf> = None;
-    let mut cache_root_override: Option<PathBuf> = None;
-    let mut template_variant = FRAMEWORK_KIND_DEFAULT.to_string();
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--template" => {
-                let value = args.get(i + 1).ok_or("--template requires value")?;
-                if value != FRAMEWORK_KIND_DEFAULT && value != FRAMEWORK_KIND_LSSA_LANG {
-                    return Err(format!(
-                        "unsupported template `{value}`. Expected `default` or `lssa-lang`."
-                    )
-                    .into());
-                }
-                template_variant = value.clone();
-                i += 2;
-            }
-            "--vendor-deps" => {
-                vendor_deps = true;
-                i += 1;
-            }
-            "--lssa-path" => {
-                let value = args.get(i + 1).ok_or("--lssa-path requires value")?;
-                lssa_path = Some(PathBuf::from(value));
-                i += 2;
-            }
-            "--cache-root" => {
-                let value = args.get(i + 1).ok_or("--cache-root requires value")?;
-                cache_root_override = Some(PathBuf::from(value));
-                i += 2;
-            }
-            other => return Err(format!("unknown flag for new: {other}").into()),
+pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
+    let template_variant = match cmd.template.as_str() {
+        FRAMEWORK_KIND_DEFAULT | FRAMEWORK_KIND_LSSA_LANG => cmd.template.clone(),
+        other => {
+            bail!(
+                "unsupported template `{other}`. Expected `default` or `lssa-lang`."
+            )
         }
-    }
+    };
 
     let cwd = env::current_dir()?;
-    let target = cwd.join(name);
+    let target = cwd.join(&cmd.name);
     let crate_name = {
         let fallback = "app";
         let file_name = target
@@ -74,24 +49,25 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
     };
 
     if target.exists() {
-        return Err(format!("target exists: {}", target.display()).into());
+        bail!("target exists: {}", target.display());
     }
 
     fs::create_dir_all(target.join(".scaffold/state"))?;
     fs::create_dir_all(target.join(".scaffold/logs"))?;
 
-    let cache_root = cache_root_override.unwrap_or(default_cache_root()?);
+    let cache_root = cmd.cache_root.unwrap_or(default_cache_root()?);
     fs::create_dir_all(cache_root.join("repos"))?;
     fs::create_dir_all(cache_root.join("state"))?;
     fs::create_dir_all(cache_root.join("logs"))?;
     fs::create_dir_all(cache_root.join("builds"))?;
 
-    let lssa_source = lssa_path
+    let lssa_source = cmd
+        .lssa_path
         .or_else(|| infer_repo_path(&cwd, "lssa"))
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| LSSA_URL.to_string());
 
-    let lssa_repo_path = if vendor_deps {
+    let lssa_repo_path = if cmd.vendor_deps {
         let root = target.join(".scaffold/repos");
         fs::create_dir_all(&root)?;
         let lssa_vendor = root.join("lssa");
@@ -126,10 +102,10 @@ pub(crate) fn cmd_new(args: &[String]) -> DynResult<()> {
 
     let template_root = lssa_repo_path.join("examples/program_deployment");
     if !template_root.exists() {
-        return Err(format!("template not found at {}", template_root.display()).into());
+        bail!("template not found at {}", template_root.display());
     }
 
-    copy_dir_contents(&template_root, &target)?;
+    copy_dir_contents(&template_root, &target).context("failed to copy scaffold template")?;
     if template_variant == FRAMEWORK_KIND_DEFAULT {
         patch_simple_tail_call_program_id(&target)?;
     }

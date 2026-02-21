@@ -2,6 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use anyhow::{anyhow, bail};
+
 use crate::constants::FRAMEWORK_KIND_LSSA_LANG;
 use crate::process::run_capture;
 use crate::project::{load_project, run_in_project_dir};
@@ -14,7 +16,7 @@ const IDL_MARKER_SUFFIX: &str = " ---";
 
 pub(crate) fn cmd_idl(args: &[String]) -> DynResult<()> {
     if args.is_empty() {
-        return Err("usage: logos-scaffold idl build [project-path]".into());
+        bail!("usage: logos-scaffold idl build [project-path]");
     }
 
     match args[0].as_str() {
@@ -22,7 +24,7 @@ pub(crate) fn cmd_idl(args: &[String]) -> DynResult<()> {
             let project_dir = parse_optional_project_path(&args[1..], "logos-scaffold idl build")?;
             run_in_project_dir(project_dir.as_deref(), build_idl_for_current_project)
         }
-        other => Err(format!("unknown idl command: {other}").into()),
+        other => Err(anyhow!("unknown idl command: {other}")),
     }
 }
 
@@ -54,9 +56,8 @@ pub(crate) fn build_idl_for_current_project() -> DynResult<()> {
 
     let mut blocks = parse_idl_blocks(&out.stdout)?;
     if blocks.is_empty() {
-        return Err(
+        bail!(
             "no IDL blocks were printed. Ensure hidden test `__lssa_idl_print` is configured."
-                .into(),
         );
     }
 
@@ -77,12 +78,12 @@ fn parse_optional_project_path(args: &[String], usage_label: &str) -> DynResult<
 
     for arg in args {
         if arg.starts_with("--") {
-            return Err(format!("unknown flag for `{usage_label}`: {arg}").into());
+            bail!("unknown flag for `{usage_label}`: {arg}");
         }
         if project_dir.is_none() {
             project_dir = Some(PathBuf::from(arg));
         } else {
-            return Err(format!("unexpected argument `{arg}` for `{usage_label}`").into());
+            bail!("unexpected argument `{arg}` for `{usage_label}`");
         }
     }
 
@@ -149,7 +150,7 @@ fn parse_idl_blocks(output: &str) -> DynResult<Vec<(String, String)>> {
     for raw_line in output.lines() {
         if let Some(name) = parse_marker(raw_line, IDL_BEGIN_PREFIX) {
             if current_name.is_some() {
-                return Err("found nested IDL begin marker".into());
+                bail!("found nested IDL begin marker");
             }
             current_name = Some(name.to_string());
             current_lines.clear();
@@ -158,12 +159,10 @@ fn parse_idl_blocks(output: &str) -> DynResult<Vec<(String, String)>> {
 
         if let Some(name) = parse_marker(raw_line, IDL_END_PREFIX) {
             let Some(open_name) = current_name.take() else {
-                return Err("found IDL end marker without begin".into());
+                bail!("found IDL end marker without begin");
             };
             if open_name != name {
-                return Err(
-                    format!("IDL marker mismatch: begin `{open_name}` end `{name}`").into(),
-                );
+                bail!("IDL marker mismatch: begin `{open_name}` end `{name}`");
             }
             blocks.push((open_name, current_lines.join("\n")));
             current_lines.clear();
@@ -176,7 +175,7 @@ fn parse_idl_blocks(output: &str) -> DynResult<Vec<(String, String)>> {
     }
 
     if let Some(open_name) = current_name {
-        return Err(format!("missing IDL end marker for `{open_name}`").into());
+        bail!("missing IDL end marker for `{open_name}`");
     }
 
     Ok(blocks)

@@ -20,6 +20,7 @@ nssa = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin
 nssa_core = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
 wallet = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
 
+anyhow = "1.0.98"
 risc0-zkvm = { version = "3.0.5", features = ["std"] }
 risc0-build = "3.0.5"
 
@@ -34,5 +35,6 @@ nssa_core.workspace = true
 wallet.workspace = true
 example_program_deployment_methods = { path = "methods" }
 
+anyhow.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = ["macros"] }
