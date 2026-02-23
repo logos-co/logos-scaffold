@@ -4,10 +4,12 @@ use anyhow::anyhow;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::build::cmd_build_shortcut;
+use crate::commands::deploy::cmd_deploy;
 use crate::commands::doctor::cmd_doctor;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
+use crate::commands::wallet::{cmd_wallet, WalletAction};
 use crate::constants::VERSION;
 use crate::DynResult;
 
@@ -30,7 +32,9 @@ enum Commands {
     New(NewArgs),
     Setup(SetupArgs),
     Build(BuildArgs),
+    Deploy(DeployArgs),
     Localnet(LocalnetArgs),
+    Wallet(WalletArgs),
     Doctor(DoctorArgs),
     #[command(hide = true)]
     Help,
@@ -56,6 +60,11 @@ struct SetupArgs {
 #[derive(Debug, clap::Args)]
 struct BuildArgs {
     project_path: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct DeployArgs {
+    program_name: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -96,7 +105,62 @@ struct LocalnetLogsArgs {
     tail: usize,
 }
 
+#[derive(Debug, clap::Args)]
+struct WalletArgs {
+    #[command(subcommand)]
+    command: WalletSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WalletSubcommand {
+    #[command(about = "List wallet accounts (same as `wallet account list`)")]
+    List(WalletListArgs),
+    #[command(about = "Top up wallet using pinata faucet claim")]
+    Topup(WalletTopupArgs),
+    #[command(about = "Manage project default wallet")]
+    Default(WalletDefaultArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct WalletListArgs {
+    #[arg(long)]
+    long: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct WalletTopupArgs {
+    #[arg(value_name = "ADDRESS")]
+    address: Option<String>,
+    #[arg(long = "address", value_name = "ADDRESS")]
+    address_flag: Option<String>,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct WalletDefaultArgs {
+    #[command(subcommand)]
+    command: WalletDefaultSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WalletDefaultSubcommand {
+    Set(WalletDefaultSetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct WalletDefaultSetArgs {
+    #[arg(value_name = "ADDRESS")]
+    address: Option<String>,
+    #[arg(long = "address", value_name = "ADDRESS")]
+    address_flag: Option<String>,
+}
+
 pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
+    if let Some(action) = wallet_passthrough_action(&args)? {
+        return cmd_wallet(action);
+    }
+
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
@@ -119,6 +183,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             wallet_install: args.wallet_install,
         }),
         Some(Commands::Build(args)) => cmd_build_shortcut(args.project_path),
+        Some(Commands::Deploy(args)) => cmd_deploy(args.program_name),
         Some(Commands::Localnet(localnet)) => {
             let action = match localnet.command {
                 LocalnetSubcommand::Start(args) => LocalnetAction::Start {
@@ -129,6 +194,29 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
             };
             cmd_localnet(action)
+        }
+        Some(Commands::Wallet(args)) => {
+            let action = match args.command {
+                WalletSubcommand::List(args) => WalletAction::List { long: args.long },
+                WalletSubcommand::Topup(args) => WalletAction::Topup {
+                    address: merge_optional_address(
+                        args.address,
+                        args.address_flag,
+                        "wallet topup",
+                    )?,
+                    dry_run: args.dry_run,
+                },
+                WalletSubcommand::Default(args) => match args.command {
+                    WalletDefaultSubcommand::Set(set) => WalletAction::DefaultSet {
+                        address: require_address(
+                            set.address,
+                            set.address_flag,
+                            "wallet default set",
+                        )?,
+                    },
+                },
+            };
+            cmd_wallet(action)
         }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Help) => print_help(),
@@ -141,4 +229,51 @@ pub(crate) fn print_help() -> DynResult<()> {
     cmd.print_help()?;
     println!();
     Ok(())
+}
+
+fn wallet_passthrough_action(args: &[String]) -> DynResult<Option<WalletAction>> {
+    if args.len() < 3 {
+        return Ok(None);
+    }
+
+    if args[1] == "wallet" && args[2] == "--" {
+        if args.len() == 3 {
+            return Err(anyhow!(
+                "wallet passthrough requires at least one argument after `--`. Example: `logos-scaffold wallet -- account list`"
+            ));
+        }
+
+        return Ok(Some(WalletAction::Proxy {
+            args: args[3..].to_vec(),
+        }));
+    }
+
+    Ok(None)
+}
+
+fn merge_optional_address(
+    positional: Option<String>,
+    flagged: Option<String>,
+    context: &str,
+) -> DynResult<Option<String>> {
+    if positional.is_some() && flagged.is_some() {
+        return Err(anyhow!(
+            "{context}: provide address either as positional argument or `--address`, not both."
+        ));
+    }
+
+    Ok(positional.or(flagged))
+}
+
+fn require_address(
+    positional: Option<String>,
+    flagged: Option<String>,
+    context: &str,
+) -> DynResult<String> {
+    let merged = merge_optional_address(positional, flagged, context)?;
+    merged.ok_or_else(|| {
+        anyhow!(
+            "{context} requires an address. Examples: `logos-scaffold wallet default set <address>` or `logos-scaffold wallet default set --address <address>`."
+        )
+    })
 }
