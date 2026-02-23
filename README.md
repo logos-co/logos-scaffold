@@ -33,7 +33,7 @@ logos-scaffold localnet stop
 logos-scaffold localnet status [--json]
 logos-scaffold localnet logs [--tail N]
 logos-scaffold wallet list [--long]
-logos-scaffold wallet topup [address] [--address <address-ref>] [--dry-run]
+logos-scaffold wallet topup [<address> | --address <address-ref>] [--dry-run]
 logos-scaffold wallet default set <address-ref>
 logos-scaffold wallet default set --address <address-ref>
 logos-scaffold wallet -- <wallet-command...>
