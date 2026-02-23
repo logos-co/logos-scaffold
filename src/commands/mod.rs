@@ -6,3 +6,5 @@ pub(crate) mod new;
 pub(crate) mod setup;
 pub(crate) mod wallet;
 pub(crate) mod wallet_support;
+pub(crate) mod client;
+pub(crate) mod idl;

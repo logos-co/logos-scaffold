@@ -49,6 +49,8 @@ struct NewArgs {
     lssa_path: Option<PathBuf>,
     #[arg(long)]
     cache_root: Option<PathBuf>,
+    #[arg(long, default_value = "default")]
+    template: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -178,6 +180,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             vendor_deps: args.vendor_deps,
             lssa_path: args.lssa_path,
             cache_root: args.cache_root,
+            template: args.template,
         }),
         Some(Commands::Setup(args)) => cmd_setup(SetupCommand {
             wallet_install: args.wallet_install,
