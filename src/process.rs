@@ -78,7 +78,11 @@ pub(crate) fn run_with_stdin(mut cmd: Command, input: String) -> DynResult<Captu
     let mut child = cmd.spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
-        stdin.write_all(input.as_bytes())?;
+        if let Err(err) = stdin.write_all(input.as_bytes()) {
+            if err.kind() != std::io::ErrorKind::BrokenPipe {
+                return Err(err.into());
+            }
+        }
     }
     let out = child.wait_with_output()?;
     Ok(Captured {
