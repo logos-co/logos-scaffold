@@ -14,7 +14,6 @@ mod lez_counter {
     #[allow(unused_imports)]
     use super::*;
 
-    /// Initialize a counter account.
     #[instruction]
     pub fn initialize(
         #[account(init, pda = literal("counter"))]
@@ -28,7 +27,6 @@ mod lez_counter {
         ]))
     }
 
-    /// Increment the counter by a given amount.
     #[instruction]
     pub fn increment(
         #[account(mut, pda = literal("counter"))]
