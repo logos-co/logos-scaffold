@@ -15,6 +15,15 @@ pub(crate) struct OverlayRenderContext<'a> {
     pub(crate) lssa_pin: &'a str,
 }
 
+pub(crate) fn apply_overlay(
+    target: &Path,
+    variant: &str,
+    ctx: &OverlayRenderContext<'_>,
+) -> DynResult<()> {
+    apply_overlay_variant(target, variant, ctx)?;
+    ensure_scaffold_in_gitignore(target)
+}
+
 pub(crate) fn apply_default_overlay(
     target: &Path,
     ctx: &OverlayRenderContext<'_>,

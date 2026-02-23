@@ -3,3 +3,5 @@ pub(crate) mod doctor;
 pub(crate) mod localnet;
 pub(crate) mod new;
 pub(crate) mod setup;
+pub(crate) mod client;
+pub(crate) mod idl;

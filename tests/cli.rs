@@ -122,3 +122,148 @@ fn write_scaffold_toml(project_root: &Path, lssa_path: &Path, wallet_binary: &st
 
     fs::write(project_root.join("scaffold.toml"), content).expect("write scaffold.toml");
 }
+
+// ── lez-framework template tests ─────────────────────────────────────────────
+
+#[test]
+#[ignore] // requires network to clone lssa repo
+fn test_new_lez_framework_creates_project() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("new")
+        .arg("test-project")
+        .arg("--template")
+        .arg("lez-framework")
+        .assert()
+        .success();
+
+    let project = temp.path().join("test-project");
+    assert!(project.exists(), "project directory should exist");
+
+    // Cargo.toml exists and references lez-framework
+    let cargo_toml = fs::read_to_string(project.join("Cargo.toml")).expect("read Cargo.toml");
+    assert!(
+        cargo_toml.contains("lez-framework"),
+        "Cargo.toml should reference lez-framework"
+    );
+
+    // Counter program exists
+    assert!(
+        project.join("methods/guest/src/bin/lez_counter.rs").exists(),
+        "lez_counter.rs should exist"
+    );
+
+    // README.md exists
+    assert!(project.join("README.md").exists(), "README.md should exist");
+
+    // No unrendered placeholders
+    let cargo_toml_content =
+        fs::read_to_string(project.join("Cargo.toml")).expect("read Cargo.toml");
+    assert!(
+        !cargo_toml_content.contains("{{crate_name}}"),
+        "{{{{crate_name}}}} placeholder should be rendered"
+    );
+    assert!(
+        !cargo_toml_content.contains("{{lssa_pin}}"),
+        "{{{{lssa_pin}}}} placeholder should be rendered"
+    );
+}
+
+#[test]
+#[ignore] // requires network to clone lssa repo
+fn test_new_lez_framework_idl_exists() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("new")
+        .arg("test-idl-project")
+        .arg("--template")
+        .arg("lez-framework")
+        .assert()
+        .success();
+
+    let idl_dir = temp.path().join("test-idl-project/idl");
+    assert!(idl_dir.exists(), "idl/ directory should exist");
+
+    let json_files: Vec<_> = fs::read_dir(&idl_dir)
+        .expect("read idl dir")
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    assert!(
+        !json_files.is_empty(),
+        "idl/ directory should contain at least one .json file"
+    );
+}
+
+#[test]
+#[ignore] // requires network to clone lssa repo and fetch deps
+fn test_new_lez_framework_cargo_check() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("new")
+        .arg("test-check-project")
+        .arg("--template")
+        .arg("lez-framework")
+        .assert()
+        .success();
+
+    let project = temp.path().join("test-check-project");
+
+    // Run cargo check to verify the generated code compiles
+    let output = std::process::Command::new("cargo")
+        .current_dir(&project)
+        .arg("check")
+        .arg("--workspace")
+        .output()
+        .expect("failed to run cargo check");
+
+    assert!(
+        output.status.success(),
+        "cargo check should succeed in scaffolded project. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore] // requires network to clone lssa repo
+fn test_new_lez_framework_has_scaffold_commands() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("new")
+        .arg("test-commands-project")
+        .arg("--template")
+        .arg("lez-framework")
+        .assert()
+        .success();
+
+    let commands_md = temp
+        .path()
+        .join("test-commands-project/.scaffold/commands.md");
+    assert!(
+        commands_md.exists(),
+        ".scaffold/commands.md should exist in scaffolded project"
+    );
+}
+
+#[test]
+fn test_new_lez_framework_rejects_unknown_template() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("new")
+        .arg("test-bad-template")
+        .arg("--template")
+        .arg("nonexistent-template")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsupported template"));
+}
