@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,9 +8,9 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context};
 
 use crate::error::LocalnetError;
-use crate::model::{LocalnetOwnership, LocalnetState, LocalnetStatusReport};
-use crate::process::{listener_pid, pid_alive, pid_running, port_open, spawn_to_log};
-use crate::project::{ensure_dir_exists, load_project};
+use crate::model::{LocalnetOwnership, LocalnetState, LocalnetStatusReport, Project};
+use crate::process::{listener_pid, pid_alive, pid_command, pid_running, port_open, spawn_to_log};
+use crate::project::{ensure_dir_exists, find_project_root, load_project};
 use crate::state::{read_localnet_state, write_localnet_state};
 use crate::DynResult;
 
@@ -24,7 +25,24 @@ pub(crate) enum LocalnetAction {
 }
 
 pub(crate) fn cmd_localnet(action: LocalnetAction) -> DynResult<()> {
-    let project = load_project()?;
+    match action {
+        LocalnetAction::Stop => {
+            let cwd = env::current_dir()?;
+            if find_project_root(cwd).is_some() {
+                let project = load_project()?;
+                cmd_localnet_in_project(&project, action)
+            } else {
+                cmd_localnet_stop_outside_project()
+            }
+        }
+        _ => {
+            let project = load_project()?;
+            cmd_localnet_in_project(&project, action)
+        }
+    }
+}
+
+fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResult<()> {
     let lssa = PathBuf::from(&project.config.lssa.path);
     let state_path = project.root.join(".scaffold/state/localnet.state");
     let logs_dir = project.root.join(".scaffold/logs");
@@ -39,6 +57,37 @@ pub(crate) fn cmd_localnet(action: LocalnetAction) -> DynResult<()> {
         LocalnetAction::Status { json } => cmd_localnet_status(&state_path, &log_path, json),
         LocalnetAction::Logs { tail } => cmd_localnet_logs(&log_path, tail),
     }
+}
+
+fn cmd_localnet_stop_outside_project() -> DynResult<()> {
+    if !port_open(LOCALNET_ADDR) {
+        println!("localnet not running (no listener on 127.0.0.1:3040)");
+        return Ok(());
+    }
+
+    let listener_pid = listener_pid(3040);
+    let pid_text = listener_pid
+        .map(|pid| pid.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    println!("listener detected on 127.0.0.1:3040 (pid={pid_text})");
+    println!(
+        "This command is running outside a logos-scaffold project; it will not stop unmanaged processes automatically."
+    );
+    println!(
+        "This may be a sequencer started from another project and may not match your current workspace."
+    );
+
+    if let Some(pid) = listener_pid {
+        if let Some(command) = pid_command(pid) {
+            println!("listener process: {command}");
+        }
+        println!("Try: kill {pid}");
+    } else {
+        println!("Try: lsof -nP -iTCP:3040 -sTCP:LISTEN");
+    }
+
+    Ok(())
 }
 
 fn cmd_localnet_start(
@@ -72,12 +121,18 @@ fn cmd_localnet_start(
 
     let existing_listener_pid = listener_pid(3040);
     if port_open(LOCALNET_ADDR) {
-        let pid_text = existing_listener_pid
-            .map(|pid| pid.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        bail!(
-            "cannot start localnet: port 3040 is already in use by non-managed process (pid={pid_text})"
+        let mut message = match existing_listener_pid {
+            Some(pid) => format!("cannot start localnet: port 3040 is already in use (pid={pid})"),
+            None => "cannot start localnet: port 3040 is already in use (pid=unknown)".to_string(),
+        };
+        message.push_str(
+            "\nThis may be a sequencer started from another project and may not work with the current project.",
         );
+        message.push_str("\nStop that process and retry `logos-scaffold localnet start`.");
+        if let Some(pid) = existing_listener_pid {
+            message.push_str(&format!("\nTry: kill {pid}"));
+        }
+        bail!("{message}");
     }
 
     let sequencer_pid = spawn_to_log(

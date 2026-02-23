@@ -27,10 +27,16 @@ logos-scaffold create <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PA
 logos-scaffold new <name> [--vendor-deps] [--lssa-path PATH] [--cache-root PATH]
 logos-scaffold setup [--wallet-install auto|always|never]
 logos-scaffold build [project-path]
+logos-scaffold deploy [program-name]
 logos-scaffold localnet start [--timeout-sec N]
 logos-scaffold localnet stop
 logos-scaffold localnet status [--json]
 logos-scaffold localnet logs [--tail N]
+logos-scaffold wallet list [--long]
+logos-scaffold wallet topup [address] [--address <address-ref>] [--dry-run]
+logos-scaffold wallet default set <address-ref>
+logos-scaffold wallet default set --address <address-ref>
+logos-scaffold wallet -- <wallet-command...>
 logos-scaffold doctor [--json]
 logos-scaffold help
 ```
@@ -40,8 +46,13 @@ logos-scaffold help
 - `create` and `new` are aliases.
 - `setup` syncs LSSA to pinned commit, builds standalone `sequencer_runner`, and installs wallet based on `--wallet-install` policy.
 - `build [project-path]` runs `setup` with wallet policy `auto` and then `cargo build --workspace`.
+- `deploy [program-name]` deploys one or all guest programs discovered in `methods/guest/src/bin/*.rs` using prebuilt `.bin` artifacts.
 - `localnet start` waits until localnet is actually ready (`pid alive` + `127.0.0.1:3040` reachable), otherwise fails with diagnostics.
 - `localnet status` distinguishes managed process, stale state, and foreign listeners.
+- `wallet list` shows known wallet accounts (`wallet account list`).
+- `wallet topup` uses a single Piñata faucet claim (`wallet pinata claim --to ...`). If address is omitted, scaffold uses project default wallet from `.scaffold/state/wallet.state`.
+- `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.
+- `wallet -- ...` forwards raw wallet CLI commands while preserving project wallet environment.
 - `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
 
 ## Pinned LSSA Commit
@@ -59,6 +70,10 @@ logos-scaffold setup
 logos-scaffold localnet start
 export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
 logos-scaffold build
+logos-scaffold deploy
+logos-scaffold wallet list
+logos-scaffold wallet default set Public/<base58-account-id>
+logos-scaffold wallet topup
 export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release
 wallet check-health
 ```

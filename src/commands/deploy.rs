@@ -1,0 +1,247 @@
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use anyhow::{bail, Context};
+
+use crate::constants::DEFAULT_WALLET_PASSWORD;
+use crate::process::run_with_stdin;
+use crate::project::load_project;
+use crate::DynResult;
+
+use super::wallet_support::{
+    extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block,
+    sequencer_unreachable_hint, summarize_command_failure, RpcReachabilityError,
+};
+
+const GUEST_BIN_REL_PATH: &str =
+    "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
+const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
+
+pub(crate) fn cmd_deploy(program_name: Option<String>) -> DynResult<()> {
+    let project = load_project().context(
+        "This command must be run inside a logos-scaffold project.\nNext step: cd into your scaffolded project directory and retry.",
+    )?;
+    let wallet = load_wallet_runtime(&project)?;
+
+    let available_programs = discover_deployable_programs(&project.root)?;
+    if available_programs.is_empty() {
+        bail!(
+            "no deployable programs found in `{}`",
+            project.root.join("methods/guest/src/bin").display()
+        );
+    }
+
+    let selected_programs = resolve_selected_programs(program_name, &available_programs)?;
+    let binaries_root = project.root.join(GUEST_BIN_REL_PATH);
+
+    let sequencer_addr = wallet
+        .sequencer_addr
+        .clone()
+        .unwrap_or_else(|| DEFAULT_SEQUENCER_ADDR.to_string());
+    preflight_sequencer_reachability(&sequencer_addr)?;
+
+    let mut results = Vec::new();
+    for program in selected_programs {
+        let binary_path = binaries_root.join(format!("{program}.bin"));
+        if !binary_path.exists() {
+            println!("FAIL {program} deployment failed");
+            println!("  Error: missing binary at {}", binary_path.display());
+            println!("  Hint: run `logos-scaffold build` first.");
+            results.push(DeployResult {
+                program,
+                status: DeployStatus::Failed,
+                detail: "missing program binary".to_string(),
+                tx: None,
+            });
+            continue;
+        }
+
+        let mut command = Command::new(&wallet.wallet_binary);
+        command
+            .env(
+                "NSSA_WALLET_HOME_DIR",
+                wallet.wallet_home.as_os_str().to_string_lossy().to_string(),
+            )
+            .arg("deploy-program")
+            .arg(&binary_path);
+
+        let output = match run_with_stdin(command, format!("{DEFAULT_WALLET_PASSWORD}\n")) {
+            Ok(output) => output,
+            Err(err) => {
+                println!("FAIL {program} deployment failed");
+                println!("  Error: failed to execute wallet command: {err}");
+                results.push(DeployResult {
+                    program,
+                    status: DeployStatus::Failed,
+                    detail: format!("wallet command invocation failed: {err}"),
+                    tx: None,
+                });
+                continue;
+            }
+        };
+
+        let tx = extract_tx_identifier(&output.stdout, &output.stderr);
+
+        if !output.status.success() {
+            let summary = summarize_command_failure(&output.stdout, &output.stderr);
+            let combined = format!("{}\n{}", output.stdout, output.stderr);
+            println!("FAIL {program} deployment failed");
+            println!("  Error: {summary}");
+            if is_connectivity_failure(&combined) {
+                println!("  Hint: {}", sequencer_unreachable_hint(&sequencer_addr));
+                results.push(DeployResult {
+                    program,
+                    status: DeployStatus::Failed,
+                    detail: format!("{summary}; sequencer connectivity failure"),
+                    tx,
+                });
+            } else {
+                println!("  Hint: inspect sequencer logs and retry.");
+                results.push(DeployResult {
+                    program,
+                    status: DeployStatus::Failed,
+                    detail: summary,
+                    tx,
+                });
+            }
+            continue;
+        }
+
+        println!("OK  {program} submitted");
+        if let Some(tx) = tx.clone() {
+            println!("  Tx: {tx}");
+        }
+        results.push(DeployResult {
+            program,
+            status: DeployStatus::Submitted,
+            detail: "wallet submission command exited successfully".to_string(),
+            tx,
+        });
+    }
+
+    let success_count = results
+        .iter()
+        .filter(|result| matches!(result.status, DeployStatus::Submitted))
+        .count();
+    let failed_count = results
+        .iter()
+        .filter(|result| matches!(result.status, DeployStatus::Failed))
+        .count();
+
+    println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LSSA wallet/RPC for scaffold.");
+    println!("Summary:");
+    println!("  Succeeded: {success_count}");
+    println!("  Failed: {failed_count}");
+    println!("  Results:");
+    for result in &results {
+        let mut line = format!("    {}: {}", result.program, result.status.label());
+        if let Some(tx) = &result.tx {
+            line.push_str(&format!(" (tx: {tx})"));
+        }
+        println!("{line}");
+        println!("      {}", result.detail);
+    }
+
+    if failed_count > 0 {
+        bail!("deploy completed with {failed_count} failed program(s)");
+    }
+
+    Ok(())
+}
+
+fn preflight_sequencer_reachability(sequencer_addr: &str) -> DynResult<()> {
+    match rpc_get_last_block(sequencer_addr) {
+        Ok(_) => Ok(()),
+        Err(RpcReachabilityError::Connectivity(err)) => {
+            bail!(
+                "cannot deploy programs: {err}\n{}",
+                sequencer_unreachable_hint(sequencer_addr)
+            )
+        }
+        Err(err) => {
+            println!(
+                "warning: sequencer reachability probe failed ({err}); continuing with wallet submission mode"
+            );
+            Ok(())
+        }
+    }
+}
+
+fn discover_deployable_programs(project_root: &Path) -> DynResult<Vec<String>> {
+    let programs_dir = project_root.join("methods/guest/src/bin");
+    if !programs_dir.exists() {
+        bail!(
+            "missing deployable program directory at {}",
+            programs_dir.display()
+        );
+    }
+
+    let mut programs = Vec::new();
+    for entry in fs::read_dir(&programs_dir)
+        .with_context(|| format!("failed to read {}", programs_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        programs.push(stem.to_string());
+    }
+
+    programs.sort();
+    Ok(programs)
+}
+
+fn resolve_selected_programs(
+    requested_program: Option<String>,
+    available_programs: &[String],
+) -> DynResult<Vec<String>> {
+    if requested_program.is_none() {
+        return Ok(available_programs.to_vec());
+    }
+
+    let raw = requested_program.unwrap_or_default();
+    let candidate = raw.trim().trim_end_matches(".bin").to_string();
+    if candidate.is_empty() {
+        bail!("program name cannot be empty");
+    }
+
+    if available_programs
+        .iter()
+        .any(|program| program == &candidate)
+    {
+        return Ok(vec![candidate]);
+    }
+
+    bail!(
+        "unknown program `{candidate}`. Available programs: {}",
+        available_programs.join(", ")
+    )
+}
+
+#[derive(Clone, Debug)]
+struct DeployResult {
+    program: String,
+    status: DeployStatus,
+    detail: String,
+    tx: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+enum DeployStatus {
+    Submitted,
+    Failed,
+}
+
+impl DeployStatus {
+    fn label(&self) -> &'static str {
+        match self {
+            DeployStatus::Submitted => "submitted",
+            DeployStatus::Failed => "failed",
+        }
+    }
+}

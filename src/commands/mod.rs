@@ -1,5 +1,8 @@
 pub(crate) mod build;
+pub(crate) mod deploy;
 pub(crate) mod doctor;
 pub(crate) mod localnet;
 pub(crate) mod new;
 pub(crate) mod setup;
+pub(crate) mod wallet;
+pub(crate) mod wallet_support;

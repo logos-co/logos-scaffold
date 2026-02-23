@@ -31,6 +31,10 @@ pub(crate) fn render_command(cmd: &Command) -> String {
 }
 
 pub(crate) fn run_checked(cmd: &mut Command, label: &str) -> DynResult<()> {
+    run_forwarded(cmd, label)
+}
+
+pub(crate) fn run_forwarded(cmd: &mut Command, label: &str) -> DynResult<()> {
     if should_echo() {
         println!("$ {}", render_command(cmd));
     }
@@ -68,6 +72,9 @@ pub(crate) fn run_with_stdin(mut cmd: Command, input: String) -> DynResult<Captu
     if should_echo() {
         println!("$ {}", render_command(&cmd));
     }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
@@ -148,6 +155,35 @@ pub(crate) fn pid_running(pid: u32) -> bool {
 #[cfg(not(unix))]
 pub(crate) fn pid_running(_pid: u32) -> bool {
     false
+}
+
+#[cfg(unix)]
+pub(crate) fn pid_command(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .arg("-o")
+        .arg("command=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToString::to_string)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn pid_command(_pid: u32) -> Option<String> {
+    None
 }
 
 pub(crate) fn port_open(addr: &str) -> bool {
