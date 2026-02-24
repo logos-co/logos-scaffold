@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, bail};
 
-use crate::constants::{FRAMEWORK_KIND_LSSA_LANG, FRAMEWORK_KIND_LEZ_FRAMEWORK};
+use crate::constants::FRAMEWORK_KIND_LEZ_FRAMEWORK;
 use crate::process::run_checked;
 use crate::project::{load_project, run_in_project_dir};
 use crate::DynResult;
@@ -26,7 +26,7 @@ pub(crate) fn cmd_client(args: &[String]) -> DynResult<()> {
 
 pub(crate) fn build_clients_for_current_project() -> DynResult<()> {
     let project = load_project()?;
-    if project.config.framework.kind != FRAMEWORK_KIND_LSSA_LANG && project.config.framework.kind != FRAMEWORK_KIND_LEZ_FRAMEWORK {
+    if project.config.framework.kind != FRAMEWORK_KIND_LEZ_FRAMEWORK {
         println!(
             "Skipping client build for framework kind `{}`",
             project.config.framework.kind

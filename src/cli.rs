@@ -4,8 +4,10 @@ use anyhow::anyhow;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::build::cmd_build_shortcut;
+use crate::commands::client::cmd_client;
 use crate::commands::deploy::cmd_deploy;
 use crate::commands::doctor::cmd_doctor;
+use crate::commands::idl::cmd_idl;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
@@ -36,6 +38,8 @@ enum Commands {
     Localnet(LocalnetArgs),
     Wallet(WalletArgs),
     Doctor(DoctorArgs),
+    Idl(IdlArgs),
+    Client(ClientArgs),
     #[command(hide = true)]
     Help,
 }
@@ -61,6 +65,16 @@ struct SetupArgs {
 
 #[derive(Debug, clap::Args)]
 struct BuildArgs {
+    project_path: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct IdlArgs {
+    project_path: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct ClientArgs {
     project_path: Option<PathBuf>,
 }
 
@@ -221,6 +235,18 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             };
             cmd_wallet(action)
         }
+        Some(Commands::Idl(args)) => cmd_idl(
+            &args
+                .project_path
+                .map(|p| vec![p.to_string_lossy().to_string()])
+                .unwrap_or_default(),
+        ),
+        Some(Commands::Client(args)) => cmd_client(
+            &args
+                .project_path
+                .map(|p| vec![p.to_string_lossy().to_string()])
+                .unwrap_or_default(),
+        ),
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Help) => print_help(),
         None => print_help(),

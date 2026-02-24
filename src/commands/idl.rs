@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, bail};
 
-use crate::constants::{FRAMEWORK_KIND_LSSA_LANG, FRAMEWORK_KIND_LEZ_FRAMEWORK};
+use crate::constants::FRAMEWORK_KIND_LEZ_FRAMEWORK;
 use crate::process::run_capture;
 use crate::project::{load_project, run_in_project_dir};
 use crate::state::write_text;
@@ -30,7 +30,7 @@ pub(crate) fn cmd_idl(args: &[String]) -> DynResult<()> {
 
 pub(crate) fn build_idl_for_current_project() -> DynResult<()> {
     let project = load_project()?;
-    if project.config.framework.kind != FRAMEWORK_KIND_LSSA_LANG && project.config.framework.kind != FRAMEWORK_KIND_LEZ_FRAMEWORK {
+    if project.config.framework.kind != FRAMEWORK_KIND_LEZ_FRAMEWORK {
         println!(
             "Skipping IDL build for framework kind `{}`",
             project.config.framework.kind
@@ -56,9 +56,7 @@ pub(crate) fn build_idl_for_current_project() -> DynResult<()> {
 
     let mut blocks = parse_idl_blocks(&out.stdout)?;
     if blocks.is_empty() {
-        bail!(
-            "no IDL blocks were printed. Ensure hidden test `__lssa_idl_print` is configured."
-        );
+        bail!("no IDL blocks were printed. Ensure hidden test `__lssa_idl_print` is configured.");
     }
 
     blocks.sort_by(|a, b| a.0.cmp(&b.0));

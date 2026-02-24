@@ -7,7 +7,7 @@ use anyhow::{bail, Context};
 use crate::config::serialize_config;
 use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    DEFAULT_LSSA_PIN, DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK, FRAMEWORK_KIND_LSSA_LANG,
+    DEFAULT_LSSA_PIN, DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK,
     LSSA_URL, VERSION,
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, RepoRef};
@@ -29,7 +29,7 @@ pub(crate) struct NewCommand {
 
 pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     let template_variant = match cmd.template.as_str() {
-        FRAMEWORK_KIND_DEFAULT | FRAMEWORK_KIND_LSSA_LANG | FRAMEWORK_KIND_LEZ_FRAMEWORK => cmd.template.clone(),
+        FRAMEWORK_KIND_DEFAULT | FRAMEWORK_KIND_LEZ_FRAMEWORK => cmd.template.clone(),
         other => {
             bail!(
                 "unsupported template `{other}`. Expected `default`, `lssa-lang`, or `lez-framework`."
@@ -114,7 +114,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         lssa_pin: &cfg.lssa.pin,
     };
     apply_overlay(&target, &template_variant, &overlay_ctx)?;
-    if template_variant == FRAMEWORK_KIND_LSSA_LANG || template_variant == FRAMEWORK_KIND_LEZ_FRAMEWORK {
+    if template_variant == FRAMEWORK_KIND_LEZ_FRAMEWORK {
         cleanup_lssa_lang_hello_artifacts(&target)?;
     }
     write_text(&target.join("scaffold.toml"), &serialize_config(&cfg))?;
