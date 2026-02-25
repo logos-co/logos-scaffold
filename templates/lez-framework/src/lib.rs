@@ -28,6 +28,10 @@ pub mod runner_support {
 // Host-side program definition for IDL extraction and testing.
 // The guest binary (methods/guest) handles zkvm execution.
 use lez_framework::prelude::*;
+use lez_framework::error::{LezError, LezResult};
+use lez_framework_core::types::LezOutput;
+use nssa_core::program::AccountPostState;
+use nssa_core::account::AccountWithMetadata;
 
 #[lez_program]
 mod lez_counter {
