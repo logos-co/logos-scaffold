@@ -13,6 +13,7 @@ members = [
   ".",
   "methods",
   "methods/guest",
+  "crates/lssa-client-gen",
 ]
 
 [workspace.dependencies]
@@ -26,6 +27,7 @@ risc0-build = "3.0.5"
 
 lez-framework = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }
 lez-framework-core = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }
+lez-client-gen = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }
 
 hex = "0.4.3"
 bytemuck = "1.24.0"
