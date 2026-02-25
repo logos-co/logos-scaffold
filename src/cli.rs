@@ -38,8 +38,6 @@ enum Commands {
     Localnet(LocalnetArgs),
     Wallet(WalletArgs),
     Doctor(DoctorArgs),
-    Idl(IdlArgs),
-    Client(ClientArgs),
     #[command(hide = true)]
     Help,
 }
@@ -65,16 +63,21 @@ struct SetupArgs {
 
 #[derive(Debug, clap::Args)]
 struct BuildArgs {
+    #[command(subcommand)]
+    subcommand: Option<BuildSubcommand>,
     project_path: Option<PathBuf>,
 }
 
-#[derive(Debug, clap::Args)]
-struct IdlArgs {
-    project_path: Option<PathBuf>,
+#[derive(Debug, Subcommand)]
+enum BuildSubcommand {
+    #[command(about = "Build IDL files from the current project")]
+    Idl(BuildSubArgs),
+    #[command(about = "Build client code from IDL files")]
+    Client(BuildSubArgs),
 }
 
 #[derive(Debug, clap::Args)]
-struct ClientArgs {
+struct BuildSubArgs {
     project_path: Option<PathBuf>,
 }
 
@@ -199,7 +202,15 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         Some(Commands::Setup(args)) => cmd_setup(SetupCommand {
             wallet_install: args.wallet_install,
         }),
-        Some(Commands::Build(args)) => cmd_build_shortcut(args.project_path),
+        Some(Commands::Build(args)) => match args.subcommand {
+            Some(BuildSubcommand::Idl(sub)) => cmd_idl(&sub.project_path
+                .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
+                .unwrap_or_else(|| vec!["build".to_string()])),
+            Some(BuildSubcommand::Client(sub)) => cmd_client(&sub.project_path
+                .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
+                .unwrap_or_else(|| vec!["build".to_string()])),
+            None => cmd_build_shortcut(args.project_path),
+        },
         Some(Commands::Deploy(args)) => cmd_deploy(args.program_name),
         Some(Commands::Localnet(localnet)) => {
             let action = match localnet.command {
@@ -235,18 +246,6 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             };
             cmd_wallet(action)
         }
-        Some(Commands::Idl(args)) => cmd_idl(
-            &args
-                .project_path
-                .map(|p| vec![p.to_string_lossy().to_string()])
-                .unwrap_or_default(),
-        ),
-        Some(Commands::Client(args)) => cmd_client(
-            &args
-                .project_path
-                .map(|p| vec![p.to_string_lossy().to_string()])
-                .unwrap_or_default(),
-        ),
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Help) => print_help(),
         None => print_help(),

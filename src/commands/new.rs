@@ -32,7 +32,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         FRAMEWORK_KIND_DEFAULT | FRAMEWORK_KIND_LEZ_FRAMEWORK => cmd.template.clone(),
         other => {
             bail!(
-                "unsupported template `{other}`. Expected `default`, `lssa-lang`, or `lez-framework`."
+                "unsupported template `{other}`. Expected `default` or `lez-framework`."
             )
         }
     };
