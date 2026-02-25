@@ -28,9 +28,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    #[command(about = "Create a new logos-scaffold project")]
+    #[command(about = "Create a new logos-scaffold project (templates: default, lez-framework)")]
     Create(NewArgs),
-    #[command(about = "Alias for `create`")]
+    #[command(about = "Alias for `create` (templates: default, lez-framework)")]
     New(NewArgs),
     Setup(SetupArgs),
     Build(BuildArgs),
