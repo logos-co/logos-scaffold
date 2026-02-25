@@ -1,9 +1,5 @@
 #![no_main]
 
-use nssa_core::account::AccountWithMetadata;
-use nssa_core::program::{
-    AccountPostState, DEFAULT_PROGRAM_ID, ProgramInput, read_nssa_inputs, write_nssa_outputs,
-};
 use lez_framework::prelude::*;
 use serde::{Deserialize, Serialize};
 

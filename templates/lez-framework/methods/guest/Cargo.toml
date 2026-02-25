@@ -5,8 +5,6 @@ edition = "2024"
 license = { workspace = true }
 
 [dependencies]
-nssa_core.workspace = true
-
 hex.workspace = true
 bytemuck.workspace = true
 risc0-zkvm.workspace = true
