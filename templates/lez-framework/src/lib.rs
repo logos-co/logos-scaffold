@@ -24,3 +24,53 @@ pub mod runner_support {
         Program::new(bytes).unwrap_or_else(|err| panic!("failed to parse {label} program: {err}"))
     }
 }
+
+// Host-side program definition for IDL extraction and testing.
+// The guest binary (methods/guest) handles zkvm execution.
+use lez_framework::prelude::*;
+
+#[lez_program]
+mod lez_counter {
+    #[allow(unused_imports)]
+    use super::*;
+
+    #[instruction]
+    pub fn initialize(
+        #[account(init, pda = literal("counter"))]
+        counter: AccountWithMetadata,
+        #[account(signer)]
+        authority: AccountWithMetadata,
+    ) -> LezResult {
+        Ok(LezOutput::states_only(vec![
+            AccountPostState::new_claimed(counter.account.clone()),
+            AccountPostState::new(authority.account.clone()),
+        ]))
+    }
+
+    #[instruction]
+    pub fn increment(
+        #[account(mut, pda = literal("counter"))]
+        counter: AccountWithMetadata,
+        #[account(signer)]
+        authority: AccountWithMetadata,
+        amount: u64,
+    ) -> LezResult {
+        let mut counter_post = counter.account.clone();
+        counter_post.balance += amount as u128;
+
+        Ok(LezOutput::states_only(vec![
+            AccountPostState::new(counter_post),
+            AccountPostState::new(authority.account.clone()),
+        ]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn __lssa_idl_print() {
+        println!("--- LSSA IDL BEGIN lez_counter ---");
+        println!("{}", super::PROGRAM_IDL_JSON);
+        println!("--- LSSA IDL END lez_counter ---");
+    }
+}

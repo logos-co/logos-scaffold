@@ -1,7 +1,6 @@
 #![no_main]
 
 use lez_framework::prelude::*;
-use serde::{Deserialize, Serialize};
 
 #[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
@@ -39,15 +38,5 @@ mod lez_counter {
             AccountPostState::new(counter_post),
             AccountPostState::new(authority.account.clone()),
         ]))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn __lssa_idl_print() {
-        println!("--- LSSA IDL BEGIN lez_counter ---");
-        println!("{}", super::PROGRAM_IDL_JSON);
-        println!("--- LSSA IDL END lez_counter ---");
     }
 }
