@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, bail};
 
+use crate::commands::idl::build_idl_for_current_project;
 use crate::constants::FRAMEWORK_KIND_LEZ_FRAMEWORK;
 use crate::process::run_checked;
 use crate::project::{load_project, run_in_project_dir};
@@ -34,25 +35,11 @@ pub(crate) fn build_clients_for_current_project() -> DynResult<()> {
         return Ok(());
     }
 
+    // Always regenerate IDL first — prevents stale IDL drift (fixes issues like missing rest:true)
+    println!("[client] Regenerating IDL to ensure it is fresh...");
+    build_idl_for_current_project()?;
+
     let idl_dir = project.root.join(&project.config.framework.idl.path);
-    if !idl_dir.exists() {
-        bail!(
-            "IDL directory does not exist at {}. Run `logos-scaffold idl build` first.",
-            idl_dir.display()
-        );
-    }
-
-    let json_count = fs::read_dir(&idl_dir)?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-        .count();
-    if json_count == 0 {
-        bail!(
-            "No IDL json files found under {}. Run `logos-scaffold idl build` first.",
-            idl_dir.display()
-        );
-    }
-
     let out_dir = project.root.join("src/generated");
     fs::create_dir_all(&out_dir)?;
 
