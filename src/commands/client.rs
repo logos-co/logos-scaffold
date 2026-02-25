@@ -58,9 +58,10 @@ pub(crate) fn build_clients_for_current_project() -> DynResult<()> {
 
     let generator_manifest = project.root.join("crates/lssa-client-gen/Cargo.toml");
     if !generator_manifest.exists() {
-        println!("Skipping client generation: generator crate not found at {}.", generator_manifest.display());
-        println!("To enable client generation, add a crates/lssa-client-gen subcrate to your project.");
-        return Ok(());
+        bail!(
+            "missing client generator crate at {}",
+            generator_manifest.display()
+        );
     }
 
     run_checked(

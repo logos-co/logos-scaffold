@@ -203,12 +203,16 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             wallet_install: args.wallet_install,
         }),
         Some(Commands::Build(args)) => match args.subcommand {
-            Some(BuildSubcommand::Idl(sub)) => cmd_idl(&sub.project_path
-                .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
-                .unwrap_or_else(|| vec!["build".to_string()])),
-            Some(BuildSubcommand::Client(sub)) => cmd_client(&sub.project_path
-                .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
-                .unwrap_or_else(|| vec!["build".to_string()])),
+            Some(BuildSubcommand::Idl(sub)) => cmd_idl(
+                &sub.project_path
+                    .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
+                    .unwrap_or_else(|| vec!["build".to_string()]),
+            ),
+            Some(BuildSubcommand::Client(sub)) => cmd_client(
+                &sub.project_path
+                    .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
+                    .unwrap_or_else(|| vec!["build".to_string()]),
+            ),
             None => cmd_build_shortcut(args.project_path),
         },
         Some(Commands::Deploy(args)) => cmd_deploy(args.program_name),

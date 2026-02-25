@@ -31,9 +31,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     let template_variant = match cmd.template.as_str() {
         FRAMEWORK_KIND_DEFAULT | FRAMEWORK_KIND_LEZ_FRAMEWORK => cmd.template.clone(),
         other => {
-            bail!(
-                "unsupported template `{other}`. Expected `default` or `lez-framework`."
-            )
+            bail!("unsupported template `{other}`. Expected `default` or `lez-framework`.")
         }
     };
 
