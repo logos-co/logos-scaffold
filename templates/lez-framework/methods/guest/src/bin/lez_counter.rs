@@ -3,6 +3,7 @@
 use lez_framework::prelude::*;
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
 
 #[lez_program]
