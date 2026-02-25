@@ -24,8 +24,8 @@ common = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_p
 risc0-zkvm = { version = "3.0.5", features = ["std"] }
 risc0-build = "3.0.5"
 
-lez-framework = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "5c21f414d8ecaec2c26e9e298fe25a3629d72916" }
-lez-framework-core = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "5c21f414d8ecaec2c26e9e298fe25a3629d72916" }
+lez-framework = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }
+lez-framework-core = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }
 
 hex = "0.4.3"
 bytemuck = "1.24.0"
