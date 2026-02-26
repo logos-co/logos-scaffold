@@ -12,7 +12,7 @@ use crate::constants::{
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, RepoRef};
 use crate::project::default_cache_root;
-use crate::repo::sync_repo_to_pin_at_path;
+use crate::repo::{sync_repo_to_pin_at_path_with_opts, RepoSyncOptions};
 use crate::state::write_text;
 use crate::template::copy::{copy_dir_contents, patch_simple_tail_call_program_id};
 use crate::template::project::{apply_overlay, OverlayRenderContext};
@@ -68,11 +68,23 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         let root = target.join(".scaffold/repos");
         fs::create_dir_all(&root)?;
         let lssa_vendor = root.join("lssa");
-        sync_repo_to_pin_at_path(&lssa_vendor, &lssa_source, DEFAULT_LSSA_PIN, "lssa")?;
+        sync_repo_to_pin_at_path_with_opts(
+            &lssa_vendor,
+            &lssa_source,
+            DEFAULT_LSSA_PIN,
+            "lssa",
+            RepoSyncOptions::fail_on_source_mismatch(),
+        )?;
         lssa_vendor
     } else {
         let lssa_cached = cache_root.join("repos/lssa");
-        sync_repo_to_pin_at_path(&lssa_cached, &lssa_source, DEFAULT_LSSA_PIN, "lssa")?;
+        sync_repo_to_pin_at_path_with_opts(
+            &lssa_cached,
+            &lssa_source,
+            DEFAULT_LSSA_PIN,
+            "lssa",
+            RepoSyncOptions::auto_reclone_cache_repo(),
+        )?;
         lssa_cached
     };
 

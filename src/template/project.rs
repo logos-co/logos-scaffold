@@ -7,7 +7,6 @@ use include_dir::{include_dir, Dir};
 use crate::state::write_text;
 use crate::DynResult;
 
-const DEFAULT_TEMPLATE_VARIANT: &str = "default";
 static TEMPLATES_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
 pub(crate) struct OverlayRenderContext<'a> {
@@ -21,14 +20,6 @@ pub(crate) fn apply_overlay(
     ctx: &OverlayRenderContext<'_>,
 ) -> DynResult<()> {
     apply_overlay_variant(target, variant, ctx)?;
-    ensure_scaffold_in_gitignore(target)
-}
-
-pub(crate) fn apply_default_overlay(
-    target: &Path,
-    ctx: &OverlayRenderContext<'_>,
-) -> DynResult<()> {
-    apply_overlay_variant(target, DEFAULT_TEMPLATE_VARIANT, ctx)?;
     ensure_scaffold_in_gitignore(target)
 }
 
@@ -131,7 +122,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{apply_default_overlay, render_template_text, OverlayRenderContext};
+    use super::{apply_overlay, render_template_text, OverlayRenderContext};
 
     fn mk_temp_dir(suffix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -154,7 +145,7 @@ mod tests {
             lssa_pin: "abc123",
         };
 
-        apply_default_overlay(&target, &ctx).expect("failed to apply default overlay");
+        apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
 
         let expected = [
             "Cargo.toml",
@@ -187,7 +178,7 @@ mod tests {
             lssa_pin: "deadbeef",
         };
 
-        apply_default_overlay(&target, &ctx).expect("failed to apply default overlay");
+        apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
 
         let cargo = fs::read_to_string(target.join("Cargo.toml"))
             .expect("failed to read generated Cargo.toml");
@@ -206,7 +197,7 @@ mod tests {
             lssa_pin: "abc123",
         };
 
-        apply_default_overlay(&target, &ctx).expect("failed to apply default overlay");
+        apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
 
         let env_text = fs::read_to_string(target.join(".env.local"))
             .expect("failed to read generated .env.local");
@@ -237,7 +228,7 @@ mod tests {
             lssa_pin: "abc123",
         };
 
-        apply_default_overlay(&target, &ctx).expect("failed to apply default overlay");
+        apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
 
         let gitignore = fs::read_to_string(target.join(".gitignore"))
             .expect("failed to read generated .gitignore");
@@ -246,7 +237,7 @@ mod tests {
             ".gitignore should contain .scaffold, got: {gitignore:?}"
         );
 
-        apply_default_overlay(&target, &ctx).expect("second overlay should succeed");
+        apply_overlay(&target, "default", &ctx).expect("second overlay should succeed");
         let gitignore_after = fs::read_to_string(target.join(".gitignore"))
             .expect("failed to read .gitignore after second overlay");
         let scaffold_count = gitignore_after

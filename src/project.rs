@@ -55,20 +55,6 @@ pub(crate) fn find_project_root(mut dir: PathBuf) -> Option<PathBuf> {
     }
 }
 
-pub(crate) fn infer_repo_path(cwd: &Path, name: &str) -> Option<PathBuf> {
-    let candidates = [
-        cwd.join(name),
-        cwd.join("..").join(name),
-        cwd.join("..").join("..").join(name),
-    ];
-    for candidate in candidates {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
 pub(crate) fn default_cache_root() -> DynResult<PathBuf> {
     let home = home_dir()?;
     if cfg!(target_os = "macos") {
