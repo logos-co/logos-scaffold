@@ -31,7 +31,7 @@ logos-scaffold build
 ## IDL
 
 ```bash
-logos-scaffold idl build
+logos-scaffold build idl
 ```
 
 ## Project Structure
