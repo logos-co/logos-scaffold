@@ -59,7 +59,7 @@ logos-scaffold help
 
 Scaffold enforces this commit for standalone mode:
 
-- `dee3f7fa6f2bf63abef00828f246ddacade9cdaf`
+- `767b5afd388c7981bcdf6f5b5c80159607e07e5b`
 
 ## First Success Path
 

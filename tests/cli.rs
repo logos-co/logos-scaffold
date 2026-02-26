@@ -13,7 +13,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
 
-const TEST_PIN: &str = "dee3f7fa6f2bf63abef00828f246ddacade9cdaf";
+const TEST_PIN: &str = "767b5afd388c7981bcdf6f5b5c80159607e07e5b";
 const VALID_ACCOUNT_ID: &str = "6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
 const VALID_PUBLIC_ADDRESS: &str = "Public/6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
 const GUEST_BIN_REL_PATH: &str =
