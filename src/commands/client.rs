@@ -12,13 +12,13 @@ use crate::DynResult;
 
 pub(crate) fn cmd_client(args: &[String]) -> DynResult<()> {
     if args.is_empty() {
-        bail!("usage: logos-scaffold client build [project-path]");
+        bail!("usage: logos-scaffold build client [project-path]");
     }
 
     match args[0].as_str() {
         "build" => {
             let project_dir =
-                parse_optional_project_path(&args[1..], "logos-scaffold client build")?;
+                parse_optional_project_path(&args[1..], "logos-scaffold build client")?;
             run_in_project_dir(project_dir.as_deref(), build_clients_for_current_project)
         }
         other => Err(anyhow!("unknown client command: {other}")),
