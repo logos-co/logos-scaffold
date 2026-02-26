@@ -16,12 +16,12 @@ const IDL_MARKER_SUFFIX: &str = " ---";
 
 pub(crate) fn cmd_idl(args: &[String]) -> DynResult<()> {
     if args.is_empty() {
-        bail!("usage: logos-scaffold idl build [project-path]");
+        bail!("usage: logos-scaffold build idl [project-path]");
     }
 
     match args[0].as_str() {
         "build" => {
-            let project_dir = parse_optional_project_path(&args[1..], "logos-scaffold idl build")?;
+            let project_dir = parse_optional_project_path(&args[1..], "logos-scaffold build idl")?;
             run_in_project_dir(project_dir.as_deref(), build_idl_for_current_project)
         }
         other => Err(anyhow!("unknown idl command: {other}")),
