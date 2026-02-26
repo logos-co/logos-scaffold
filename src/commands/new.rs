@@ -11,7 +11,7 @@ use crate::constants::{
     LSSA_URL, VERSION,
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, RepoRef};
-use crate::project::{default_cache_root, infer_repo_path};
+use crate::project::default_cache_root;
 use crate::repo::sync_repo_to_pin_at_path;
 use crate::state::write_text;
 use crate::template::copy::{copy_dir_contents, patch_simple_tail_call_program_id};
@@ -61,7 +61,6 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
 
     let lssa_source = cmd
         .lssa_path
-        .or_else(|| infer_repo_path(&cwd, "lssa"))
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| LSSA_URL.to_string());
 
