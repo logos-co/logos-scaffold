@@ -670,6 +670,12 @@ fn deploy_shows_hint_when_sequencer_is_unreachable_with_configured_addr() {
 
 #[test]
 fn deploy_shows_hint_when_sequencer_is_unreachable_with_fallback_addr() {
+    // This test assumes fallback `http://127.0.0.1:3040` is unreachable.
+    // Skip in environments where another process is already listening there.
+    if TcpStream::connect("127.0.0.1:3040").is_ok() {
+        return;
+    }
+
     let temp = tempdir().expect("tempdir");
     let wallet_stub = write_wallet_stub(temp.path());
     setup_wallet_project(temp.path(), &wallet_stub, None);

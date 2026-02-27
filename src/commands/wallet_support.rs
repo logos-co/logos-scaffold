@@ -256,6 +256,11 @@ pub(crate) fn summarize_command_failure(stdout: &str, stderr: &str) -> String {
 
 pub(crate) fn extract_tx_identifier(stdout: &str, stderr: &str) -> Option<String> {
     let combined = format!("{stdout}\n{stderr}");
+
+    if let Some(hex_hash) = extract_tx_hash_from_hash_type_bytes(&combined) {
+        return Some(hex_hash);
+    }
+
     for raw_line in combined.lines() {
         let line = raw_line.trim();
         if line.is_empty() {
@@ -274,6 +279,35 @@ pub(crate) fn extract_tx_identifier(stdout: &str, stderr: &str) -> Option<String
     }
 
     None
+}
+
+fn extract_tx_hash_from_hash_type_bytes(text: &str) -> Option<String> {
+    let tx_pos = text.find("tx_hash")?;
+    let after_tx = &text[tx_pos..];
+    let open_bracket = after_tx.find('[')?;
+    let after_open = &after_tx[open_bracket + 1..];
+    let close_bracket = after_open.find(']')?;
+    let inside = &after_open[..close_bracket];
+
+    let mut bytes = Vec::new();
+    for chunk in inside.split(|ch: char| ch == ',' || ch.is_whitespace()) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let value = chunk.parse::<u8>().ok()?;
+        bytes.push(value);
+    }
+
+    if bytes.is_empty() {
+        return None;
+    }
+
+    let mut hex_hash = String::from("0x");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex_hash, "{byte:02x}");
+    }
+    Some(hex_hash)
 }
 
 #[derive(Debug, Clone)]
@@ -492,5 +526,54 @@ mod tests {
     fn extract_tx_identifier_finds_tx_hash_key() {
         let tx = extract_tx_identifier("ok tx_hash=abc123", "");
         assert_eq!(tx.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn extract_tx_identifier_parses_multiline_hash_type_bytes() {
+        let stdout = r#"Results of tx send are SendTxResponse {
+    status: "Transaction submitted",
+    tx_hash: HashType(
+        [
+            236,
+            137,
+            145,
+            194,
+            178,
+            199,
+            58,
+            69,
+            16,
+            104,
+            166,
+            225,
+            54,
+            199,
+            203,
+            126,
+            43,
+            174,
+            145,
+            105,
+            245,
+            52,
+            177,
+            88,
+            177,
+            57,
+            121,
+            80,
+            47,
+            206,
+            87,
+            13,
+        ],
+    ),
+}"#;
+
+        let tx = extract_tx_identifier(stdout, "");
+        assert_eq!(
+            tx.as_deref(),
+            Some("0xec8991c2b2c73a451068a6e136c7cb7e2bae9169f534b158b13979502fce570d")
+        );
     }
 }
