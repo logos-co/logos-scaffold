@@ -20,6 +20,20 @@ Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
 cargo build
 ```
 
+## Publishing
+
+1. Bump `version` in `Cargo.toml`.
+2. Commit and push the version bump.
+3. Create and push a release tag in either format:
+   - `X.Y.Z`
+   - `vX.Y.Z`
+4. The `Publish crate` workflow runs automatically on pushed tags.
+5. For manual fallback, run the same workflow via `workflow_dispatch` and pass `version` as `X.Y.Z` or `vX.Y.Z`.
+
+Required secret for publishing:
+
+- `CARGO_REGISTRY_TOKEN` (crates.io API token)
+
 ## CLI
 
 ```bash
