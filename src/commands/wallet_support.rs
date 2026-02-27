@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -5,7 +6,9 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use serde_json::Value;
 
+use crate::constants::DEFAULT_WALLET_PASSWORD;
 use crate::model::Project;
+use crate::state::write_text;
 use crate::DynResult;
 
 const WALLET_CONFIG_PRIMARY: &str = "wallet_config.json";
@@ -66,8 +69,58 @@ fn read_wallet_config(wallet_home: &Path) -> DynResult<(PathBuf, Value)> {
     Ok((path, value))
 }
 
+pub(crate) fn first_public_wallet_address(wallet_home: &Path) -> DynResult<Option<String>> {
+    let (_, wallet_config) = read_wallet_config(wallet_home)?;
+    let Some(accounts) = wallet_config
+        .get("initial_accounts")
+        .and_then(Value::as_array)
+    else {
+        return Ok(None);
+    };
+
+    for account in accounts {
+        let Some(account_id) = account
+            .get("Public")
+            .and_then(|public| public.get("account_id"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+
+        let candidate = format!("Public/{account_id}");
+        if let Ok(normalized) = normalize_address_ref(&candidate) {
+            return Ok(Some(normalized));
+        }
+    }
+
+    Ok(None)
+}
+
+pub(crate) fn wallet_state_path(project_root: &Path) -> PathBuf {
+    project_root.join(".scaffold/state/wallet.state")
+}
+
+pub(crate) fn write_default_wallet_address(
+    project_root: &Path,
+    address: &str,
+) -> DynResult<String> {
+    let normalized_address = normalize_address_ref(address)?;
+    write_text(
+        &wallet_state_path(project_root),
+        &format!("default_address={normalized_address}\n"),
+    )?;
+    Ok(normalized_address)
+}
+
+pub(crate) fn wallet_password() -> String {
+    match env::var("LOGOS_SCAFFOLD_WALLET_PASSWORD") {
+        Ok(password) if !password.trim().is_empty() => password,
+        _ => DEFAULT_WALLET_PASSWORD.to_string(),
+    }
+}
+
 pub(crate) fn read_default_wallet_address(project_root: &Path) -> DynResult<Option<String>> {
-    let state_path = project_root.join(".scaffold/state/wallet.state");
+    let state_path = wallet_state_path(project_root);
     if !state_path.exists() {
         return Ok(None);
     }
@@ -174,6 +227,11 @@ pub(crate) fn is_connectivity_failure(text: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
+pub(crate) fn is_confirmation_timeout_failure(text: &str) -> bool {
+    text.to_lowercase()
+        .contains("transaction not found in preconfigured amount of blocks")
+}
+
 pub(crate) fn summarize_command_failure(stdout: &str, stderr: &str) -> String {
     let stderr_line = stderr
         .lines()
@@ -198,6 +256,11 @@ pub(crate) fn summarize_command_failure(stdout: &str, stderr: &str) -> String {
 
 pub(crate) fn extract_tx_identifier(stdout: &str, stderr: &str) -> Option<String> {
     let combined = format!("{stdout}\n{stderr}");
+
+    if let Some(hex_hash) = extract_tx_hash_from_hash_type_bytes(&combined) {
+        return Some(hex_hash);
+    }
+
     for raw_line in combined.lines() {
         let line = raw_line.trim();
         if line.is_empty() {
@@ -213,6 +276,68 @@ pub(crate) fn extract_tx_identifier(stdout: &str, stderr: &str) -> Option<String
         if line.contains("\"tx_hash\"") {
             return Some(line.to_string());
         }
+    }
+
+    None
+}
+
+fn extract_tx_hash_from_hash_type_bytes(text: &str) -> Option<String> {
+    let mut offset = 0;
+    while let Some(found) = text[offset..].find("tx_hash:") {
+        let field_start = offset + found + "tx_hash:".len();
+        let after_field = &text[field_start..];
+        let after_whitespace = after_field.trim_start();
+
+        // Only parse HashType byte-array output. `tx_hash=<id>` is handled by fallback parsing.
+        if !after_whitespace.starts_with("HashType(") {
+            offset = field_start;
+            continue;
+        }
+
+        let after_hash_type = &after_whitespace["HashType(".len()..];
+        let Some(open_bracket) = after_hash_type.find('[') else {
+            offset = field_start;
+            continue;
+        };
+
+        if !after_hash_type[..open_bracket].trim().is_empty() {
+            offset = field_start;
+            continue;
+        }
+
+        let after_open = &after_hash_type[open_bracket + 1..];
+        let Some(close_bracket) = after_open.find(']') else {
+            offset = field_start;
+            continue;
+        };
+        let inside = &after_open[..close_bracket];
+
+        let mut bytes = Vec::new();
+        let mut parse_failed = false;
+        for chunk in inside.split(|ch: char| ch == ',' || ch.is_whitespace()) {
+            if chunk.is_empty() {
+                continue;
+            }
+            match chunk.parse::<u8>() {
+                Ok(value) => bytes.push(value),
+                Err(_) => {
+                    parse_failed = true;
+                    break;
+                }
+            }
+        }
+
+        if parse_failed || bytes.is_empty() {
+            offset = field_start;
+            continue;
+        }
+
+        let mut hex_hash = String::from("0x");
+        for byte in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex_hash, "{byte:02x}");
+        }
+        return Some(hex_hash);
     }
 
     None
@@ -306,8 +431,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        extract_tx_identifier, normalize_address_ref, read_default_wallet_address,
-        resolve_wallet_address,
+        extract_tx_identifier, first_public_wallet_address, normalize_address_ref,
+        read_default_wallet_address, resolve_wallet_address, wallet_state_path,
+        write_default_wallet_address,
     };
 
     const ACCOUNT_ID: &str = "6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
@@ -380,8 +506,131 @@ mod tests {
     }
 
     #[test]
+    fn first_public_wallet_address_parses_wallet_config() {
+        let temp = tempdir().expect("tempdir");
+        let wallet_home = temp.path().join(".scaffold/wallet");
+        fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
+        fs::write(
+            wallet_home.join("wallet_config.json"),
+            r#"{
+  "initial_accounts": [
+    { "Private": { "account_id": "2ECgkFTaXzwjJBXR7ZKmXYQtpHbvTTHK9Auma4NL9AUo" } },
+    { "Public": { "account_id": "6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV" } }
+  ]
+}"#,
+        )
+        .expect("write wallet config");
+
+        let value = first_public_wallet_address(&wallet_home).expect("first public");
+        let expected = format!("Public/{ACCOUNT_ID}");
+        assert_eq!(value.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn first_public_wallet_address_returns_none_without_public_accounts() {
+        let temp = tempdir().expect("tempdir");
+        let wallet_home = temp.path().join(".scaffold/wallet");
+        fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
+        fs::write(
+            wallet_home.join("wallet_config.json"),
+            r#"{
+  "initial_accounts": [
+    { "Private": { "account_id": "2ECgkFTaXzwjJBXR7ZKmXYQtpHbvTTHK9Auma4NL9AUo" } }
+  ]
+}"#,
+        )
+        .expect("write wallet config");
+
+        let value = first_public_wallet_address(&wallet_home).expect("first public");
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn write_default_wallet_address_persists_normalized_address() {
+        let temp = tempdir().expect("tempdir");
+        let normalized = write_default_wallet_address(temp.path(), ACCOUNT_ID).expect("write");
+        assert_eq!(normalized, format!("Public/{ACCOUNT_ID}"));
+
+        let state = fs::read_to_string(wallet_state_path(temp.path())).expect("read wallet.state");
+        assert_eq!(state, format!("default_address=Public/{ACCOUNT_ID}\n"));
+    }
+
+    #[test]
     fn extract_tx_identifier_finds_tx_hash_key() {
         let tx = extract_tx_identifier("ok tx_hash=abc123", "");
         assert_eq!(tx.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn extract_tx_identifier_parses_multiline_hash_type_bytes() {
+        let stdout = r#"Results of tx send are SendTxResponse {
+    status: "Transaction submitted",
+    tx_hash: HashType(
+        [
+            236,
+            137,
+            145,
+            194,
+            178,
+            199,
+            58,
+            69,
+            16,
+            104,
+            166,
+            225,
+            54,
+            199,
+            203,
+            126,
+            43,
+            174,
+            145,
+            105,
+            245,
+            52,
+            177,
+            88,
+            177,
+            57,
+            121,
+            80,
+            47,
+            206,
+            87,
+            13,
+        ],
+    ),
+}"#;
+
+        let tx = extract_tx_identifier(stdout, "");
+        assert_eq!(
+            tx.as_deref(),
+            Some("0xec8991c2b2c73a451068a6e136c7cb7e2bae9169f534b158b13979502fce570d")
+        );
+    }
+
+    #[test]
+    fn extract_tx_identifier_prefers_plain_tx_hash_over_unrelated_byte_array() {
+        let stdout = r#"
+status: ok
+tx_hash=plain-id-123
+debug payload: [1, 2, 3]
+"#;
+
+        let tx = extract_tx_identifier(stdout, "");
+        assert_eq!(tx.as_deref(), Some("plain-id-123"));
+    }
+
+    #[test]
+    fn extract_tx_identifier_does_not_parse_bytes_without_hash_type_marker() {
+        let stdout = r#"
+status: pending
+tx_hash: plain-id-789
+details: [1, 2, 3]
+"#;
+
+        let tx = extract_tx_identifier(stdout, "");
+        assert_eq!(tx.as_deref(), Some("tx_hash: plain-id-789"));
     }
 }

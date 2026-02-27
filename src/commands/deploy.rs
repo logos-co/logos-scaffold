@@ -4,14 +4,13 @@ use std::process::Command;
 
 use anyhow::{bail, Context};
 
-use crate::constants::DEFAULT_WALLET_PASSWORD;
 use crate::process::run_with_stdin;
 use crate::project::load_project;
 use crate::DynResult;
 
 use super::wallet_support::{
     extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block,
-    sequencer_unreachable_hint, summarize_command_failure, RpcReachabilityError,
+    sequencer_unreachable_hint, summarize_command_failure, wallet_password, RpcReachabilityError,
 };
 
 const GUEST_BIN_REL_PATH: &str =
@@ -66,7 +65,7 @@ pub(crate) fn cmd_deploy(program_name: Option<String>) -> DynResult<()> {
             .arg("deploy-program")
             .arg(&binary_path);
 
-        let output = match run_with_stdin(command, format!("{DEFAULT_WALLET_PASSWORD}\n")) {
+        let output = match run_with_stdin(command, format!("{}\n", wallet_password())) {
             Ok(output) => output,
             Err(err) => {
                 println!("FAIL {program} deployment failed");

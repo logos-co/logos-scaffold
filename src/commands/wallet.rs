@@ -2,16 +2,15 @@ use std::process::Command;
 
 use anyhow::{bail, Context};
 
-use crate::constants::DEFAULT_WALLET_PASSWORD;
 use crate::process::{render_command, run_forwarded, run_with_stdin};
 use crate::project::load_project;
-use crate::state::write_text;
 use crate::DynResult;
 
 use super::wallet_support::{
-    extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, normalize_address_ref,
-    read_default_wallet_address, resolve_wallet_address, sequencer_unreachable_hint,
-    summarize_command_failure,
+    extract_tx_identifier, is_confirmation_timeout_failure, is_connectivity_failure,
+    load_wallet_runtime, read_default_wallet_address, resolve_wallet_address,
+    sequencer_unreachable_hint, summarize_command_failure, wallet_password, wallet_state_path,
+    write_default_wallet_address,
 };
 
 #[derive(Debug, Clone)]
@@ -125,7 +124,7 @@ fn cmd_wallet_topup(
         return Ok(());
     }
 
-    let output = run_with_stdin(command, format!("{DEFAULT_WALLET_PASSWORD}\n"))
+    let output = run_with_stdin(command, format!("{}\n", wallet_password()))
         .context("failed to execute wallet topup command")?;
 
     if !output.status.success() {
@@ -136,6 +135,19 @@ fn cmd_wallet_topup(
                 "wallet topup failed: {summary}\n{}",
                 sequencer_unreachable_hint(&sequencer_addr)
             );
+        }
+        if is_confirmation_timeout_failure(&combined) {
+            println!("wallet topup submitted, but confirmation timed out");
+            println!("  Address: {resolved_to}");
+            println!("  Method: pinata faucet claim");
+            println!("  Network: local sequencer ({sequencer_addr})");
+            println!(
+                "  Hint: verify balance with `logos-scaffold wallet -- account list` or retry `logos-scaffold wallet topup`."
+            );
+            if let Some(tx) = extract_tx_identifier(&output.stdout, &output.stderr) {
+                println!("  Tx: {tx}");
+            }
+            return Ok(());
         }
         bail!(
             "wallet topup failed: {summary}\nHint: run `logos-scaffold wallet list` to inspect addresses, then retry with `--address` or set a default wallet."
@@ -154,12 +166,8 @@ fn cmd_wallet_topup(
 }
 
 fn cmd_wallet_default_set(project: &crate::model::Project, address: &str) -> DynResult<()> {
-    let normalized_address = normalize_address_ref(address)?;
-    let state_path = project.root.join(".scaffold/state/wallet.state");
-    write_text(
-        &state_path,
-        &format!("default_address={normalized_address}\n"),
-    )?;
+    let normalized_address = write_default_wallet_address(&project.root, address)?;
+    let state_path = wallet_state_path(&project.root);
 
     println!("default wallet updated");
     println!("  Address: {normalized_address}");

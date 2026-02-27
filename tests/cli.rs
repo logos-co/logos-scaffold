@@ -16,6 +16,7 @@ use tempfile::tempdir;
 const TEST_PIN: &str = "767b5afd388c7981bcdf6f5b5c80159607e07e5b";
 const VALID_ACCOUNT_ID: &str = "6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
 const VALID_PUBLIC_ADDRESS: &str = "Public/6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
+const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
 const GUEST_BIN_REL_PATH: &str =
     "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
 
@@ -105,6 +106,42 @@ fn doctor_json_outputs_machine_readable_report() {
     assert!(value.get("summary").is_some());
     assert!(value.get("checks").is_some());
     assert!(value.get("next_steps").is_some());
+}
+
+#[test]
+fn doctor_uses_password_env_override_for_wallet_health() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("EXPECT_PASSWORD", "override-pass")
+        .env("LOGOS_SCAFFOLD_WALLET_PASSWORD", "override-pass")
+        .arg("doctor")
+        .arg("--json")
+        .assert();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+
+    let checks = value
+        .get("checks")
+        .and_then(serde_json::Value::as_array)
+        .expect("checks array");
+    let wallet_usability = checks
+        .iter()
+        .find(|check| {
+            check.get("name").and_then(serde_json::Value::as_str) == Some("wallet usability")
+        })
+        .expect("wallet usability check present");
+
+    assert_eq!(
+        wallet_usability
+            .get("status")
+            .and_then(serde_json::Value::as_str),
+        Some("pass")
+    );
 }
 
 #[test]
@@ -303,6 +340,43 @@ fn wallet_topup_runs_pinata_claim_with_explicit_address() {
 }
 
 #[test]
+fn wallet_topup_uses_password_env_override() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("EXPECT_PASSWORD", "override-pass")
+        .env("LOGOS_SCAFFOLD_WALLET_PASSWORD", "override-pass")
+        .arg("wallet")
+        .arg("topup")
+        .arg("--address")
+        .arg(VALID_PUBLIC_ADDRESS)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wallet topup complete"));
+}
+
+#[test]
+fn wallet_topup_falls_back_to_default_password_when_env_missing() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("EXPECT_PASSWORD", DEFAULT_WALLET_PASSWORD)
+        .arg("wallet")
+        .arg("topup")
+        .arg("--address")
+        .arg(VALID_PUBLIC_ADDRESS)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wallet topup complete"));
+}
+
+#[test]
 fn wallet_topup_uses_default_wallet_when_address_is_omitted() {
     let temp = tempdir().expect("tempdir");
     let wallet_stub = write_wallet_stub(temp.path());
@@ -384,6 +458,26 @@ fn wallet_topup_shows_sequencer_hint_on_connectivity_failure() {
                 .and(predicate::str::contains("logos-scaffold localnet start"))
                 .and(predicate::str::contains("Another project's sequencer")),
         );
+}
+
+#[test]
+fn wallet_topup_timeout_is_reported_as_non_fatal() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("TOPUP_FAIL_TIMEOUT", "1")
+        .arg("wallet")
+        .arg("topup")
+        .arg("--address")
+        .arg(VALID_PUBLIC_ADDRESS)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "wallet topup submitted, but confirmation timed out",
+        ));
 }
 
 #[test]
@@ -489,6 +583,26 @@ fn deploy_single_program_submits_successfully() {
 }
 
 #[test]
+fn deploy_uses_password_env_override() {
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some(&rpc.url));
+    write_guest_program(temp.path(), "hello");
+    write_guest_binary(temp.path(), "hello");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("EXPECT_PASSWORD", "override-pass")
+        .env("LOGOS_SCAFFOLD_WALLET_PASSWORD", "override-pass")
+        .arg("deploy")
+        .arg("hello")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OK  hello submitted"));
+}
+
+#[test]
 fn deploy_missing_binary_shows_build_hint() {
     let temp = tempdir().expect("tempdir");
     let rpc = RpcStub::start();
@@ -556,6 +670,12 @@ fn deploy_shows_hint_when_sequencer_is_unreachable_with_configured_addr() {
 
 #[test]
 fn deploy_shows_hint_when_sequencer_is_unreachable_with_fallback_addr() {
+    // This test assumes fallback `http://127.0.0.1:3040` is unreachable.
+    // Skip in environments where another process is already listening there.
+    if TcpStream::connect("127.0.0.1:3040").is_ok() {
+        return;
+    }
+
     let temp = tempdir().expect("tempdir");
     let wallet_stub = write_wallet_stub(temp.path());
     setup_wallet_project(temp.path(), &wallet_stub, None);
@@ -613,6 +733,17 @@ fn write_wallet_stub(project_root: &Path) -> String {
     let script = r#"#!/bin/sh
 set -eu
 
+require_password_if_configured() {
+  if [ "${EXPECT_PASSWORD:-}" = "" ]; then
+    return 0
+  fi
+  IFS= read -r provided || true
+  if [ "$provided" != "$EXPECT_PASSWORD" ]; then
+    echo "password mismatch" >&2
+    exit 3
+  fi
+}
+
 if [ "$#" -ge 2 ] && [ "$1" = "account" ] && [ "$2" = "list" ]; then
   echo "Preconfigured Public/6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV"
   echo "/ Public/8zxWNm1qh6FLsJpVBuDxdxcTm55qHPgFEdqJpPVu1fuy"
@@ -620,8 +751,13 @@ if [ "$#" -ge 2 ] && [ "$1" = "account" ] && [ "$2" = "list" ]; then
 fi
 
 if [ "$#" -ge 2 ] && [ "$1" = "pinata" ] && [ "$2" = "claim" ]; then
+  require_password_if_configured
   if [ "${TOPUP_FAIL_CONNECT:-0}" = "1" ]; then
     echo "connection refused" >&2
+    exit 1
+  fi
+  if [ "${TOPUP_FAIL_TIMEOUT:-0}" = "1" ]; then
+    echo "Error: Transaction not found in preconfigured amount of blocks" >&2
     exit 1
   fi
   echo "tx_hash=pinata-topup-hash"
@@ -629,6 +765,7 @@ if [ "$#" -ge 2 ] && [ "$1" = "pinata" ] && [ "$2" = "claim" ]; then
 fi
 
 if [ "$#" -ge 2 ] && [ "$1" = "deploy-program" ]; then
+  require_password_if_configured
   bin_path="$2"
   bin_name="$(basename "$bin_path")"
   if [ "${FAIL_PROGRAM:-}" = "$bin_name" ]; then
@@ -645,6 +782,7 @@ if [ "$#" -ge 1 ] && [ "$1" = "--version" ]; then
 fi
 
 if [ "$#" -ge 1 ] && [ "$1" = "check-health" ]; then
+  require_password_if_configured
   echo "ok"
   exit 0
 fi

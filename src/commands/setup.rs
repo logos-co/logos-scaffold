@@ -12,6 +12,11 @@ use crate::repo::{sync_repo_to_pin, RepoSyncOptions};
 use crate::state::prepare_wallet_home;
 use crate::DynResult;
 
+use super::wallet_support::{
+    first_public_wallet_address, read_default_wallet_address, wallet_state_path,
+    write_default_wallet_address,
+};
+
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
 pub(crate) enum WalletInstallMode {
     #[default]
@@ -56,9 +61,50 @@ pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
 
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     prepare_wallet_home(&lssa, &wallet_home)?;
+    ensure_default_wallet_seeded(&project.root, &wallet_home)?;
 
     save_project_config(&project)?;
     println!("setup complete");
+
+    Ok(())
+}
+
+fn ensure_default_wallet_seeded(project_root: &Path, wallet_home: &Path) -> DynResult<()> {
+    let should_seed = match read_default_wallet_address(project_root) {
+        Ok(Some(existing)) => {
+            println!("default wallet already configured: {existing}");
+            false
+        }
+        Ok(None) => true,
+        Err(err) => {
+            println!(
+                "warning: wallet default state is malformed; attempting deterministic reseed: {err}"
+            );
+            true
+        }
+    };
+
+    if !should_seed {
+        return Ok(());
+    }
+
+    match first_public_wallet_address(wallet_home) {
+        Ok(Some(address)) => {
+            let normalized = write_default_wallet_address(project_root, &address)?;
+            let state_path = wallet_state_path(project_root);
+            println!("default wallet seeded from preconfigured account");
+            println!("  Address: {normalized}");
+            println!("  State file: {}", state_path.display());
+        }
+        Ok(None) => {
+            println!(
+                "warning: could not seed default wallet automatically (no preconfigured public account found)"
+            );
+        }
+        Err(err) => {
+            println!("warning: could not seed default wallet automatically: {err}");
+        }
+    }
 
     Ok(())
 }
@@ -125,4 +171,78 @@ fn ensure_wallet_install(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::ensure_default_wallet_seeded;
+    use crate::commands::wallet_support::wallet_state_path;
+
+    const PUBLIC_ACCOUNT_ID: &str = "6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
+    const PRIVATE_ACCOUNT_ID: &str = "2ECgkFTaXzwjJBXR7ZKmXYQtpHbvTTHK9Auma4NL9AUo";
+
+    #[test]
+    fn ensure_default_wallet_seeded_writes_first_public_account() {
+        let temp = tempdir().expect("tempdir");
+        let wallet_home = temp.path().join(".scaffold/wallet");
+        fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
+        fs::write(
+            wallet_home.join("config.json"),
+            format!(
+                r#"{{
+  "initial_accounts": [
+    {{ "Private": {{ "account_id": "{PRIVATE_ACCOUNT_ID}" }} }},
+    {{ "Public": {{ "account_id": "{PUBLIC_ACCOUNT_ID}" }} }}
+  ]
+}}"#
+            ),
+        )
+        .expect("write wallet config");
+
+        ensure_default_wallet_seeded(temp.path(), &wallet_home).expect("seed default wallet");
+
+        let state = fs::read_to_string(wallet_state_path(temp.path())).expect("read wallet.state");
+        assert_eq!(
+            state,
+            format!("default_address=Public/{PUBLIC_ACCOUNT_ID}\n")
+        );
+    }
+
+    #[test]
+    fn ensure_default_wallet_seeded_does_not_overwrite_existing_default() {
+        let temp = tempdir().expect("tempdir");
+        let state_path = wallet_state_path(temp.path());
+        fs::create_dir_all(state_path.parent().expect("parent")).expect("mkdir state parent");
+        fs::write(
+            &state_path,
+            "default_address=Public/8zxWNm1qh6FLsJpVBuDxdxcTm55qHPgFEdqJpPVu1fuy\n",
+        )
+        .expect("write wallet.state");
+
+        let wallet_home = temp.path().join(".scaffold/wallet");
+        fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
+        fs::write(
+            wallet_home.join("config.json"),
+            format!(
+                r#"{{
+  "initial_accounts": [
+    {{ "Public": {{ "account_id": "{PUBLIC_ACCOUNT_ID}" }} }}
+  ]
+}}"#
+            ),
+        )
+        .expect("write wallet config");
+
+        ensure_default_wallet_seeded(temp.path(), &wallet_home).expect("seed default wallet");
+
+        let state = fs::read_to_string(state_path).expect("read wallet.state");
+        assert_eq!(
+            state,
+            "default_address=Public/8zxWNm1qh6FLsJpVBuDxdxcTm55qHPgFEdqJpPVu1fuy\n"
+        );
+    }
 }
