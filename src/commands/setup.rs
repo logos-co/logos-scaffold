@@ -1,3 +1,4 @@
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -7,7 +8,7 @@ use clap::ValueEnum;
 use crate::error::SetupError;
 use crate::process::{run_checked, which};
 use crate::project::{ensure_dir_exists, load_project, save_project_config};
-use crate::repo::sync_repo_to_pin;
+use crate::repo::{sync_repo_to_pin, RepoSyncOptions};
 use crate::state::prepare_wallet_home;
 use crate::DynResult;
 
@@ -26,9 +27,16 @@ pub(crate) struct SetupCommand {
 
 pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
     let mut project = load_project()?;
-    sync_repo_to_pin(&mut project.config.lssa, "lssa")?;
-
     let lssa = PathBuf::from(&project.config.lssa.path);
+    let cache_root = PathBuf::from(&project.config.cache_root);
+    let sync_opts = if is_cache_managed_repo_path(&cache_root, &lssa) {
+        RepoSyncOptions::auto_reclone_cache_repo()
+    } else {
+        RepoSyncOptions::fail_on_source_mismatch()
+    };
+
+    sync_repo_to_pin(&mut project.config.lssa, "lssa", sync_opts)?;
+
     ensure_dir_exists(&lssa, "lssa")?;
 
     run_checked(
@@ -53,6 +61,26 @@ pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
     println!("setup complete");
 
     Ok(())
+}
+
+fn is_cache_managed_repo_path(cache_root: &Path, repo_path: &Path) -> bool {
+    let cache_repos = normalize_path(cache_root).join("repos");
+    let repo = normalize_path(repo_path);
+    repo.starts_with(cache_repos)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
 }
 
 fn ensure_wallet_install(

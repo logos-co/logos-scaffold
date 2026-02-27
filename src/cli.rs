@@ -4,8 +4,10 @@ use anyhow::anyhow;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::build::cmd_build_shortcut;
+use crate::commands::client::cmd_client;
 use crate::commands::deploy::cmd_deploy;
 use crate::commands::doctor::cmd_doctor;
+use crate::commands::idl::cmd_idl;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
@@ -49,6 +51,8 @@ struct NewArgs {
     lssa_path: Option<PathBuf>,
     #[arg(long)]
     cache_root: Option<PathBuf>,
+    #[arg(long, default_value = "default")]
+    template: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -59,6 +63,21 @@ struct SetupArgs {
 
 #[derive(Debug, clap::Args)]
 struct BuildArgs {
+    #[command(subcommand)]
+    subcommand: Option<BuildSubcommand>,
+    project_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+enum BuildSubcommand {
+    #[command(about = "Build IDL files from the current project")]
+    Idl(BuildSubArgs),
+    #[command(about = "Build client code from IDL files")]
+    Client(BuildSubArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct BuildSubArgs {
     project_path: Option<PathBuf>,
 }
 
@@ -178,11 +197,24 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             vendor_deps: args.vendor_deps,
             lssa_path: args.lssa_path,
             cache_root: args.cache_root,
+            template: args.template,
         }),
         Some(Commands::Setup(args)) => cmd_setup(SetupCommand {
             wallet_install: args.wallet_install,
         }),
-        Some(Commands::Build(args)) => cmd_build_shortcut(args.project_path),
+        Some(Commands::Build(args)) => match args.subcommand {
+            Some(BuildSubcommand::Idl(sub)) => cmd_idl(
+                &sub.project_path
+                    .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
+                    .unwrap_or_else(|| vec!["build".to_string()]),
+            ),
+            Some(BuildSubcommand::Client(sub)) => cmd_client(
+                &sub.project_path
+                    .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
+                    .unwrap_or_else(|| vec!["build".to_string()]),
+            ),
+            None => cmd_build_shortcut(args.project_path),
+        },
         Some(Commands::Deploy(args)) => cmd_deploy(args.program_name),
         Some(Commands::Localnet(localnet)) => {
             let action = match localnet.command {

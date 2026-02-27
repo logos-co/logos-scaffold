@@ -17,6 +17,7 @@ pub(crate) struct Config {
     pub(crate) lssa: RepoRef,
     pub(crate) wallet_binary: String,
     pub(crate) wallet_home_dir: String,
+    pub(crate) framework: FrameworkConfig,
 }
 
 #[derive(Clone, Debug)]
@@ -87,4 +88,17 @@ pub(crate) struct DoctorReport {
     pub(crate) summary: DoctorSummary,
     pub(crate) checks: Vec<CheckRow>,
     pub(crate) next_steps: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FrameworkConfig {
+    pub(crate) kind: String,
+    pub(crate) version: String,
+    pub(crate) idl: FrameworkIdlConfig,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FrameworkIdlConfig {
+    pub(crate) spec: String,
+    pub(crate) path: String,
 }

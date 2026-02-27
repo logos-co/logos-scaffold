@@ -1,7 +1,10 @@
 use anyhow::bail;
 
-use crate::constants::{DEFAULT_WALLET_BINARY, LSSA_URL};
-use crate::model::{Config, RepoRef};
+use crate::constants::{
+    DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
+    DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, LSSA_URL,
+};
+use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, RepoRef};
 use crate::DynResult;
 
 pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
@@ -17,6 +20,11 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 
     let mut wallet_binary = String::new();
     let mut wallet_home_dir = String::new();
+
+    let mut framework_kind = String::new();
+    let mut framework_version = String::new();
+    let mut framework_idl_spec = String::new();
+    let mut framework_idl_path = String::new();
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -52,6 +60,20 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     lssa_pin = value;
                 }
             }
+            "framework" => {
+                if key == "kind" {
+                    framework_kind = value;
+                } else if key == "version" {
+                    framework_version = value;
+                }
+            }
+            "framework.idl" => {
+                if key == "spec" {
+                    framework_idl_spec = value;
+                } else if key == "path" {
+                    framework_idl_path = value;
+                }
+            }
             "wallet" => {
                 if key == "binary" {
                     wallet_binary = value;
@@ -82,6 +104,19 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         wallet_home_dir = ".scaffold/wallet".to_string();
     }
 
+    if framework_kind.is_empty() {
+        framework_kind = FRAMEWORK_KIND_DEFAULT.to_string();
+    }
+    if framework_version.is_empty() {
+        framework_version = DEFAULT_FRAMEWORK_VERSION.to_string();
+    }
+    if framework_idl_spec.is_empty() {
+        framework_idl_spec = DEFAULT_FRAMEWORK_IDL_SPEC.to_string();
+    }
+    if framework_idl_path.is_empty() {
+        framework_idl_path = DEFAULT_FRAMEWORK_IDL_PATH.to_string();
+    }
+
     Ok(Config {
         version,
         cache_root,
@@ -93,12 +128,20 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         },
         wallet_binary,
         wallet_home_dir,
+        framework: FrameworkConfig {
+            kind: framework_kind,
+            version: framework_version,
+            idl: FrameworkIdlConfig {
+                spec: framework_idl_spec,
+                path: framework_idl_path,
+            },
+        },
     })
 }
 
 pub(crate) fn serialize_config(cfg: &Config) -> String {
     format!(
-        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \"{}\"\n",
+        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n",
         escape_toml_string(&cfg.version),
         escape_toml_string(&cfg.cache_root),
         escape_toml_string(&cfg.lssa.url),
@@ -107,6 +150,10 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
         escape_toml_string(&cfg.lssa.pin),
         escape_toml_string(&cfg.wallet_binary),
         escape_toml_string(&cfg.wallet_home_dir),
+        escape_toml_string(&cfg.framework.kind),
+        escape_toml_string(&cfg.framework.version),
+        escape_toml_string(&cfg.framework.idl.spec),
+        escape_toml_string(&cfg.framework.idl.path),
     )
 }
 
