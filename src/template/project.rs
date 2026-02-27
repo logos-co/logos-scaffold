@@ -236,6 +236,10 @@ mod tests {
             gitignore.lines().any(|l| l.trim() == ".scaffold"),
             ".gitignore should contain .scaffold, got: {gitignore:?}"
         );
+        assert!(
+            gitignore.lines().any(|l| l.trim() == ".env.local"),
+            ".gitignore should contain .env.local, got: {gitignore:?}"
+        );
 
         apply_overlay(&target, "default", &ctx).expect("second overlay should succeed");
         let gitignore_after = fs::read_to_string(target.join(".gitignore"))
@@ -244,9 +248,17 @@ mod tests {
             .lines()
             .filter(|l| l.trim() == ".scaffold")
             .count();
+        let env_local_count = gitignore_after
+            .lines()
+            .filter(|l| l.trim() == ".env.local")
+            .count();
         assert_eq!(
             scaffold_count, 1,
             "idempotent overlay must not duplicate .scaffold"
+        );
+        assert_eq!(
+            env_local_count, 1,
+            "idempotent overlay must not duplicate .env.local"
         );
 
         fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");

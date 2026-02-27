@@ -19,7 +19,7 @@ ergonomic developer experience similar to Anchor on Solana:
 ```bash
 logos-scaffold setup
 logos-scaffold localnet start
-export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
+logos-scaffold doctor
 ```
 
 ## Build

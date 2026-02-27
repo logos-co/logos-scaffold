@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -5,7 +6,9 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use serde_json::Value;
 
+use crate::constants::DEFAULT_WALLET_PASSWORD;
 use crate::model::Project;
+use crate::state::write_text;
 use crate::DynResult;
 
 const WALLET_CONFIG_PRIMARY: &str = "wallet_config.json";
@@ -66,8 +69,58 @@ fn read_wallet_config(wallet_home: &Path) -> DynResult<(PathBuf, Value)> {
     Ok((path, value))
 }
 
+pub(crate) fn first_public_wallet_address(wallet_home: &Path) -> DynResult<Option<String>> {
+    let (_, wallet_config) = read_wallet_config(wallet_home)?;
+    let Some(accounts) = wallet_config
+        .get("initial_accounts")
+        .and_then(Value::as_array)
+    else {
+        return Ok(None);
+    };
+
+    for account in accounts {
+        let Some(account_id) = account
+            .get("Public")
+            .and_then(|public| public.get("account_id"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+
+        let candidate = format!("Public/{account_id}");
+        if let Ok(normalized) = normalize_address_ref(&candidate) {
+            return Ok(Some(normalized));
+        }
+    }
+
+    Ok(None)
+}
+
+pub(crate) fn wallet_state_path(project_root: &Path) -> PathBuf {
+    project_root.join(".scaffold/state/wallet.state")
+}
+
+pub(crate) fn write_default_wallet_address(
+    project_root: &Path,
+    address: &str,
+) -> DynResult<String> {
+    let normalized_address = normalize_address_ref(address)?;
+    write_text(
+        &wallet_state_path(project_root),
+        &format!("default_address={normalized_address}\n"),
+    )?;
+    Ok(normalized_address)
+}
+
+pub(crate) fn wallet_password() -> String {
+    match env::var("LOGOS_SCAFFOLD_WALLET_PASSWORD") {
+        Ok(password) if !password.trim().is_empty() => password,
+        _ => DEFAULT_WALLET_PASSWORD.to_string(),
+    }
+}
+
 pub(crate) fn read_default_wallet_address(project_root: &Path) -> DynResult<Option<String>> {
-    let state_path = project_root.join(".scaffold/state/wallet.state");
+    let state_path = wallet_state_path(project_root);
     if !state_path.exists() {
         return Ok(None);
     }
@@ -172,6 +225,11 @@ pub(crate) fn is_connectivity_failure(text: &str) -> bool {
     ]
     .iter()
     .any(|needle| lower.contains(needle))
+}
+
+pub(crate) fn is_confirmation_timeout_failure(text: &str) -> bool {
+    text.to_lowercase()
+        .contains("transaction not found in preconfigured amount of blocks")
 }
 
 pub(crate) fn summarize_command_failure(stdout: &str, stderr: &str) -> String {
@@ -306,8 +364,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        extract_tx_identifier, normalize_address_ref, read_default_wallet_address,
-        resolve_wallet_address,
+        extract_tx_identifier, first_public_wallet_address, normalize_address_ref,
+        read_default_wallet_address, resolve_wallet_address, wallet_state_path,
+        write_default_wallet_address,
     };
 
     const ACCOUNT_ID: &str = "6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
@@ -377,6 +436,56 @@ mod tests {
         assert!(err
             .to_string()
             .contains("wallet topup requires a destination address"));
+    }
+
+    #[test]
+    fn first_public_wallet_address_parses_wallet_config() {
+        let temp = tempdir().expect("tempdir");
+        let wallet_home = temp.path().join(".scaffold/wallet");
+        fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
+        fs::write(
+            wallet_home.join("wallet_config.json"),
+            r#"{
+  "initial_accounts": [
+    { "Private": { "account_id": "2ECgkFTaXzwjJBXR7ZKmXYQtpHbvTTHK9Auma4NL9AUo" } },
+    { "Public": { "account_id": "6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV" } }
+  ]
+}"#,
+        )
+        .expect("write wallet config");
+
+        let value = first_public_wallet_address(&wallet_home).expect("first public");
+        let expected = format!("Public/{ACCOUNT_ID}");
+        assert_eq!(value.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn first_public_wallet_address_returns_none_without_public_accounts() {
+        let temp = tempdir().expect("tempdir");
+        let wallet_home = temp.path().join(".scaffold/wallet");
+        fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
+        fs::write(
+            wallet_home.join("wallet_config.json"),
+            r#"{
+  "initial_accounts": [
+    { "Private": { "account_id": "2ECgkFTaXzwjJBXR7ZKmXYQtpHbvTTHK9Auma4NL9AUo" } }
+  ]
+}"#,
+        )
+        .expect("write wallet config");
+
+        let value = first_public_wallet_address(&wallet_home).expect("first public");
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn write_default_wallet_address_persists_normalized_address() {
+        let temp = tempdir().expect("tempdir");
+        let normalized = write_default_wallet_address(temp.path(), ACCOUNT_ID).expect("write");
+        assert_eq!(normalized, format!("Public/{ACCOUNT_ID}"));
+
+        let state = fs::read_to_string(wallet_state_path(temp.path())).expect("read wallet.state");
+        assert_eq!(state, format!("default_address=Public/{ACCOUNT_ID}\n"));
     }
 
     #[test]

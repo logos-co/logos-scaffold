@@ -14,6 +14,12 @@ Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
 - No `logos-blockchain` dependency
 - No full-stack/circuits management
 
+## Prerequisites
+
+- `git`, `rustc`, `cargo`
+- Unix process helpers: `lsof`, `ps`, `kill`
+- Container runtime for guest builds: Docker or Podman
+
 ## Build
 
 ```bash
@@ -44,7 +50,7 @@ logos-scaffold help
 ## Command Semantics
 
 - `create` and `new` are aliases.
-- `setup` syncs LSSA to pinned commit, builds standalone `sequencer_runner`, and installs wallet based on `--wallet-install` policy.
+- `setup` syncs LSSA to pinned commit, builds standalone `sequencer_runner`, installs wallet based on `--wallet-install` policy, and seeds a deterministic default wallet from preconfigured public accounts when none is set.
 - `build [project-path]` runs `setup` with wallet policy `auto` and then `cargo build --workspace`.
 - `deploy [program-name]` deploys one or all guest programs discovered in `methods/guest/src/bin/*.rs` using prebuilt `.bin` artifacts.
 - `localnet start` waits until localnet is actually ready (`pid alive` + `127.0.0.1:3040` reachable), otherwise fails with diagnostics.
@@ -54,6 +60,7 @@ logos-scaffold help
 - `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.
 - `wallet -- ...` forwards raw wallet CLI commands while preserving project wallet environment.
 - `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
+- Wallet-facing commands accept `LOGOS_SCAFFOLD_WALLET_PASSWORD` for password override (fallback: local dev default).
 
 ## Pinned LSSA Commit
 
@@ -68,15 +75,13 @@ logos-scaffold new my-app
 cd my-app
 logos-scaffold setup
 logos-scaffold localnet start
-export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet
 logos-scaffold build
 logos-scaffold deploy
-logos-scaffold wallet list
-logos-scaffold wallet default set Public/<base58-account-id>
 logos-scaffold wallet topup
-export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release
-wallet check-health
+logos-scaffold wallet -- check-health
 ```
+
+`setup` automatically seeds `.scaffold/state/wallet.state` with the first preconfigured public account when no default is present.
 
 Checkpoint commands:
 
@@ -125,6 +130,7 @@ cargo run --bin run_hello_world_with_authorization_through_tail_call_with_pda
 Optional overrides for custom binaries:
 
 ```bash
+export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release
 cargo run --bin run_hello_world -- --program-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <public_account_id>
 cargo run --bin run_hello_world_through_tail_call_private -- --simple-tail-call-path "$EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin" --hello-world-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <private_account_id>
 ```

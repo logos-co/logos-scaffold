@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 use crate::constants::DEFAULT_LSSA_PIN;
 use crate::model::{CheckRow, CheckStatus};
@@ -28,6 +29,36 @@ pub(crate) fn check_binary(binary: &str, required: bool) -> CheckRow {
                 _ => format!("Install `{binary}`"),
             }),
         }
+    }
+}
+
+pub(crate) fn check_container_runtime() -> CheckRow {
+    container_runtime_row(which("docker"), which("podman"))
+}
+
+fn container_runtime_row(docker: Option<PathBuf>, podman: Option<PathBuf>) -> CheckRow {
+    match (docker, podman) {
+        (Some(path), _) => CheckRow {
+            status: CheckStatus::Pass,
+            name: "container runtime".to_string(),
+            detail: format!("found docker at {}", path.display()),
+            remediation: None,
+        },
+        (None, Some(path)) => CheckRow {
+            status: CheckStatus::Pass,
+            name: "container runtime".to_string(),
+            detail: format!("found podman at {}", path.display()),
+            remediation: None,
+        },
+        (None, None) => CheckRow {
+            status: CheckStatus::Warn,
+            name: "container runtime".to_string(),
+            detail: "neither docker nor podman found on PATH".to_string(),
+            remediation: Some(
+                "Install Docker or Podman (required for guest builds that use risc0 tooling)"
+                    .to_string(),
+            ),
+        },
     }
 }
 
@@ -167,4 +198,38 @@ pub(crate) fn print_rows(rows: &[CheckRow]) {
 
 pub(crate) fn one_line(text: &str) -> String {
     text.replace('\n', " ").replace('\r', " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::model::CheckStatus;
+
+    use super::container_runtime_row;
+
+    #[test]
+    fn container_runtime_row_prefers_docker() {
+        let row = container_runtime_row(
+            Some(PathBuf::from("/usr/local/bin/docker")),
+            Some(PathBuf::from("/usr/local/bin/podman")),
+        );
+        assert_eq!(row.status, CheckStatus::Pass);
+        assert!(row.detail.contains("docker"));
+    }
+
+    #[test]
+    fn container_runtime_row_passes_with_podman_when_docker_missing() {
+        let row = container_runtime_row(None, Some(PathBuf::from("/usr/local/bin/podman")));
+        assert_eq!(row.status, CheckStatus::Pass);
+        assert!(row.detail.contains("podman"));
+    }
+
+    #[test]
+    fn container_runtime_row_warns_when_missing() {
+        let row = container_runtime_row(None, None);
+        assert_eq!(row.status, CheckStatus::Warn);
+        assert!(row.detail.contains("neither docker nor podman"));
+        assert!(row.remediation.is_some());
+    }
 }

@@ -4,10 +4,11 @@ use std::process::{Command, Stdio};
 
 use anyhow::bail;
 
-use crate::constants::{DEFAULT_LSSA_PIN, DEFAULT_WALLET_PASSWORD};
+use super::wallet_support::wallet_password;
+use crate::constants::DEFAULT_LSSA_PIN;
 use crate::doctor_checks::{
-    check_binary, check_path, check_port_warn, check_repo, check_standalone_support, one_line,
-    print_rows,
+    check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
+    check_standalone_support, one_line, print_rows,
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
 use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo, which};
@@ -46,6 +47,10 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
     rows.push(check_binary("rustc", true));
     rows.push(check_binary("cargo", true));
     rows.push(check_binary(&project.config.wallet_binary, true));
+    rows.push(check_binary("lsof", true));
+    rows.push(check_binary("ps", true));
+    rows.push(check_binary("kill", true));
+    rows.push(check_container_runtime());
 
     rows.push(check_repo("lssa", &lssa, &project.config.lssa.pin));
 
@@ -194,7 +199,7 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        match run_with_stdin(health_cmd, format!("{DEFAULT_WALLET_PASSWORD}\n")) {
+        match run_with_stdin(health_cmd, format!("{}\n", wallet_password())) {
             Ok(out) => {
                 if out.status.success() {
                     rows.push(CheckRow {
