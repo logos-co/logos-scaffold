@@ -282,32 +282,65 @@ pub(crate) fn extract_tx_identifier(stdout: &str, stderr: &str) -> Option<String
 }
 
 fn extract_tx_hash_from_hash_type_bytes(text: &str) -> Option<String> {
-    let tx_pos = text.find("tx_hash")?;
-    let after_tx = &text[tx_pos..];
-    let open_bracket = after_tx.find('[')?;
-    let after_open = &after_tx[open_bracket + 1..];
-    let close_bracket = after_open.find(']')?;
-    let inside = &after_open[..close_bracket];
+    let mut offset = 0;
+    while let Some(found) = text[offset..].find("tx_hash:") {
+        let field_start = offset + found + "tx_hash:".len();
+        let after_field = &text[field_start..];
+        let after_whitespace = after_field.trim_start();
 
-    let mut bytes = Vec::new();
-    for chunk in inside.split(|ch: char| ch == ',' || ch.is_whitespace()) {
-        if chunk.is_empty() {
+        // Only parse HashType byte-array output. `tx_hash=<id>` is handled by fallback parsing.
+        if !after_whitespace.starts_with("HashType(") {
+            offset = field_start;
             continue;
         }
-        let value = chunk.parse::<u8>().ok()?;
-        bytes.push(value);
+
+        let after_hash_type = &after_whitespace["HashType(".len()..];
+        let Some(open_bracket) = after_hash_type.find('[') else {
+            offset = field_start;
+            continue;
+        };
+
+        if !after_hash_type[..open_bracket].trim().is_empty() {
+            offset = field_start;
+            continue;
+        }
+
+        let after_open = &after_hash_type[open_bracket + 1..];
+        let Some(close_bracket) = after_open.find(']') else {
+            offset = field_start;
+            continue;
+        };
+        let inside = &after_open[..close_bracket];
+
+        let mut bytes = Vec::new();
+        let mut parse_failed = false;
+        for chunk in inside.split(|ch: char| ch == ',' || ch.is_whitespace()) {
+            if chunk.is_empty() {
+                continue;
+            }
+            match chunk.parse::<u8>() {
+                Ok(value) => bytes.push(value),
+                Err(_) => {
+                    parse_failed = true;
+                    break;
+                }
+            }
+        }
+
+        if parse_failed || bytes.is_empty() {
+            offset = field_start;
+            continue;
+        }
+
+        let mut hex_hash = String::from("0x");
+        for byte in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(&mut hex_hash, "{byte:02x}");
+        }
+        return Some(hex_hash);
     }
 
-    if bytes.is_empty() {
-        return None;
-    }
-
-    let mut hex_hash = String::from("0x");
-    for byte in bytes {
-        use std::fmt::Write as _;
-        let _ = write!(&mut hex_hash, "{byte:02x}");
-    }
-    Some(hex_hash)
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -575,5 +608,29 @@ mod tests {
             tx.as_deref(),
             Some("0xec8991c2b2c73a451068a6e136c7cb7e2bae9169f534b158b13979502fce570d")
         );
+    }
+
+    #[test]
+    fn extract_tx_identifier_prefers_plain_tx_hash_over_unrelated_byte_array() {
+        let stdout = r#"
+status: ok
+tx_hash=plain-id-123
+debug payload: [1, 2, 3]
+"#;
+
+        let tx = extract_tx_identifier(stdout, "");
+        assert_eq!(tx.as_deref(), Some("plain-id-123"));
+    }
+
+    #[test]
+    fn extract_tx_identifier_does_not_parse_bytes_without_hash_type_marker() {
+        let stdout = r#"
+status: pending
+tx_hash: plain-id-789
+details: [1, 2, 3]
+"#;
+
+        let tx = extract_tx_identifier(stdout, "");
+        assert_eq!(tx.as_deref(), Some("tx_hash: plain-id-789"));
     }
 }
