@@ -1,0 +1,181 @@
+name: Publish crate
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver version to publish (for example X.Y.Z, vX.Y.Z, X.Y.Z-rc.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CRATE_NAME: logos-scaffold
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version_raw: ${{ steps.resolve.outputs.version_raw }}
+      version_normalized: ${{ steps.resolve.outputs.version_normalized }}
+
+    steps:
+      - name: Resolve and validate version
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            raw_version="$REF_NAME"
+          else
+            raw_version="$INPUT_VERSION"
+          fi
+
+          normalized_version="${raw_version#v}"
+          semver_pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$normalized_version" =~ $semver_pattern ]]; then
+            echo "::error::Invalid version '$raw_version'. Expected semver (for example X.Y.Z, vX.Y.Z, X.Y.Z-rc.1)."
+            exit 1
+          fi
+
+          echo "version_raw=$raw_version" >> "$GITHUB_OUTPUT"
+          echo "version_normalized=$normalized_version" >> "$GITHUB_OUTPUT"
+
+  verify:
+    runs-on: ubuntu-latest
+    needs: resolve-version
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Confirm resolved version
+        run: |
+          echo "Raw version: ${{ needs.resolve-version.outputs.version_raw }}"
+          echo "Normalized version: ${{ needs.resolve-version.outputs.version_normalized }}"
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Build check
+        run: cargo check --locked
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Dry-run publish package
+        run: cargo publish --dry-run --locked
+
+  publish:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-version
+      - verify
+    concurrency:
+      group: ${{ github.workflow }}-${{ needs.resolve-version.outputs.version_normalized }}
+      cancel-in-progress: false
+    outputs:
+      publish_status: ${{ steps.summary.outputs.publish_status }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate Cargo.toml version matches release version
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.version_normalized }}
+        run: |
+          set -euo pipefail
+
+          manifest_version="$(cargo pkgid --quiet | sed -n 's/.*#.*@//p')"
+
+          if [[ -z "$manifest_version" ]]; then
+            echo "::error::Could not resolve crate version from Cargo.toml."
+            exit 1
+          fi
+
+          if [[ "$manifest_version" != "$RELEASE_VERSION" ]]; then
+            echo "::error::Version mismatch. Cargo.toml has '$manifest_version' but release version is '$RELEASE_VERSION'."
+            exit 1
+          fi
+
+      - name: Check whether version already exists on crates.io
+        id: crates-io
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.version_normalized }}
+        run: |
+          set -euo pipefail
+
+          url="https://crates.io/api/v1/crates/${CRATE_NAME}/${RELEASE_VERSION}"
+          status_code="$(curl -sS -o /dev/null -w '%{http_code}' "$url")"
+
+          if [[ "$status_code" == "200" ]]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "Version ${RELEASE_VERSION} is already published on crates.io. Skipping publish."
+          elif [[ "$status_code" == "404" ]]; then
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "Version ${RELEASE_VERSION} is not published yet. Publishing now."
+          else
+            echo "::error::Unexpected crates.io response status: ${status_code}"
+            exit 1
+          fi
+
+      - name: Publish crate
+        if: steps.crates-io.outputs.already_published == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${CARGO_REGISTRY_TOKEN}" ]]; then
+            echo "::error::Missing CARGO_REGISTRY_TOKEN secret."
+            exit 1
+          fi
+
+          cargo publish --locked
+
+      - name: Publish summary
+        id: summary
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.version_normalized }}
+          ALREADY_PUBLISHED: ${{ steps.crates-io.outputs.already_published }}
+        run: |
+          set -euo pipefail
+
+          status="published"
+          if [[ "$ALREADY_PUBLISHED" == "true" ]]; then
+            status="skipped-already-published"
+          fi
+
+          echo "publish_status=$status" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### crates.io publish summary"
+            echo "- crate: ${CRATE_NAME}"
+            echo "- version: ${RELEASE_VERSION}"
+            echo "- status: ${status}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -66,7 +66,8 @@ fn apply_dir_recursive(
             .file_name()
             .ok_or_else(|| anyhow!("invalid template file path: {}", file.path().display()))?;
 
-        let rel_path = relative.join(file_name);
+        let output_file_name = normalize_template_file_name(file_name);
+        let rel_path = relative.join(output_file_name);
         let output_path = target_root.join(&rel_path);
 
         if let Some(parent) = output_path.parent() {
@@ -91,6 +92,14 @@ fn apply_dir_recursive(
     }
 
     Ok(())
+}
+
+fn normalize_template_file_name(file_name: &std::ffi::OsStr) -> std::ffi::OsString {
+    if file_name == std::ffi::OsStr::new("Cargo.toml.template") {
+        std::ffi::OsString::from("Cargo.toml")
+    } else {
+        file_name.to_os_string()
+    }
 }
 
 fn render_template_text(raw: &str, ctx: &OverlayRenderContext<'_>) -> DynResult<String> {
@@ -165,6 +174,45 @@ mod tests {
 
         for path in expected {
             assert!(target.join(path).exists(), "missing expected file: {path}");
+        }
+        assert!(
+            !target.join("Cargo.toml.template").exists(),
+            "template Cargo.toml placeholder should not leak into output"
+        );
+
+        fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");
+    }
+
+    #[test]
+    fn lez_framework_overlay_converts_template_manifests_to_cargo_toml() {
+        let target = mk_temp_dir("lez-manifests");
+        let ctx = OverlayRenderContext {
+            crate_name: "my-app",
+            lssa_pin: "abc123",
+        };
+
+        apply_overlay(&target, "lez-framework", &ctx).expect("failed to apply lez-framework");
+
+        for path in [
+            "Cargo.toml",
+            "crates/lssa-client-gen/Cargo.toml",
+            "methods/guest/Cargo.toml",
+        ] {
+            assert!(
+                target.join(path).exists(),
+                "missing expected manifest in generated project: {path}"
+            );
+        }
+
+        for path in [
+            "Cargo.toml.template",
+            "crates/lssa-client-gen/Cargo.toml.template",
+            "methods/guest/Cargo.toml.template",
+        ] {
+            assert!(
+                !target.join(path).exists(),
+                "template manifest should not leak into output: {path}"
+            );
         }
 
         fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");
