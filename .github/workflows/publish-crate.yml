@@ -131,7 +131,7 @@ jobs:
           set -euo pipefail
 
           url="https://crates.io/api/v1/crates/${CRATE_NAME}/${RELEASE_VERSION}"
-          status_code="$(curl -sS -o /dev/null -w '%{http_code}' "$url")"
+          status_code="$(curl -sS -o /dev/null -w '%{http_code}' -H 'User-Agent: logos-scaffold-ci (https://github.com/logos-co/logos-scaffold)' "$url")"
 
           if [[ "$status_code" == "200" ]]; then
             echo "already_published=true" >> "$GITHUB_OUTPUT"
