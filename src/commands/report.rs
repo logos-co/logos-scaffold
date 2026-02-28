@@ -1,5 +1,7 @@
+use std::collections::VecDeque;
 use std::env;
 use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -250,6 +252,8 @@ fn collect_report_artifacts(
         notes: None,
     });
 
+    scrub_manifest_entries(&mut collected, &mut skipped, &mut warnings, &sanitize_ctx);
+
     let output_archive_scrubbed =
         scrub_path_string(&output_path.display().to_string(), &sanitize_ctx);
     let manifest = ReportManifest {
@@ -386,8 +390,7 @@ fn collect_log_files(
                 reason: format!("failed to read .scaffold/logs directory: {err}"),
             });
             warnings.push(format!(
-                "could not inspect optional logs directory {}: {err}",
-                logs_dir.display()
+                "could not inspect optional logs directory .scaffold/logs: {err}",
             ));
             return Ok(());
         }
@@ -416,22 +419,22 @@ fn collect_log_files(
     }
 
     for path in paths {
-        let raw = match fs::read_to_string(&path) {
+        let raw = match tail_file_lines_lossy(&path, tail) {
             Ok(raw) => raw,
             Err(err) => {
                 skipped.push(SkippedItem {
                     path: format!("logs/{}", file_name_or_unknown(&path)),
-                    reason: format!("failed to read log file: {err}"),
+                    reason: format!("failed to read log file bytes: {err}"),
                 });
                 continue;
             }
         };
 
-        let tailed = tail_lines(&raw, tail);
-        let sanitize = sanitize_text(&tailed, sanitize_ctx);
+        let sanitize = sanitize_text(&raw, sanitize_ctx);
         register_redaction(redaction, sanitize.replacements);
 
         if contains_high_risk_content(&sanitize.text) {
+            let rel = rel_path(&path, &project.root);
             skipped.push(SkippedItem {
                 path: format!("logs/{}", file_name_or_unknown(&path)),
                 reason: "log still contains high-risk secret markers after sanitization"
@@ -439,7 +442,7 @@ fn collect_log_files(
             });
             warnings.push(format!(
                 "skipped {} because high-risk markers remained after sanitization",
-                path.display()
+                rel
             ));
             continue;
         }
@@ -691,18 +694,38 @@ fn run_simple_command(program: &str, args: &[&str], cwd: Option<&Path>) -> DynRe
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn tail_lines(text: &str, tail: usize) -> String {
+fn tail_file_lines_lossy(path: &Path, tail: usize) -> DynResult<String> {
     if tail == 0 {
-        return String::new();
+        return Ok(String::new());
     }
 
-    let lines: Vec<&str> = text.lines().collect();
-    let start = lines.len().saturating_sub(tail);
-    let mut out = lines[start..].join("\n");
-    if text.ends_with('\n') {
-        out.push('\n');
+    let file =
+        File::open(path).with_context(|| format!("failed to open log file {}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut buf = Vec::new();
+    let mut lines: VecDeque<Vec<u8>> = VecDeque::new();
+
+    loop {
+        buf.clear();
+        let read = reader
+            .read_until(b'\n', &mut buf)
+            .with_context(|| format!("failed to read bytes from {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+
+        if lines.len() == tail {
+            lines.pop_front();
+        }
+        lines.push_back(buf.clone());
     }
-    out
+
+    let mut out = Vec::new();
+    for line in lines {
+        out.extend_from_slice(&line);
+    }
+
+    Ok(String::from_utf8_lossy(&out).to_string())
 }
 
 fn register_redaction(summary: &mut RedactionSummary, replacements: usize) {
@@ -732,21 +755,50 @@ fn scrub_path_string(raw: &str, sanitize_ctx: &SanitizeContext) -> String {
     scrubbed
 }
 
+fn scrub_manifest_text(raw: &str, sanitize_ctx: &SanitizeContext) -> String {
+    scrub_path_string(raw, sanitize_ctx)
+}
+
+fn scrub_manifest_entries(
+    collected: &mut [CollectedItem],
+    skipped: &mut [SkippedItem],
+    warnings: &mut [String],
+    sanitize_ctx: &SanitizeContext,
+) {
+    for item in collected {
+        item.path = scrub_manifest_text(&item.path, sanitize_ctx);
+        item.source = scrub_manifest_text(&item.source, sanitize_ctx);
+        if let Some(notes) = &item.notes {
+            item.notes = Some(scrub_manifest_text(notes, sanitize_ctx));
+        }
+    }
+
+    for item in skipped {
+        item.path = scrub_manifest_text(&item.path, sanitize_ctx);
+        item.reason = scrub_manifest_text(&item.reason, sanitize_ctx);
+    }
+
+    for warning in warnings {
+        *warning = scrub_manifest_text(warning, sanitize_ctx);
+    }
+}
+
 fn scrub_paths(line: &str, sanitize_ctx: &SanitizeContext) -> (String, usize) {
     let mut current = line.to_string();
     let mut replacements = 0;
 
-    for (target, placeholder) in [
-        (sanitize_ctx.project_root.as_str(), "<PROJECT_ROOT>"),
-        (sanitize_ctx.home_dir.as_str(), "<HOME>"),
-    ] {
+    let mut targets = Vec::new();
+    collect_scrub_targets(&mut targets, &sanitize_ctx.project_root, "<PROJECT_ROOT>");
+    collect_scrub_targets(&mut targets, &sanitize_ctx.home_dir, "<HOME>");
+
+    for (target, placeholder) in targets {
         if target.is_empty() {
             continue;
         }
 
-        let count = current.matches(target).count();
+        let count = current.matches(&target).count();
         if count > 0 {
-            current = current.replace(target, placeholder);
+            current = current.replace(&target, placeholder);
             replacements += count;
         }
     }
@@ -754,13 +806,53 @@ fn scrub_paths(line: &str, sanitize_ctx: &SanitizeContext) -> (String, usize) {
     (current, replacements)
 }
 
+fn collect_scrub_targets<'a>(out: &mut Vec<(String, &'a str)>, target: &str, placeholder: &'a str) {
+    push_scrub_target(out, target, placeholder);
+    if let Some(stripped) = target.strip_prefix("/private") {
+        push_scrub_target(out, stripped, placeholder);
+    } else if target.starts_with('/') {
+        push_scrub_target(out, &format!("/private{target}"), placeholder);
+    }
+}
+
+fn push_scrub_target<'a>(out: &mut Vec<(String, &'a str)>, target: &str, placeholder: &'a str) {
+    if target.is_empty() {
+        return;
+    }
+    if out.iter().any(|(existing, _)| existing == target) {
+        return;
+    }
+    out.push((target.to_string(), placeholder));
+}
+
 fn sanitize_text(raw: &str, sanitize_ctx: &SanitizeContext) -> SanitizedText {
     let mut replacements = 0;
     let mut output_lines = Vec::new();
+    let mut inside_private_key_block = false;
 
     for line in raw.lines() {
         let (scrubbed_paths, path_replacements) = scrub_paths(line, sanitize_ctx);
         replacements += path_replacements;
+
+        if inside_private_key_block {
+            let is_end = is_private_key_block_end_line(&scrubbed_paths);
+            output_lines.push(redacted_line_marker(&scrubbed_paths));
+            replacements += 1;
+            if is_end {
+                inside_private_key_block = false;
+            }
+            continue;
+        }
+
+        if is_private_key_block_begin_line(&scrubbed_paths) {
+            let is_end = is_private_key_block_end_line(&scrubbed_paths);
+            output_lines.push(redacted_line_marker(&scrubbed_paths));
+            replacements += 1;
+            if !is_end {
+                inside_private_key_block = true;
+            }
+            continue;
+        }
 
         let (redacted_kv, kv_replacements) = redact_sensitive_line(&scrubbed_paths);
         replacements += kv_replacements;
@@ -779,6 +871,24 @@ fn sanitize_text(raw: &str, sanitize_ctx: &SanitizeContext) -> SanitizedText {
     SanitizedText { text, replacements }
 }
 
+fn redacted_line_marker(line: &str) -> String {
+    let indentation: String = line
+        .chars()
+        .take_while(|ch| ch.is_ascii_whitespace())
+        .collect();
+    format!("{indentation}[REDACTED SENSITIVE LINE]")
+}
+
+fn is_private_key_block_begin_line(line: &str) -> bool {
+    let upper = line.to_ascii_uppercase();
+    upper.contains("-----BEGIN") && upper.contains("PRIVATE KEY-----")
+}
+
+fn is_private_key_block_end_line(line: &str) -> bool {
+    let upper = line.to_ascii_uppercase();
+    upper.contains("-----END") && upper.contains("PRIVATE KEY-----")
+}
+
 fn redact_sensitive_line(line: &str) -> (String, usize) {
     let lower = line.to_ascii_lowercase();
 
@@ -793,11 +903,7 @@ fn redact_sensitive_line(line: &str) -> (String, usize) {
         .iter()
         .any(|needle| lower.contains(needle))
     {
-        let indentation: String = line
-            .chars()
-            .take_while(|ch| ch.is_ascii_whitespace())
-            .collect();
-        return (format!("{indentation}[REDACTED SENSITIVE LINE]"), 1);
+        return (redacted_line_marker(line), 1);
     }
 
     let key_value_keywords = [
@@ -817,6 +923,11 @@ fn redact_sensitive_line(line: &str) -> (String, usize) {
     }
 
     let Some(eq_idx) = line.find('=') else {
+        // Let URL-specific redaction handle embedded credentials in URL-like lines.
+        if line.contains("://") {
+            return (line.to_string(), 0);
+        }
+
         let Some(colon_idx) = line.find(':') else {
             return ("[REDACTED SENSITIVE LINE]".to_string(), 1);
         };
@@ -867,14 +978,9 @@ fn redact_url_credentials(line: &str) -> (String, usize) {
         let url_slice = &after_scheme[..end];
 
         if let Some(at_idx) = url_slice.find('@') {
-            let credentials = &url_slice[..at_idx];
-            if credentials.contains(':') {
-                output.push_str("[REDACTED]@");
-                output.push_str(&url_slice[at_idx + 1..]);
-                replacements += 1;
-            } else {
-                output.push_str(url_slice);
-            }
+            output.push_str("[REDACTED]@");
+            output.push_str(&url_slice[at_idx + 1..]);
+            replacements += 1;
         } else {
             output.push_str(url_slice);
         }
@@ -899,6 +1005,7 @@ fn contains_high_risk_content(text: &str) -> bool {
         "viewing_secret_key",
         "private_key_holder",
         "-----begin private key",
+        "-----end private key",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
