@@ -184,6 +184,41 @@ mod tests {
     }
 
     #[test]
+    fn lez_framework_overlay_converts_template_manifests_to_cargo_toml() {
+        let target = mk_temp_dir("lez-manifests");
+        let ctx = OverlayRenderContext {
+            crate_name: "my-app",
+            lssa_pin: "abc123",
+        };
+
+        apply_overlay(&target, "lez-framework", &ctx).expect("failed to apply lez-framework");
+
+        for path in [
+            "Cargo.toml",
+            "crates/lssa-client-gen/Cargo.toml",
+            "methods/guest/Cargo.toml",
+        ] {
+            assert!(
+                target.join(path).exists(),
+                "missing expected manifest in generated project: {path}"
+            );
+        }
+
+        for path in [
+            "Cargo.toml.template",
+            "crates/lssa-client-gen/Cargo.toml.template",
+            "methods/guest/Cargo.toml.template",
+        ] {
+            assert!(
+                !target.join(path).exists(),
+                "template manifest should not leak into output: {path}"
+            );
+        }
+
+        fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");
+    }
+
+    #[test]
     fn overlay_renders_tokens_and_leaves_no_unresolved_placeholders() {
         let target = mk_temp_dir("tokens");
         let ctx = OverlayRenderContext {

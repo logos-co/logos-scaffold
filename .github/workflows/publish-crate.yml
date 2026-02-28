@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (X.Y.Z or vX.Y.Z)"
+        description: "Semver version to publish (for example X.Y.Z, vX.Y.Z, X.Y.Z-rc.1)"
         required: true
         type: string
 
@@ -42,8 +42,9 @@ jobs:
           fi
 
           normalized_version="${raw_version#v}"
-          if [[ ! "$normalized_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid version '$raw_version'. Expected X.Y.Z or vX.Y.Z."
+          semver_pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$normalized_version" =~ $semver_pattern ]]; then
+            echo "::error::Invalid version '$raw_version'. Expected semver (for example X.Y.Z, vX.Y.Z, X.Y.Z-rc.1)."
             exit 1
           fi
 
