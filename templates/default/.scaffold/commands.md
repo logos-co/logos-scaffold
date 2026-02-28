@@ -6,3 +6,4 @@
 - wallet home env: `export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet`
 - localnet json status: `logos-scaffold localnet status --json`
 - doctor json status: `logos-scaffold doctor --json`
+- diagnostics bundle for issue reports: `logos-scaffold report --tail 500`

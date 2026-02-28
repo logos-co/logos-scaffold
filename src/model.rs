@@ -90,6 +90,48 @@ pub(crate) struct DoctorReport {
     pub(crate) next_steps: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct CollectedItem {
+    pub(crate) path: String,
+    pub(crate) source: String,
+    pub(crate) notes: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SkippedItem {
+    pub(crate) path: String,
+    pub(crate) reason: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct RedactionSummary {
+    pub(crate) files_redacted: usize,
+    pub(crate) replacements: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ToolCommandResult {
+    pub(crate) name: String,
+    pub(crate) command: String,
+    pub(crate) status: Option<i32>,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ReportManifest {
+    pub(crate) generated_at_unix: u64,
+    pub(crate) project_root: String,
+    pub(crate) output_archive: String,
+    pub(crate) include_count: usize,
+    pub(crate) skip_count: usize,
+    pub(crate) redaction: RedactionSummary,
+    pub(crate) collected: Vec<CollectedItem>,
+    pub(crate) skipped: Vec<SkippedItem>,
+    pub(crate) warnings: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FrameworkConfig {
     pub(crate) kind: String,

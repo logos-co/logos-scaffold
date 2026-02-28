@@ -36,6 +36,38 @@ pub(crate) fn cmd_doctor(as_json: bool) -> DynResult<()> {
 }
 
 fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
+    let report = build_doctor_report()?;
+
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        if report.summary.fail > 0 {
+            bail!("doctor reported FAIL checks");
+        }
+        return Ok(());
+    }
+
+    print_rows(&report.checks);
+    println!(
+        "Summary: {} PASS, {} WARN, {} FAIL",
+        report.summary.pass, report.summary.warn, report.summary.fail
+    );
+    println!("Doctor status: {}", report.status);
+
+    if !report.next_steps.is_empty() {
+        println!("Next steps:");
+        for step in report.next_steps {
+            println!("- {step}");
+        }
+    }
+
+    if report.summary.fail > 0 {
+        bail!("doctor reported FAIL checks");
+    }
+
+    Ok(())
+}
+
+pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     let project = load_project()?;
     let lssa = PathBuf::from(&project.config.lssa.path);
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
@@ -268,39 +300,12 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
 
     let next_steps = derive_next_steps(&rows);
 
-    if as_json {
-        let report = DoctorReport {
-            status: doctor_status.to_string(),
-            summary,
-            checks: rows,
-            next_steps,
-        };
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        if report.summary.fail > 0 {
-            bail!("doctor reported FAIL checks");
-        }
-        return Ok(());
-    }
-
-    print_rows(&rows);
-    println!(
-        "Summary: {} PASS, {} WARN, {} FAIL",
-        summary.pass, summary.warn, summary.fail
-    );
-    println!("Doctor status: {doctor_status}");
-
-    if !next_steps.is_empty() {
-        println!("Next steps:");
-        for step in next_steps {
-            println!("- {step}");
-        }
-    }
-
-    if summary.fail > 0 {
-        bail!("doctor reported FAIL checks");
-    }
-
-    Ok(())
+    Ok(DoctorReport {
+        status: doctor_status.to_string(),
+        summary,
+        checks: rows,
+        next_steps,
+    })
 }
 
 fn is_localnet_connectivity_failure(stdout: &str, stderr: &str) -> bool {

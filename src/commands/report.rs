@@ -1,0 +1,981 @@
+use std::env;
+use std::fs::{self, File};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{anyhow, bail, Context};
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use serde::Serialize;
+
+use super::doctor::build_doctor_report;
+use super::localnet::build_localnet_status_for_project;
+use crate::model::{
+    CollectedItem, RedactionSummary, ReportManifest, SkippedItem, ToolCommandResult,
+};
+use crate::process::{set_command_echo, which};
+use crate::project::{home_dir, load_project};
+use crate::state::write_text;
+use crate::DynResult;
+
+const REPORT_WARNING: &str = "WARNING: This diagnostics bundle is sanitized on a best-effort basis and may still contain sensitive data. Inspect every file before sharing it publicly.";
+const GUEST_BIN_REL_PATH: &str = "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
+
+pub(crate) fn cmd_report(out: Option<PathBuf>, tail: usize) -> DynResult<()> {
+    let project = load_project().context(
+        "This command must be run inside a logos-scaffold project.\nNext step: cd into your scaffolded project directory and retry.",
+    )?;
+
+    let now = unix_timestamp_now()?;
+    let output_path = resolve_output_path(&project.root, out, now)?;
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let reports_dir = project.root.join(".scaffold/reports");
+    fs::create_dir_all(&reports_dir)?;
+
+    let staging_dir = reports_dir.join(format!(".tmp-report-{now}-{}", std::process::id()));
+    fs::create_dir_all(&staging_dir)?;
+
+    let collection = collect_report_artifacts(&project, tail, now, &staging_dir, &output_path);
+
+    let manifest = match collection {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            bail!(
+                "report generation failed: {err}\nstaging directory retained at {}",
+                staging_dir.display()
+            )
+        }
+    };
+
+    if let Err(err) = pack_staging_dir(&staging_dir, &output_path) {
+        bail!(
+            "failed to create archive at {}: {err}\nstaging directory retained at {}",
+            output_path.display(),
+            staging_dir.display()
+        );
+    }
+
+    if let Err(err) = fs::remove_dir_all(&staging_dir) {
+        println!(
+            "warning: failed to remove temporary staging directory {}: {err}",
+            staging_dir.display()
+        );
+    }
+
+    println!("report complete");
+    println!("  archive: {}", output_path.display());
+    println!("  included items: {}", manifest.include_count);
+    println!("  skipped items: {}", manifest.skip_count);
+    println!("{REPORT_WARNING}");
+
+    Ok(())
+}
+
+fn collect_report_artifacts(
+    project: &crate::model::Project,
+    tail: usize,
+    generated_at_unix: u64,
+    staging_dir: &Path,
+    output_path: &Path,
+) -> DynResult<ReportManifest> {
+    let home = home_dir().unwrap_or_else(|_| PathBuf::from("~"));
+    let sanitize_ctx = SanitizeContext {
+        project_root: project.root.display().to_string(),
+        home_dir: home.display().to_string(),
+    };
+
+    let mut collected = Vec::new();
+    let mut skipped = Vec::new();
+    let mut warnings = Vec::new();
+    let mut redaction = RedactionSummary::default();
+
+    skipped.push(SkippedItem {
+        path: ".scaffold/wallet/**".to_string(),
+        reason: "excluded by policy: wallet key material is never included".to_string(),
+    });
+    skipped.push(SkippedItem {
+        path: ".scaffold/state/wallet.state".to_string(),
+        reason: "excluded by policy: project default wallet state is never included raw"
+            .to_string(),
+    });
+    skipped.push(SkippedItem {
+        path: ".git/**".to_string(),
+        reason: "excluded by policy".to_string(),
+    });
+    skipped.push(SkippedItem {
+        path: "target/**".to_string(),
+        reason: "excluded by policy".to_string(),
+    });
+    skipped.push(SkippedItem {
+        path: ".env* (raw values)".to_string(),
+        reason: "excluded by policy: only key-only redacted environment summaries are included"
+            .to_string(),
+    });
+
+    write_text(
+        &staging_dir.join("README.txt"),
+        &format!(
+            "logos-scaffold diagnostics report\n\n{REPORT_WARNING}\n\nGenerated at unix timestamp: {generated_at_unix}\n"
+        ),
+    )?;
+    collected.push(CollectedItem {
+        path: "README.txt".to_string(),
+        source: "generated".to_string(),
+        notes: Some("bundle safety warning".to_string()),
+    });
+
+    set_command_echo(false);
+    let doctor_result = build_doctor_report();
+    set_command_echo(true);
+    match doctor_result {
+        Ok(report) => {
+            write_json_artifact(staging_dir, "diagnostics/doctor.json", &report)?;
+            collected.push(CollectedItem {
+                path: "diagnostics/doctor.json".to_string(),
+                source: "logos-scaffold doctor report model".to_string(),
+                notes: None,
+            });
+        }
+        Err(err) => {
+            warnings.push(format!("doctor diagnostics unavailable: {err}"));
+            skipped.push(SkippedItem {
+                path: "diagnostics/doctor.json".to_string(),
+                reason: format!("failed to collect doctor report: {err}"),
+            });
+        }
+    }
+
+    let localnet_status = build_localnet_status_for_project(project);
+    write_json_artifact(
+        staging_dir,
+        "diagnostics/localnet-status.json",
+        &localnet_status,
+    )?;
+    collected.push(CollectedItem {
+        path: "diagnostics/localnet-status.json".to_string(),
+        source: "logos-scaffold localnet status model".to_string(),
+        notes: None,
+    });
+
+    let scaffold_path = project.root.join("scaffold.toml");
+    match fs::read_to_string(&scaffold_path) {
+        Ok(raw) => {
+            let sanitize = sanitize_text(&raw, &sanitize_ctx);
+            register_redaction(&mut redaction, sanitize.replacements);
+            if contains_high_risk_content(&sanitize.text) {
+                skipped.push(SkippedItem {
+                    path: "project/scaffold.toml".to_string(),
+                    reason: "file still contains high-risk secret markers after sanitization"
+                        .to_string(),
+                });
+            } else {
+                write_text(&staging_dir.join("project/scaffold.toml"), &sanitize.text)?;
+                collected.push(CollectedItem {
+                    path: "project/scaffold.toml".to_string(),
+                    source: rel_path(&scaffold_path, &project.root),
+                    notes: Some("paths scrubbed".to_string()),
+                });
+            }
+        }
+        Err(err) => {
+            skipped.push(SkippedItem {
+                path: "project/scaffold.toml".to_string(),
+                reason: format!("failed to read required file: {err}"),
+            });
+            warnings.push(format!(
+                "scaffold.toml could not be included: {err}. report may be incomplete"
+            ));
+        }
+    }
+
+    collect_env_summary(
+        project,
+        staging_dir,
+        &sanitize_ctx,
+        &mut collected,
+        &mut skipped,
+        &mut redaction,
+    )?;
+
+    collect_log_files(
+        project,
+        staging_dir,
+        tail,
+        &sanitize_ctx,
+        &mut collected,
+        &mut skipped,
+        &mut redaction,
+        &mut warnings,
+    )?;
+
+    let build_evidence = collect_build_evidence(project, &sanitize_ctx);
+    write_json_artifact(
+        staging_dir,
+        "summaries/build-evidence.json",
+        &build_evidence,
+    )?;
+    collected.push(CollectedItem {
+        path: "summaries/build-evidence.json".to_string(),
+        source: "filesystem scan".to_string(),
+        notes: Some("no build commands executed".to_string()),
+    });
+
+    let git_metadata = collect_git_metadata(project, &sanitize_ctx);
+    write_json_artifact(staging_dir, "summaries/git-metadata.json", &git_metadata)?;
+    collected.push(CollectedItem {
+        path: "summaries/git-metadata.json".to_string(),
+        source: "git CLI".to_string(),
+        notes: None,
+    });
+
+    let (tool_versions, tool_redactions, tool_warnings) =
+        collect_tool_versions(project, &sanitize_ctx);
+    register_redaction(&mut redaction, tool_redactions);
+    warnings.extend(tool_warnings);
+    write_json_artifact(staging_dir, "summaries/tool-versions.json", &tool_versions)?;
+    collected.push(CollectedItem {
+        path: "summaries/tool-versions.json".to_string(),
+        source: "tool --version probes".to_string(),
+        notes: None,
+    });
+
+    collected.push(CollectedItem {
+        path: "manifest.json".to_string(),
+        source: "generated".to_string(),
+        notes: None,
+    });
+
+    let output_archive_scrubbed =
+        scrub_path_string(&output_path.display().to_string(), &sanitize_ctx);
+    let manifest = ReportManifest {
+        generated_at_unix,
+        project_root: "<PROJECT_ROOT>".to_string(),
+        output_archive: output_archive_scrubbed,
+        include_count: collected.len(),
+        skip_count: skipped.len(),
+        redaction,
+        collected,
+        skipped,
+        warnings,
+    };
+
+    write_json_artifact(staging_dir, "manifest.json", &manifest)?;
+
+    Ok(manifest)
+}
+
+fn resolve_output_path(project_root: &Path, out: Option<PathBuf>, now: u64) -> DynResult<PathBuf> {
+    let default = project_root.join(format!(".scaffold/reports/report-{now}.tar.gz"));
+    match out {
+        Some(path) if path.is_absolute() => Ok(path),
+        Some(path) => Ok(env::current_dir()?.join(path)),
+        None => Ok(default),
+    }
+}
+
+fn write_json_artifact<T: Serialize>(
+    staging_dir: &Path,
+    rel_path: &str,
+    value: &T,
+) -> DynResult<()> {
+    let content = serde_json::to_string_pretty(value)?;
+    write_text(&staging_dir.join(rel_path), &content)
+}
+
+fn collect_env_summary(
+    project: &crate::model::Project,
+    staging_dir: &Path,
+    sanitize_ctx: &SanitizeContext,
+    collected: &mut Vec<CollectedItem>,
+    skipped: &mut Vec<SkippedItem>,
+    redaction: &mut RedactionSummary,
+) -> DynResult<()> {
+    let env_local_path = project.root.join(".env.local");
+    if !env_local_path.exists() {
+        skipped.push(SkippedItem {
+            path: "project/env.local".to_string(),
+            reason: "optional file missing: .env.local".to_string(),
+        });
+        return Ok(());
+    }
+
+    let raw = match fs::read_to_string(&env_local_path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            skipped.push(SkippedItem {
+                path: "project/env.local".to_string(),
+                reason: format!("failed to read .env.local: {err}"),
+            });
+            return Ok(());
+        }
+    };
+
+    let mut rendered = String::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            rendered.push_str(line);
+            rendered.push('\n');
+            continue;
+        }
+
+        if let Some(eq_idx) = line.find('=') {
+            let key = line[..eq_idx].trim();
+            if key.is_empty() {
+                rendered.push_str("# <redacted malformed env entry>\n");
+            } else {
+                rendered.push_str(key);
+                rendered.push_str("=<REDACTED>\n");
+            }
+        } else {
+            rendered.push_str("# <redacted non key-value env entry>\n");
+        }
+    }
+
+    let sanitize = sanitize_text(&rendered, sanitize_ctx);
+    register_redaction(redaction, sanitize.replacements);
+
+    if contains_high_risk_content(&sanitize.text) {
+        skipped.push(SkippedItem {
+            path: "project/env.local".to_string(),
+            reason: "sanitized env summary still contains high-risk markers".to_string(),
+        });
+        return Ok(());
+    }
+
+    write_text(&staging_dir.join("project/env.local"), &sanitize.text)?;
+    collected.push(CollectedItem {
+        path: "project/env.local".to_string(),
+        source: ".env.local".to_string(),
+        notes: Some("key-only redacted representation".to_string()),
+    });
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_log_files(
+    project: &crate::model::Project,
+    staging_dir: &Path,
+    tail: usize,
+    sanitize_ctx: &SanitizeContext,
+    collected: &mut Vec<CollectedItem>,
+    skipped: &mut Vec<SkippedItem>,
+    redaction: &mut RedactionSummary,
+    warnings: &mut Vec<String>,
+) -> DynResult<()> {
+    let logs_dir = project.root.join(".scaffold/logs");
+    if !logs_dir.exists() {
+        skipped.push(SkippedItem {
+            path: "logs/*.log".to_string(),
+            reason: "optional directory missing: .scaffold/logs".to_string(),
+        });
+        return Ok(());
+    }
+
+    let entries = match fs::read_dir(&logs_dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            skipped.push(SkippedItem {
+                path: "logs/*.log".to_string(),
+                reason: format!("failed to read .scaffold/logs directory: {err}"),
+            });
+            warnings.push(format!(
+                "could not inspect optional logs directory {}: {err}",
+                logs_dir.display()
+            ));
+            return Ok(());
+        }
+    };
+
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("log") {
+            continue;
+        }
+        paths.push(path);
+    }
+    paths.sort();
+
+    if paths.is_empty() {
+        skipped.push(SkippedItem {
+            path: "logs/*.log".to_string(),
+            reason: "no .log files found under .scaffold/logs".to_string(),
+        });
+        return Ok(());
+    }
+
+    for path in paths {
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) => {
+                skipped.push(SkippedItem {
+                    path: format!("logs/{}", file_name_or_unknown(&path)),
+                    reason: format!("failed to read log file: {err}"),
+                });
+                continue;
+            }
+        };
+
+        let tailed = tail_lines(&raw, tail);
+        let sanitize = sanitize_text(&tailed, sanitize_ctx);
+        register_redaction(redaction, sanitize.replacements);
+
+        if contains_high_risk_content(&sanitize.text) {
+            skipped.push(SkippedItem {
+                path: format!("logs/{}", file_name_or_unknown(&path)),
+                reason: "log still contains high-risk secret markers after sanitization"
+                    .to_string(),
+            });
+            warnings.push(format!(
+                "skipped {} because high-risk markers remained after sanitization",
+                path.display()
+            ));
+            continue;
+        }
+
+        let out_rel = format!("logs/{}", file_name_or_unknown(&path));
+        write_text(&staging_dir.join(&out_rel), &sanitize.text)?;
+        collected.push(CollectedItem {
+            path: out_rel,
+            source: rel_path(&path, &project.root),
+            notes: Some(format!("tail={tail} lines, sanitized")),
+        });
+    }
+
+    Ok(())
+}
+
+fn collect_build_evidence(
+    project: &crate::model::Project,
+    sanitize_ctx: &SanitizeContext,
+) -> BuildEvidenceReport {
+    let guest_src_dir = project.root.join("methods/guest/src/bin");
+    let guest_bin_dir = project.root.join(GUEST_BIN_REL_PATH);
+    let workspace_target = project.root.join("target");
+
+    let mut guest_programs = Vec::new();
+    if let Ok(entries) = fs::read_dir(&guest_src_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                guest_programs.push(stem.to_string());
+            }
+        }
+    }
+    guest_programs.sort();
+
+    let mut expected_binaries = Vec::new();
+    for program in &guest_programs {
+        let path = guest_bin_dir.join(format!("{program}.bin"));
+        expected_binaries.push(BinaryArtifactSummary {
+            program: program.clone(),
+            relative_path: scrub_path_string(&rel_path(&path, &project.root), sanitize_ctx),
+            exists: path.exists(),
+            modified_unix: file_mtime_unix(&path),
+            size_bytes: file_size_bytes(&path),
+        });
+    }
+
+    let mut discovered_binaries = Vec::new();
+    if let Ok(entries) = fs::read_dir(&guest_bin_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("bin") {
+                continue;
+            }
+            discovered_binaries.push(BinaryArtifactSummary {
+                program: path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                relative_path: scrub_path_string(&rel_path(&path, &project.root), sanitize_ctx),
+                exists: true,
+                modified_unix: file_mtime_unix(&path),
+                size_bytes: file_size_bytes(&path),
+            });
+        }
+    }
+    discovered_binaries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+
+    BuildEvidenceReport {
+        note: "No build commands were executed by `logos-scaffold report`; this is metadata only."
+            .to_string(),
+        workspace_target_exists: workspace_target.exists(),
+        workspace_target_modified_unix: file_mtime_unix(&workspace_target),
+        guest_programs,
+        expected_binaries,
+        discovered_binaries,
+    }
+}
+
+fn collect_git_metadata(
+    project: &crate::model::Project,
+    sanitize_ctx: &SanitizeContext,
+) -> GitMetadataReport {
+    let mut errors = Vec::new();
+
+    let head = run_simple_command("git", &["rev-parse", "HEAD"], Some(&project.root))
+        .ok()
+        .map(|s| scrub_path_string(s.trim(), sanitize_ctx));
+    if head.is_none() {
+        errors.push("failed to resolve git HEAD".to_string());
+    }
+
+    let branch = run_simple_command(
+        "git",
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        Some(&project.root),
+    )
+    .ok()
+    .map(|s| scrub_path_string(s.trim(), sanitize_ctx));
+    if branch.is_none() {
+        errors.push("failed to resolve git branch".to_string());
+    }
+
+    let clean = run_simple_command("git", &["status", "--porcelain"], Some(&project.root))
+        .ok()
+        .map(|stdout| stdout.trim().is_empty());
+    if clean.is_none() {
+        errors.push("failed to determine git working tree cleanliness".to_string());
+    }
+
+    GitMetadataReport {
+        head,
+        branch,
+        clean,
+        errors,
+    }
+}
+
+fn collect_tool_versions(
+    project: &crate::model::Project,
+    sanitize_ctx: &SanitizeContext,
+) -> (Vec<ToolCommandResult>, usize, Vec<String>) {
+    let mut results = Vec::new();
+    let mut warnings = Vec::new();
+    let mut redaction_replacements = 0;
+
+    for (name, program, args, cwd) in [
+        ("git", "git", vec!["--version"], None::<&Path>),
+        ("rustc", "rustc", vec!["--version"], None::<&Path>),
+        ("cargo", "cargo", vec!["--version"], None::<&Path>),
+    ] {
+        let (result, replacements) = collect_tool_command(name, program, &args, cwd, sanitize_ctx);
+        redaction_replacements += replacements;
+        if result.error.is_some() || result.status.unwrap_or(1) != 0 {
+            warnings.push(format!("tool probe `{name}` did not succeed"));
+        }
+        results.push(result);
+    }
+
+    let wallet_binary = project.config.wallet_binary.clone();
+    let (wallet_result, wallet_replacements) =
+        collect_tool_command("wallet", &wallet_binary, &["--version"], None, sanitize_ctx);
+    redaction_replacements += wallet_replacements;
+    if wallet_result.error.is_some() || wallet_result.status.unwrap_or(1) != 0 {
+        warnings.push(format!(
+            "tool probe `wallet` (binary `{wallet_binary}`) did not succeed"
+        ));
+    }
+    results.push(wallet_result);
+
+    if which("docker").is_some() {
+        let (docker_result, replacements) =
+            collect_tool_command("docker", "docker", &["--version"], None, sanitize_ctx);
+        redaction_replacements += replacements;
+        if docker_result.error.is_some() || docker_result.status.unwrap_or(1) != 0 {
+            warnings.push("tool probe `docker` did not succeed".to_string());
+        }
+        results.push(docker_result);
+    }
+
+    if which("podman").is_some() {
+        let (podman_result, replacements) =
+            collect_tool_command("podman", "podman", &["--version"], None, sanitize_ctx);
+        redaction_replacements += replacements;
+        if podman_result.error.is_some() || podman_result.status.unwrap_or(1) != 0 {
+            warnings.push("tool probe `podman` did not succeed".to_string());
+        }
+        results.push(podman_result);
+    }
+
+    (results, redaction_replacements, warnings)
+}
+
+fn collect_tool_command(
+    name: &str,
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    sanitize_ctx: &SanitizeContext,
+) -> (ToolCommandResult, usize) {
+    let mut cmd = Command::new(program);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let command_rendered = format!("{} {}", program, args.join(" ")).trim().to_string();
+
+    match cmd.output() {
+        Ok(output) => {
+            let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
+            let sanitized_stdout = sanitize_text(&stdout_raw, sanitize_ctx);
+            let sanitized_stderr = sanitize_text(&stderr_raw, sanitize_ctx);
+            let replacements = sanitized_stdout.replacements + sanitized_stderr.replacements;
+
+            (
+                ToolCommandResult {
+                    name: name.to_string(),
+                    command: command_rendered,
+                    status: output.status.code(),
+                    stdout: sanitized_stdout.text,
+                    stderr: sanitized_stderr.text,
+                    error: None,
+                },
+                replacements,
+            )
+        }
+        Err(err) => (
+            ToolCommandResult {
+                name: name.to_string(),
+                command: command_rendered,
+                status: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                error: Some(err.to_string()),
+            },
+            0,
+        ),
+    }
+}
+
+fn run_simple_command(program: &str, args: &[&str], cwd: Option<&Path>) -> DynResult<String> {
+    let mut cmd = Command::new(program);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    for arg in args {
+        cmd.arg(arg);
+    }
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        bail!(
+            "{} {} failed with status {}",
+            program,
+            args.join(" "),
+            output.status
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn tail_lines(text: &str, tail: usize) -> String {
+    if tail == 0 {
+        return String::new();
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(tail);
+    let mut out = lines[start..].join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn register_redaction(summary: &mut RedactionSummary, replacements: usize) {
+    if replacements == 0 {
+        return;
+    }
+    summary.files_redacted += 1;
+    summary.replacements += replacements;
+}
+
+fn rel_path(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn file_name_or_unknown(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn scrub_path_string(raw: &str, sanitize_ctx: &SanitizeContext) -> String {
+    let (scrubbed, _) = scrub_paths(raw, sanitize_ctx);
+    scrubbed
+}
+
+fn scrub_paths(line: &str, sanitize_ctx: &SanitizeContext) -> (String, usize) {
+    let mut current = line.to_string();
+    let mut replacements = 0;
+
+    for (target, placeholder) in [
+        (sanitize_ctx.project_root.as_str(), "<PROJECT_ROOT>"),
+        (sanitize_ctx.home_dir.as_str(), "<HOME>"),
+    ] {
+        if target.is_empty() {
+            continue;
+        }
+
+        let count = current.matches(target).count();
+        if count > 0 {
+            current = current.replace(target, placeholder);
+            replacements += count;
+        }
+    }
+
+    (current, replacements)
+}
+
+fn sanitize_text(raw: &str, sanitize_ctx: &SanitizeContext) -> SanitizedText {
+    let mut replacements = 0;
+    let mut output_lines = Vec::new();
+
+    for line in raw.lines() {
+        let (scrubbed_paths, path_replacements) = scrub_paths(line, sanitize_ctx);
+        replacements += path_replacements;
+
+        let (redacted_kv, kv_replacements) = redact_sensitive_line(&scrubbed_paths);
+        replacements += kv_replacements;
+
+        let (redacted_urls, url_replacements) = redact_url_credentials(&redacted_kv);
+        replacements += url_replacements;
+
+        output_lines.push(redacted_urls);
+    }
+
+    let mut text = output_lines.join("\n");
+    if raw.ends_with('\n') {
+        text.push('\n');
+    }
+
+    SanitizedText { text, replacements }
+}
+
+fn redact_sensitive_line(line: &str) -> (String, usize) {
+    let lower = line.to_ascii_lowercase();
+
+    let hard_line_keywords = [
+        "secret_spending_key",
+        "nullifier_secret_key",
+        "viewing_secret_key",
+        "private_key_holder",
+        "-----begin private key",
+    ];
+    if hard_line_keywords
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        let indentation: String = line
+            .chars()
+            .take_while(|ch| ch.is_ascii_whitespace())
+            .collect();
+        return (format!("{indentation}[REDACTED SENSITIVE LINE]"), 1);
+    }
+
+    let key_value_keywords = [
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "private_key",
+        "mnemonic",
+        "seed",
+    ];
+    if !key_value_keywords
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return (line.to_string(), 0);
+    }
+
+    let Some(eq_idx) = line.find('=') else {
+        let Some(colon_idx) = line.find(':') else {
+            return ("[REDACTED SENSITIVE LINE]".to_string(), 1);
+        };
+
+        let trailing_comma = line[colon_idx + 1..].trim_end().ends_with(',');
+        let replacement = if trailing_comma {
+            " \"[REDACTED]\","
+        } else {
+            " \"[REDACTED]\""
+        };
+        return (format!("{}{}", &line[..=colon_idx], replacement), 1);
+    };
+
+    let trailing_comment = line[eq_idx + 1..]
+        .find('#')
+        .map(|idx| line[eq_idx + 1 + idx..].to_string());
+
+    let mut out = format!("{}=\"[REDACTED]\"", &line[..eq_idx]);
+    if let Some(comment) = trailing_comment {
+        out.push(' ');
+        out.push_str(comment.trim_start());
+    }
+
+    (out, 1)
+}
+
+fn redact_url_credentials(line: &str) -> (String, usize) {
+    let mut rest = line;
+    let mut output = String::new();
+    let mut replacements = 0;
+
+    while let Some(found) = rest.find("://") {
+        let split_at = found + 3;
+        let (prefix_with_scheme, after_scheme) = rest.split_at(split_at);
+        output.push_str(prefix_with_scheme);
+
+        let end = after_scheme
+            .char_indices()
+            .find_map(|(idx, ch)| {
+                if ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | ')' | ']' | '>') {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(after_scheme.len());
+
+        let url_slice = &after_scheme[..end];
+
+        if let Some(at_idx) = url_slice.find('@') {
+            let credentials = &url_slice[..at_idx];
+            if credentials.contains(':') {
+                output.push_str("[REDACTED]@");
+                output.push_str(&url_slice[at_idx + 1..]);
+                replacements += 1;
+            } else {
+                output.push_str(url_slice);
+            }
+        } else {
+            output.push_str(url_slice);
+        }
+
+        rest = &after_scheme[end..];
+    }
+
+    output.push_str(rest);
+
+    if replacements == 0 {
+        (line.to_string(), 0)
+    } else {
+        (output, replacements)
+    }
+}
+
+fn contains_high_risk_content(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "secret_spending_key",
+        "nullifier_secret_key",
+        "viewing_secret_key",
+        "private_key_holder",
+        "-----begin private key",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn file_mtime_unix(path: &Path) -> Option<u64> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let duration = modified.duration_since(UNIX_EPOCH).ok()?;
+    Some(duration.as_secs())
+}
+
+fn file_size_bytes(path: &Path) -> Option<u64> {
+    fs::metadata(path).ok().map(|metadata| metadata.len())
+}
+
+fn unix_timestamp_now() -> DynResult<u64> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| anyhow!("system clock is before unix epoch: {err}"))?;
+    Ok(duration.as_secs())
+}
+
+fn pack_staging_dir(staging_dir: &Path, output_path: &Path) -> DynResult<()> {
+    let output_file = File::create(output_path)
+        .with_context(|| format!("failed to create output archive {}", output_path.display()))?;
+    let encoder = GzEncoder::new(output_file, Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+
+    archive
+        .append_dir_all("report", staging_dir)
+        .with_context(|| {
+            format!(
+                "failed to package staging directory {}",
+                staging_dir.display()
+            )
+        })?;
+
+    let encoder = archive.into_inner()?;
+    let _ = encoder.finish()?;
+    Ok(())
+}
+
+#[derive(Clone)]
+struct SanitizeContext {
+    project_root: String,
+    home_dir: String,
+}
+
+struct SanitizedText {
+    text: String,
+    replacements: usize,
+}
+
+#[derive(Serialize)]
+struct GitMetadataReport {
+    head: Option<String>,
+    branch: Option<String>,
+    clean: Option<bool>,
+    errors: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct BinaryArtifactSummary {
+    program: String,
+    relative_path: String,
+    exists: bool,
+    modified_unix: Option<u64>,
+    size_bytes: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct BuildEvidenceReport {
+    note: String,
+    workspace_target_exists: bool,
+    workspace_target_modified_unix: Option<u64>,
+    guest_programs: Vec<String>,
+    expected_binaries: Vec<BinaryArtifactSummary>,
+    discovered_binaries: Vec<BinaryArtifactSummary>,
+}

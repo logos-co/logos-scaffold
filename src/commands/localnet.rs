@@ -42,6 +42,12 @@ pub(crate) fn cmd_localnet(action: LocalnetAction) -> DynResult<()> {
     }
 }
 
+pub(crate) fn build_localnet_status_for_project(project: &Project) -> LocalnetStatusReport {
+    let state_path = project.root.join(".scaffold/state/localnet.state");
+    let log_path = project.root.join(".scaffold/logs/sequencer.log");
+    build_status_report(&state_path, &log_path)
+}
+
 fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResult<()> {
     let lssa = PathBuf::from(&project.config.lssa.path);
     let state_path = project.root.join(".scaffold/state/localnet.state");
