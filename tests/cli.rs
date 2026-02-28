@@ -285,6 +285,108 @@ fn report_manifest_scrubs_absolute_paths_in_warnings() {
 }
 
 #[test]
+fn report_sanitizes_localnet_status_log_path() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let localnet_status = archive_entry_content(&entries, "diagnostics/localnet-status.json");
+    let temp_root = temp.path().to_string_lossy();
+
+    assert!(
+        !localnet_status.contains(temp_root.as_ref()),
+        "localnet status should not leak project abs path, got: {localnet_status}"
+    );
+
+    let value: serde_json::Value =
+        serde_json::from_str(localnet_status).expect("valid localnet status json");
+    let log_path = value
+        .get("log_path")
+        .and_then(serde_json::Value::as_str)
+        .expect("log_path string");
+    assert!(
+        log_path.contains("<PROJECT_ROOT>"),
+        "expected scrubbed project placeholder in localnet log path, got: {log_path}"
+    );
+}
+
+#[test]
+fn report_sanitizes_doctor_json_paths() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let doctor = archive_entry_content(&entries, "diagnostics/doctor.json");
+    let temp_root = temp.path().to_string_lossy();
+
+    assert!(
+        !doctor.contains(temp_root.as_ref()),
+        "doctor report should not leak absolute paths, got: {doctor}"
+    );
+    assert!(
+        doctor.contains("<PROJECT_ROOT>"),
+        "doctor report should include scrubbed placeholder for project path, got: {doctor}"
+    );
+}
+
+#[test]
+fn report_scrubs_tool_command_paths_in_summary() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let tool_versions = archive_entry_content(&entries, "summaries/tool-versions.json");
+    let temp_root = temp.path().to_string_lossy();
+
+    assert!(
+        !tool_versions.contains(temp_root.as_ref()),
+        "tool summary should not leak absolute paths, got: {tool_versions}"
+    );
+
+    let value: serde_json::Value =
+        serde_json::from_str(tool_versions).expect("valid tool versions json");
+    let wallet = value
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("name").and_then(serde_json::Value::as_str) == Some("wallet"))
+        })
+        .expect("wallet tool row");
+    let wallet_command = wallet
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .expect("wallet command string");
+    assert!(
+        wallet_command.contains("<PROJECT_ROOT>/wallet-stub.sh"),
+        "expected scrubbed wallet command path, got: {wallet_command}"
+    );
+}
+
+#[test]
 fn report_redacts_multiline_private_key_blocks() {
     let temp = tempdir().expect("tempdir");
     let wallet_stub = write_wallet_stub(temp.path());
@@ -375,6 +477,33 @@ fn report_tail_keeps_only_last_requested_lines() {
     assert!(!log_body.contains("line-2"));
     assert!(log_body.contains("line-3"));
     assert!(log_body.contains("line-4"));
+}
+
+#[test]
+fn report_default_archive_names_are_unique_for_fast_repeats() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archives = list_report_archives(&temp.path().join(".scaffold/reports"));
+    assert_eq!(
+        archives.len(),
+        2,
+        "expected two report archives from back-to-back runs, got: {:?}",
+        archives
+    );
+    assert_ne!(archives[0], archives[1], "archive paths must be unique");
 }
 
 #[test]
@@ -1047,6 +1176,17 @@ fn deploy_shows_hint_when_sequencer_is_unreachable_with_fallback_addr() {
 }
 
 fn find_single_report_archive(reports_dir: &Path) -> PathBuf {
+    let mut archives = list_report_archives(reports_dir);
+    assert_eq!(
+        archives.len(),
+        1,
+        "expected exactly one report archive in {}",
+        reports_dir.display()
+    );
+    archives.remove(0)
+}
+
+fn list_report_archives(reports_dir: &Path) -> Vec<PathBuf> {
     let mut archives = fs::read_dir(reports_dir)
         .expect("read reports dir")
         .filter_map(Result::ok)
@@ -1062,13 +1202,7 @@ fn find_single_report_archive(reports_dir: &Path) -> PathBuf {
         .collect::<Vec<_>>();
 
     archives.sort();
-    assert_eq!(
-        archives.len(),
-        1,
-        "expected exactly one report archive in {}",
-        reports_dir.display()
-    );
-    archives.remove(0)
+    archives
 }
 
 fn read_report_archive_entries(archive_path: &Path) -> Vec<(String, String)> {

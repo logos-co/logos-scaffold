@@ -10,6 +10,7 @@ use anyhow::{anyhow, bail, Context};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::Serialize;
+use serde_json::Value;
 
 use super::doctor::build_doctor_report;
 use super::localnet::build_localnet_status_for_project;
@@ -17,7 +18,7 @@ use crate::model::{
     CollectedItem, RedactionSummary, ReportManifest, SkippedItem, ToolCommandResult,
 };
 use crate::process::{set_command_echo, which};
-use crate::project::{home_dir, load_project};
+use crate::project::load_project;
 use crate::state::write_text;
 use crate::DynResult;
 
@@ -78,6 +79,40 @@ pub(crate) fn cmd_report(out: Option<PathBuf>, tail: usize) -> DynResult<()> {
     Ok(())
 }
 
+fn resolve_home_dir_for_scrubbing() -> Option<PathBuf> {
+    resolve_home_dir_from_env_like(|key| env::var(key).ok()).map(PathBuf::from)
+}
+
+fn resolve_home_dir_from_env_like<F>(mut get: F) -> Option<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    if let Some(home) = non_empty_env_value(get("HOME")) {
+        return Some(home);
+    }
+    if let Some(user_profile) = non_empty_env_value(get("USERPROFILE")) {
+        return Some(user_profile);
+    }
+
+    match (
+        non_empty_env_value(get("HOMEDRIVE")),
+        non_empty_env_value(get("HOMEPATH")),
+    ) {
+        (Some(home_drive), Some(home_path)) => Some(format!("{home_drive}{home_path}")),
+        _ => None,
+    }
+}
+
+fn non_empty_env_value(raw: Option<String>) -> Option<String> {
+    raw.and_then(|value| {
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    })
+}
+
 fn collect_report_artifacts(
     project: &crate::model::Project,
     tail: usize,
@@ -85,16 +120,21 @@ fn collect_report_artifacts(
     staging_dir: &Path,
     output_path: &Path,
 ) -> DynResult<ReportManifest> {
-    let home = home_dir().unwrap_or_else(|_| PathBuf::from("~"));
-    let sanitize_ctx = SanitizeContext {
-        project_root: project.root.display().to_string(),
-        home_dir: home.display().to_string(),
-    };
-
     let mut collected = Vec::new();
     let mut skipped = Vec::new();
     let mut warnings = Vec::new();
     let mut redaction = RedactionSummary::default();
+    let home = resolve_home_dir_for_scrubbing();
+    if home.is_none() {
+        warnings.push(
+            "home directory path scrubbing disabled: no HOME/USERPROFILE/HOMEDRIVE+HOMEPATH found"
+                .to_string(),
+        );
+    }
+    let sanitize_ctx = SanitizeContext {
+        project_root: project.root.display().to_string(),
+        home_dir: home.map(|path| path.display().to_string()),
+    };
 
     skipped.push(SkippedItem {
         path: ".scaffold/wallet/**".to_string(),
@@ -136,12 +176,17 @@ fn collect_report_artifacts(
     set_command_echo(true);
     match doctor_result {
         Ok(report) => {
-            write_json_artifact(staging_dir, "diagnostics/doctor.json", &report)?;
-            collected.push(CollectedItem {
-                path: "diagnostics/doctor.json".to_string(),
-                source: "logos-scaffold doctor report model".to_string(),
-                notes: None,
-            });
+            collect_sanitized_json_artifact(
+                staging_dir,
+                "diagnostics/doctor.json",
+                &report,
+                "logos-scaffold doctor report model",
+                &sanitize_ctx,
+                &mut collected,
+                &mut skipped,
+                &mut warnings,
+                &mut redaction,
+            )?;
         }
         Err(err) => {
             warnings.push(format!("doctor diagnostics unavailable: {err}"));
@@ -153,16 +198,17 @@ fn collect_report_artifacts(
     }
 
     let localnet_status = build_localnet_status_for_project(project);
-    write_json_artifact(
+    collect_sanitized_json_artifact(
         staging_dir,
         "diagnostics/localnet-status.json",
         &localnet_status,
+        "logos-scaffold localnet status model",
+        &sanitize_ctx,
+        &mut collected,
+        &mut skipped,
+        &mut warnings,
+        &mut redaction,
     )?;
-    collected.push(CollectedItem {
-        path: "diagnostics/localnet-status.json".to_string(),
-        source: "logos-scaffold localnet status model".to_string(),
-        notes: None,
-    });
 
     let scaffold_path = project.root.join("scaffold.toml");
     match fs::read_to_string(&scaffold_path) {
@@ -274,11 +320,34 @@ fn collect_report_artifacts(
 }
 
 fn resolve_output_path(project_root: &Path, out: Option<PathBuf>, now: u64) -> DynResult<PathBuf> {
-    let default = project_root.join(format!(".scaffold/reports/report-{now}.tar.gz"));
     match out {
         Some(path) if path.is_absolute() => Ok(path),
         Some(path) => Ok(env::current_dir()?.join(path)),
-        None => Ok(default),
+        None => Ok(default_report_output_path(project_root, now)),
+    }
+}
+
+fn default_report_output_path(project_root: &Path, now: u64) -> PathBuf {
+    let reports_dir = project_root.join(".scaffold/reports");
+    let base_stem = format!("report-{now}");
+    let default_path = reports_dir.join(format!("{base_stem}.tar.gz"));
+    if !default_path.exists() {
+        return default_path;
+    }
+
+    let pid_stem = format!("{base_stem}-{}", std::process::id());
+    let pid_path = reports_dir.join(format!("{pid_stem}.tar.gz"));
+    if !pid_path.exists() {
+        return pid_path;
+    }
+
+    let mut suffix = 1_u64;
+    loop {
+        let candidate = reports_dir.join(format!("{pid_stem}-{suffix}.tar.gz"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        suffix += 1;
     }
 }
 
@@ -289,6 +358,103 @@ fn write_json_artifact<T: Serialize>(
 ) -> DynResult<()> {
     let content = serde_json::to_string_pretty(value)?;
     write_text(&staging_dir.join(rel_path), &content)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_sanitized_json_artifact<T: Serialize>(
+    staging_dir: &Path,
+    rel_path: &str,
+    value: &T,
+    source: &str,
+    sanitize_ctx: &SanitizeContext,
+    collected: &mut Vec<CollectedItem>,
+    skipped: &mut Vec<SkippedItem>,
+    warnings: &mut Vec<String>,
+    redaction: &mut RedactionSummary,
+) -> DynResult<()> {
+    let sanitized = match render_sanitized_json_artifact(value, sanitize_ctx) {
+        Ok(sanitized) => sanitized,
+        Err(err) => {
+            skipped.push(SkippedItem {
+                path: rel_path.to_string(),
+                reason: format!("failed to sanitize json artifact: {err}"),
+            });
+            warnings.push(format!(
+                "could not sanitize optional artifact {rel_path}: {err}"
+            ));
+            return Ok(());
+        }
+    };
+
+    register_redaction(redaction, sanitized.replacements);
+    if contains_high_risk_content(&sanitized.text) {
+        skipped.push(SkippedItem {
+            path: rel_path.to_string(),
+            reason: "artifact still contains high-risk secret markers after sanitization"
+                .to_string(),
+        });
+        warnings.push(format!(
+            "skipped {rel_path} because high-risk markers remained after sanitization"
+        ));
+        return Ok(());
+    }
+
+    if let Err(err) = write_text(&staging_dir.join(rel_path), &sanitized.text) {
+        skipped.push(SkippedItem {
+            path: rel_path.to_string(),
+            reason: format!("failed to write sanitized artifact: {err}"),
+        });
+        warnings.push(format!(
+            "could not write optional sanitized artifact {rel_path}: {err}"
+        ));
+        return Ok(());
+    }
+
+    collected.push(CollectedItem {
+        path: rel_path.to_string(),
+        source: source.to_string(),
+        notes: None,
+    });
+    Ok(())
+}
+
+fn render_sanitized_json_artifact<T: Serialize>(
+    value: &T,
+    sanitize_ctx: &SanitizeContext,
+) -> DynResult<SanitizedText> {
+    let mut json = serde_json::to_value(value)?;
+    let mut replacements = 0;
+    sanitize_json_value_strings(&mut json, sanitize_ctx, &mut replacements);
+
+    Ok(SanitizedText {
+        text: serde_json::to_string_pretty(&json)?,
+        replacements,
+    })
+}
+
+fn sanitize_json_value_strings(
+    value: &mut Value,
+    sanitize_ctx: &SanitizeContext,
+    replacements: &mut usize,
+) {
+    match value {
+        Value::String(text) => {
+            let sanitized = sanitize_text(text, sanitize_ctx);
+            *replacements += sanitized.replacements;
+            *text = sanitized.text;
+        }
+        Value::Array(items) => {
+            for item in items {
+                sanitize_json_value_strings(item, sanitize_ctx, replacements);
+            }
+        }
+        Value::Object(map) => {
+            for nested in map.values_mut() {
+                sanitize_json_value_strings(nested, sanitize_ctx, replacements);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_env_summary(
@@ -637,6 +803,7 @@ fn collect_tool_command(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let command_rendered = format!("{} {}", program, args.join(" ")).trim().to_string();
+    let sanitized_command = sanitize_text(&command_rendered, sanitize_ctx);
 
     match cmd.output() {
         Ok(output) => {
@@ -644,12 +811,14 @@ fn collect_tool_command(
             let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
             let sanitized_stdout = sanitize_text(&stdout_raw, sanitize_ctx);
             let sanitized_stderr = sanitize_text(&stderr_raw, sanitize_ctx);
-            let replacements = sanitized_stdout.replacements + sanitized_stderr.replacements;
+            let replacements = sanitized_command.replacements
+                + sanitized_stdout.replacements
+                + sanitized_stderr.replacements;
 
             (
                 ToolCommandResult {
                     name: name.to_string(),
-                    command: command_rendered,
+                    command: sanitized_command.text,
                     status: output.status.code(),
                     stdout: sanitized_stdout.text,
                     stderr: sanitized_stderr.text,
@@ -658,17 +827,20 @@ fn collect_tool_command(
                 replacements,
             )
         }
-        Err(err) => (
-            ToolCommandResult {
-                name: name.to_string(),
-                command: command_rendered,
-                status: None,
-                stdout: String::new(),
-                stderr: String::new(),
-                error: Some(err.to_string()),
-            },
-            0,
-        ),
+        Err(err) => {
+            let sanitized_error = sanitize_text(&err.to_string(), sanitize_ctx);
+            (
+                ToolCommandResult {
+                    name: name.to_string(),
+                    command: sanitized_command.text,
+                    status: None,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    error: Some(sanitized_error.text),
+                },
+                sanitized_command.replacements + sanitized_error.replacements,
+            )
+        }
     }
 }
 
@@ -699,6 +871,7 @@ fn tail_file_lines_lossy(path: &Path, tail: usize) -> DynResult<String> {
         return Ok(String::new());
     }
 
+    // TODO: For very large logs, optimize this by seeking backwards from EOF.
     let file =
         File::open(path).with_context(|| format!("failed to open log file {}", path.display()))?;
     let mut reader = BufReader::new(file);
@@ -789,7 +962,9 @@ fn scrub_paths(line: &str, sanitize_ctx: &SanitizeContext) -> (String, usize) {
 
     let mut targets = Vec::new();
     collect_scrub_targets(&mut targets, &sanitize_ctx.project_root, "<PROJECT_ROOT>");
-    collect_scrub_targets(&mut targets, &sanitize_ctx.home_dir, "<HOME>");
+    if let Some(home_dir) = &sanitize_ctx.home_dir {
+        collect_scrub_targets(&mut targets, home_dir, "<HOME>");
+    }
 
     for (target, placeholder) in targets {
         if target.is_empty() {
@@ -1052,7 +1227,7 @@ fn pack_staging_dir(staging_dir: &Path, output_path: &Path) -> DynResult<()> {
 #[derive(Clone)]
 struct SanitizeContext {
     project_root: String,
-    home_dir: String,
+    home_dir: Option<String>,
 }
 
 struct SanitizedText {
@@ -1085,4 +1260,49 @@ struct BuildEvidenceReport {
     guest_programs: Vec<String>,
     expected_binaries: Vec<BinaryArtifactSummary>,
     discovered_binaries: Vec<BinaryArtifactSummary>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::resolve_home_dir_from_env_like;
+
+    #[test]
+    fn resolve_home_dir_prefers_home() {
+        let vars = HashMap::from([
+            ("HOME".to_string(), "/home/alice".to_string()),
+            ("USERPROFILE".to_string(), "C:\\Users\\Alice".to_string()),
+        ]);
+
+        let home = resolve_home_dir_from_env_like(|key| vars.get(key).cloned());
+        assert_eq!(home.as_deref(), Some("/home/alice"));
+    }
+
+    #[test]
+    fn resolve_home_dir_uses_userprofile_when_home_missing() {
+        let vars = HashMap::from([("USERPROFILE".to_string(), "C:\\Users\\Alice".to_string())]);
+
+        let home = resolve_home_dir_from_env_like(|key| vars.get(key).cloned());
+        assert_eq!(home.as_deref(), Some("C:\\Users\\Alice"));
+    }
+
+    #[test]
+    fn resolve_home_dir_uses_homedrive_and_homepath_when_needed() {
+        let vars = HashMap::from([
+            ("HOMEDRIVE".to_string(), "C:".to_string()),
+            ("HOMEPATH".to_string(), "\\Users\\Alice".to_string()),
+        ]);
+
+        let home = resolve_home_dir_from_env_like(|key| vars.get(key).cloned());
+        assert_eq!(home.as_deref(), Some("C:\\Users\\Alice"));
+    }
+
+    #[test]
+    fn resolve_home_dir_returns_none_when_env_vars_missing() {
+        let vars = HashMap::<String, String>::new();
+
+        let home = resolve_home_dir_from_env_like(|key| vars.get(key).cloned());
+        assert!(home.is_none());
+    }
 }
