@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -10,7 +10,9 @@ use std::thread;
 use std::time::Duration;
 
 use assert_cmd::Command;
+use flate2::read::GzDecoder;
 use predicates::prelude::*;
+use tar::Archive;
 use tempfile::tempdir;
 
 const TEST_PIN: &str = "767b5afd388c7981bcdf6f5b5c80159607e07e5b";
@@ -60,6 +62,488 @@ fn deploy_help_lists_optional_program_name() {
         .assert()
         .success()
         .stdout(predicate::str::contains("deploy [PROGRAM_NAME]"));
+}
+
+#[test]
+fn report_help_lists_out_and_tail_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("report")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--out")
+                .and(predicate::str::contains("--tail"))
+                .and(predicate::str::contains(
+                    "Collect a sanitized diagnostics archive",
+                )),
+        );
+}
+
+#[test]
+fn report_generates_default_archive_with_warning_and_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
+    fs::write(
+        temp.path().join(".scaffold/logs/sequencer.log"),
+        "sequencer started\n",
+    )
+    .expect("write sequencer log");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("report complete")
+                .and(predicate::str::contains("archive:"))
+                .and(predicate::str::contains(
+                    "Inspect every file before sharing",
+                )),
+        );
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    assert!(archive_path.exists(), "expected default report archive");
+
+    let entries = read_report_archive_entries(&archive_path);
+    assert!(archive_entry_exists(&entries, "README.txt"));
+    assert!(archive_entry_exists(&entries, "manifest.json"));
+    assert!(archive_entry_exists(&entries, "diagnostics/doctor.json"));
+    assert!(archive_entry_exists(
+        &entries,
+        "diagnostics/localnet-status.json"
+    ));
+    assert!(archive_entry_exists(
+        &entries,
+        "summaries/build-evidence.json"
+    ));
+
+    let readme = archive_entry_content(&entries, "README.txt");
+    assert!(
+        readme.contains("best-effort basis"),
+        "README should include warning, got: {readme}"
+    );
+
+    let build_evidence = archive_entry_content(&entries, "summaries/build-evidence.json");
+    assert!(
+        build_evidence.contains("No build commands were executed"),
+        "build evidence should confirm metadata-only mode, got: {build_evidence}"
+    );
+}
+
+#[test]
+fn report_supports_custom_output_path() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    let custom_out = temp.path().join("artifacts/support-report.tar.gz");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .arg("--out")
+        .arg(&custom_out)
+        .assert()
+        .success();
+
+    assert!(
+        custom_out.exists(),
+        "custom report output should exist at {}",
+        custom_out.display()
+    );
+}
+
+#[test]
+fn report_excludes_wallet_files_from_archive() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    let wallet_dir = temp.path().join(".scaffold/wallet");
+    fs::create_dir_all(&wallet_dir).expect("create wallet dir");
+    fs::write(wallet_dir.join("config.json"), "{ \"test\": true }\n").expect("write config");
+    fs::write(
+        wallet_dir.join("storage.json"),
+        "{ \"secret_spending_key\": [1,2,3] }\n",
+    )
+    .expect("write storage");
+    fs::write(
+        wallet_dir.join("wallet_config.json"),
+        "{ \"initial_accounts\": [] }\n",
+    )
+    .expect("write wallet config");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    for (path, _) in &entries {
+        assert!(
+            !path.contains(".scaffold/wallet/"),
+            "wallet files must be excluded, found archive path: {path}"
+        );
+    }
+}
+
+#[test]
+fn report_redacts_sensitive_values_in_logs() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
+    fs::write(
+        temp.path().join(".scaffold/logs/sequencer.log"),
+        "password=super-secret\napi_token=abc123\nrpc=http://user:pass@127.0.0.1:3040\n",
+    )
+    .expect("write sequencer log");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let log_body = archive_entry_content(&entries, "logs/sequencer.log");
+
+    assert!(!log_body.contains("super-secret"));
+    assert!(!log_body.contains("abc123"));
+    assert!(!log_body.contains("user:pass@"));
+    assert!(
+        log_body.contains("[REDACTED]"),
+        "expected redaction marker in sanitized log, got: {log_body}"
+    );
+}
+
+#[test]
+fn report_keeps_non_utf8_logs_via_lossy_decoding() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
+    fs::write(
+        temp.path().join(".scaffold/logs/sequencer.log"),
+        [b'o', b'k', b'\n', 0xff, 0xfe, b'\n'],
+    )
+    .expect("write non-utf8 log");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let log_body = archive_entry_content(&entries, "logs/sequencer.log");
+
+    assert!(log_body.contains("ok"), "expected preserved utf8 content");
+    assert!(
+        log_body.contains('\u{fffd}'),
+        "expected lossy replacement chars for invalid utf8, got: {log_body:?}"
+    );
+}
+
+#[test]
+fn report_manifest_scrubs_absolute_paths_in_warnings() {
+    let temp = tempdir().expect("tempdir");
+    let lssa_path = temp.path().join("lssa");
+    fs::create_dir_all(&lssa_path).expect("create lssa path");
+    let missing_wallet = temp.path().join("bin/missing-wallet");
+    write_scaffold_toml(temp.path(), &lssa_path, &missing_wallet.to_string_lossy());
+    write_wallet_config(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let manifest = archive_entry_content(&entries, "manifest.json");
+    let temp_root = temp.path().to_string_lossy();
+
+    assert!(
+        !manifest.contains(temp_root.as_ref()),
+        "manifest should not leak absolute project path, got: {manifest}"
+    );
+    assert!(
+        manifest.contains("<PROJECT_ROOT>/bin/missing-wallet"),
+        "manifest should contain scrubbed wallet path warning, got: {manifest}"
+    );
+}
+
+#[test]
+fn report_sanitizes_localnet_status_log_path() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let localnet_status = archive_entry_content(&entries, "diagnostics/localnet-status.json");
+    let temp_root = temp.path().to_string_lossy();
+
+    assert!(
+        !localnet_status.contains(temp_root.as_ref()),
+        "localnet status should not leak project abs path, got: {localnet_status}"
+    );
+
+    let value: serde_json::Value =
+        serde_json::from_str(localnet_status).expect("valid localnet status json");
+    let log_path = value
+        .get("log_path")
+        .and_then(serde_json::Value::as_str)
+        .expect("log_path string");
+    assert!(
+        log_path.contains("<PROJECT_ROOT>"),
+        "expected scrubbed project placeholder in localnet log path, got: {log_path}"
+    );
+}
+
+#[test]
+fn report_sanitizes_doctor_json_paths() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let doctor = archive_entry_content(&entries, "diagnostics/doctor.json");
+    let temp_root = temp.path().to_string_lossy();
+
+    assert!(
+        !doctor.contains(temp_root.as_ref()),
+        "doctor report should not leak absolute paths, got: {doctor}"
+    );
+    assert!(
+        doctor.contains("<PROJECT_ROOT>"),
+        "doctor report should include scrubbed placeholder for project path, got: {doctor}"
+    );
+}
+
+#[test]
+fn report_scrubs_tool_command_paths_in_summary() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let tool_versions = archive_entry_content(&entries, "summaries/tool-versions.json");
+    let temp_root = temp.path().to_string_lossy();
+
+    assert!(
+        !tool_versions.contains(temp_root.as_ref()),
+        "tool summary should not leak absolute paths, got: {tool_versions}"
+    );
+
+    let value: serde_json::Value =
+        serde_json::from_str(tool_versions).expect("valid tool versions json");
+    let wallet = value
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("name").and_then(serde_json::Value::as_str) == Some("wallet"))
+        })
+        .expect("wallet tool row");
+    let wallet_command = wallet
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .expect("wallet command string");
+    assert!(
+        wallet_command.contains("<PROJECT_ROOT>/wallet-stub.sh"),
+        "expected scrubbed wallet command path, got: {wallet_command}"
+    );
+}
+
+#[test]
+fn report_redacts_multiline_private_key_blocks() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
+    fs::write(
+        temp.path().join(".scaffold/logs/sequencer.log"),
+        "before\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\nafter\n",
+    )
+    .expect("write sequencer log");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let log_body = archive_entry_content(&entries, "logs/sequencer.log");
+
+    assert!(!log_body.contains("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"));
+    assert!(!log_body.contains("-----BEGIN PRIVATE KEY-----"));
+    assert!(!log_body.contains("-----END PRIVATE KEY-----"));
+    assert!(
+        log_body.contains("[REDACTED SENSITIVE LINE]"),
+        "expected redaction markers, got: {log_body}"
+    );
+}
+
+#[test]
+fn report_redacts_url_userinfo_without_colon() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
+    fs::write(
+        temp.path().join(".scaffold/logs/sequencer.log"),
+        "fetch https://ghp_very_secret_token@github.com/logos/repo\n",
+    )
+    .expect("write sequencer log");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let log_body = archive_entry_content(&entries, "logs/sequencer.log");
+
+    assert!(!log_body.contains("ghp_very_secret_token"));
+    assert!(
+        log_body.contains("https://[REDACTED]@github.com/logos/repo"),
+        "expected token-style userinfo redaction, got: {log_body}"
+    );
+}
+
+#[test]
+fn report_tail_keeps_only_last_requested_lines() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
+    fs::write(
+        temp.path().join(".scaffold/logs/sequencer.log"),
+        "line-1\nline-2\nline-3\nline-4\n",
+    )
+    .expect("write sequencer log");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .arg("--tail")
+        .arg("2")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let log_body = archive_entry_content(&entries, "logs/sequencer.log");
+
+    assert!(!log_body.contains("line-1"));
+    assert!(!log_body.contains("line-2"));
+    assert!(log_body.contains("line-3"));
+    assert!(log_body.contains("line-4"));
+}
+
+#[test]
+fn report_default_archive_names_are_unique_for_fast_repeats() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archives = list_report_archives(&temp.path().join(".scaffold/reports"));
+    assert_eq!(
+        archives.len(),
+        2,
+        "expected two report archives from back-to-back runs, got: {:?}",
+        archives
+    );
+    assert_ne!(archives[0], archives[1], "archive paths must be unique");
+}
+
+#[test]
+fn report_fails_outside_project_with_project_scoped_message() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
+fn report_skips_unreadable_optional_file_and_keeps_succeeding() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    fs::create_dir(temp.path().join(".env.local")).expect("make .env.local unreadable as dir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("report")
+        .assert()
+        .success();
+
+    let archive_path = find_single_report_archive(&temp.path().join(".scaffold/reports"));
+    let entries = read_report_archive_entries(&archive_path);
+    let manifest = archive_entry_content(&entries, "manifest.json");
+    assert!(
+        manifest.contains("project/env.local"),
+        "manifest should record skipped env summary, got: {manifest}"
+    );
+    assert!(
+        manifest.contains("failed to read .env.local"),
+        "manifest should include skip reason, got: {manifest}"
+    );
 }
 
 #[test]
@@ -689,6 +1173,73 @@ fn deploy_shows_hint_when_sequencer_is_unreachable_with_fallback_addr() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("sequencer appears unavailable"));
+}
+
+fn find_single_report_archive(reports_dir: &Path) -> PathBuf {
+    let mut archives = list_report_archives(reports_dir);
+    assert_eq!(
+        archives.len(),
+        1,
+        "expected exactly one report archive in {}",
+        reports_dir.display()
+    );
+    archives.remove(0)
+}
+
+fn list_report_archives(reports_dir: &Path) -> Vec<PathBuf> {
+    let mut archives = fs::read_dir(reports_dir)
+        .expect("read reports dir")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.ends_with(".tar.gz"))
+                    .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+
+    archives.sort();
+    archives
+}
+
+fn read_report_archive_entries(archive_path: &Path) -> Vec<(String, String)> {
+    let file = fs::File::open(archive_path).expect("open report archive");
+    let decoder = GzDecoder::new(file);
+    let mut archive = Archive::new(decoder);
+
+    let mut entries = Vec::new();
+    for entry in archive.entries().expect("archive entries") {
+        let mut entry = entry.expect("archive entry");
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+
+        let path = entry
+            .path()
+            .expect("archive entry path")
+            .display()
+            .to_string();
+        let mut body = String::new();
+        entry.read_to_string(&mut body).expect("archive entry body");
+        entries.push((path, body));
+    }
+
+    entries
+}
+
+fn archive_entry_exists(entries: &[(String, String)], suffix: &str) -> bool {
+    entries.iter().any(|(path, _)| path.ends_with(suffix))
+}
+
+fn archive_entry_content<'a>(entries: &'a [(String, String)], suffix: &str) -> &'a str {
+    entries
+        .iter()
+        .find(|(path, _)| path.ends_with(suffix))
+        .map(|(_, body)| body.as_str())
+        .unwrap_or_else(|| panic!("archive missing expected entry suffix `{suffix}`"))
 }
 
 fn write_scaffold_toml(project_root: &Path, lssa_path: &Path, wallet_binary: &str) {

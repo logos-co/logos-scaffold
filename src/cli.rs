@@ -10,6 +10,7 @@ use crate::commands::doctor::cmd_doctor;
 use crate::commands::idl::cmd_idl;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
+use crate::commands::report::cmd_report;
 use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
 use crate::commands::wallet::{cmd_wallet, WalletAction};
 use crate::constants::VERSION;
@@ -38,6 +39,8 @@ enum Commands {
     Localnet(LocalnetArgs),
     Wallet(WalletArgs),
     Doctor(DoctorArgs),
+    #[command(about = "Collect a sanitized diagnostics archive for issue reporting")]
+    Report(ReportArgs),
     #[command(hide = true)]
     Help,
 }
@@ -90,6 +93,14 @@ struct DeployArgs {
 struct DoctorArgs {
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct ReportArgs {
+    #[arg(long)]
+    out: Option<PathBuf>,
+    #[arg(long, default_value_t = 500)]
+    tail: usize,
 }
 
 #[derive(Debug, clap::Args)]
@@ -251,6 +262,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             cmd_wallet(action)
         }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
+        Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
         Some(Commands::Help) => print_help(),
         None => print_help(),
     }

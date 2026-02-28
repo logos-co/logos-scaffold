@@ -115,6 +115,7 @@ logos-scaffold localnet status [--json]
 logos-scaffold localnet logs --tail 200
 logos-scaffold localnet stop
 logos-scaffold doctor [--json]
+logos-scaffold report [--out PATH] [--tail N]
 ```
 
 ## Troubleshooting
@@ -122,3 +123,4 @@ logos-scaffold doctor [--json]
 - Startup failure: `logos-scaffold localnet logs --tail 200`
 - Foreign listener on `3040`: stop external process, then rerun `logos-scaffold localnet start`
 - Stale tracked state: `logos-scaffold localnet stop` then `logos-scaffold localnet start`
+- Shareable diagnostics: `logos-scaffold report` (inspect the archive before posting publicly)

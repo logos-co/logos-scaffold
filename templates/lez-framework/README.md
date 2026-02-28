@@ -34,6 +34,14 @@ logos-scaffold build
 logos-scaffold build idl
 ```
 
+## Diagnostics Bundle
+
+```bash
+logos-scaffold report [--out PATH] [--tail N]
+```
+
+Inspect the generated archive before attaching it to public issues.
+
 ## Project Structure
 
 - Program: `methods/guest/src/bin/lez_counter.rs`

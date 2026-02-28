@@ -44,6 +44,7 @@ logos-scaffold wallet default set <address-ref>
 logos-scaffold wallet default set --address <address-ref>
 logos-scaffold wallet -- <wallet-command...>
 logos-scaffold doctor [--json]
+logos-scaffold report [--out PATH] [--tail N]
 logos-scaffold help
 ```
 
@@ -60,6 +61,7 @@ logos-scaffold help
 - `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.
 - `wallet -- ...` forwards raw wallet CLI commands while preserving project wallet environment.
 - `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
+- `report` creates a `.tar.gz` diagnostics bundle for GitHub issues using strict allowlist collection with redaction and explicit skip reporting.
 - Wallet-facing commands accept `LOGOS_SCAFFOLD_WALLET_PASSWORD` for password override (fallback: local dev default).
 
 ## Pinned LSSA Commit
@@ -111,6 +113,7 @@ logos-scaffold localnet start
 ```bash
 logos-scaffold localnet status --json
 logos-scaffold doctor --json
+logos-scaffold report --tail 500
 ```
 
 ## Example Runs
