@@ -111,7 +111,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          manifest_version="$(cargo pkgid --quiet | sed -n 's/.*#.*@//p')"
+          manifest_version="$(cargo pkgid --quiet | sed 's/.*#//; s/.*@//')"
 
           if [[ -z "$manifest_version" ]]; then
             echo "::error::Could not resolve crate version from Cargo.toml."
