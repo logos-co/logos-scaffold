@@ -20,10 +20,10 @@ Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
 - Unix process helpers: `lsof`, `ps`, `kill`
 - Container runtime for guest builds: Docker or Podman
 
-## Build
+## Install
 
 ```bash
-cargo build
+cargo install --path .
 ```
 
 ## CLI
