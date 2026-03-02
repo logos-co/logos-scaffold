@@ -79,8 +79,8 @@ logos-scaffold setup
 logos-scaffold localnet start
 logos-scaffold build
 logos-scaffold deploy
-logos-scaffold wallet topup
 logos-scaffold wallet -- check-health
+logos-scaffold wallet topup
 ```
 
 `setup` automatically seeds `.scaffold/state/wallet.state` with the first preconfigured public account when no default is present.
