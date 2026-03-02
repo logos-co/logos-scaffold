@@ -9,7 +9,7 @@ Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
 
 ## Scope
 
-- Single external dependency: [lssa](https://github.com/logos-blockchain/lssa/)
+- Single external dependency: [LEZ](https://github.com/logos-blockchain/lssa/)
 - Standalone sequencer flow only
 - No `logos-blockchain` dependency
 - No full-stack/circuits management
