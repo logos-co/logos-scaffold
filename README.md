@@ -9,7 +9,7 @@ Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
 
 ## Scope
 
-- Single external dependency: [lssa](https://github.com/logos-blockchain/lssa/)
+- Single external dependency: [LEZ](https://github.com/logos-blockchain/lssa/)
 - Standalone sequencer flow only
 - No `logos-blockchain` dependency
 - No full-stack/circuits management
@@ -20,10 +20,10 @@ Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
 - Unix process helpers: `lsof`, `ps`, `kill`
 - Container runtime for guest builds: Docker or Podman
 
-## Build
+## Install
 
 ```bash
-cargo build
+cargo install --path .
 ```
 
 ## CLI
@@ -91,6 +91,17 @@ Checkpoint commands:
 logos-scaffold localnet status
 logos-scaffold doctor
 ```
+
+## LEZ Framework
+
+To use the [LEZ Framework](https://github.com/jimmy-claw/lez-framework) for an
+ergonomic developer experience similar to Anchor on Solana:
+
+```
+logos-scaffold new <name> --template lez-framework
+```
+
+See [LEZ Framework Template](./templates/lez-framework/README.md) for details.
 
 ## Troubleshooting
 
