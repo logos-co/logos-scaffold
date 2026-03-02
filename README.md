@@ -92,6 +92,17 @@ logos-scaffold localnet status
 logos-scaffold doctor
 ```
 
+## LEZ Framework
+
+To use the [LEZ Framework](https://github.com/jimmy-claw/lez-framework) for an
+ergonomic developer experience similar to Anchor on Solana:
+
+```
+logos-scaffold new <name> --template lez-framework
+```
+
+See [LEZ Framework Template](./templates/lez-framework/README.md) for details.
+
 ## Troubleshooting
 
 - If `localnet start` fails, inspect:
