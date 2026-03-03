@@ -57,7 +57,7 @@ logos-scaffold help
 - `localnet start` waits until localnet is actually ready (`pid alive` + `127.0.0.1:3040` reachable), otherwise fails with diagnostics.
 - `localnet status` distinguishes managed process, stale state, and foreign listeners.
 - `wallet list` shows known wallet accounts (`wallet account list`).
-- `wallet topup` uses a single Piñata faucet claim (`wallet pinata claim --to ...`). If address is omitted, scaffold uses project default wallet from `.scaffold/state/wallet.state`.
+- `wallet topup` checks account state first (`wallet account get --account-id ...`), runs `wallet auth-transfer init --account-id ...` only when the destination is uninitialized, then performs Piñata faucet claim (`wallet pinata claim --to ...`). If address is omitted, scaffold uses project default wallet from `.scaffold/state/wallet.state`.
 - `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.
 - `wallet -- ...` forwards raw wallet CLI commands while preserving project wallet environment.
 - `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
