@@ -7,10 +7,10 @@ use crate::project::load_project;
 use crate::DynResult;
 
 use super::wallet_support::{
-    extract_tx_identifier, is_confirmation_timeout_failure, is_connectivity_failure,
-    load_wallet_runtime, read_default_wallet_address, resolve_wallet_address,
-    sequencer_unreachable_hint, summarize_command_failure, wallet_password, wallet_state_path,
-    write_default_wallet_address,
+    extract_tx_identifier, is_already_initialized_failure, is_confirmation_timeout_failure,
+    is_connectivity_failure, is_uninitialized_account_output, load_wallet_runtime,
+    read_default_wallet_address, resolve_wallet_address, sequencer_unreachable_hint,
+    summarize_command_failure, wallet_password, wallet_state_path, write_default_wallet_address,
 };
 
 #[derive(Debug, Clone)]
@@ -99,13 +99,28 @@ fn cmd_wallet_topup(
         .sequencer_addr
         .clone()
         .unwrap_or_else(|| "http://127.0.0.1:3040".to_string());
+    let wallet_home = wallet.wallet_home.as_os_str().to_string_lossy().to_string();
+    let password_input = format!("{}\n", wallet_password());
 
-    let mut command = Command::new(&wallet.wallet_binary);
-    command
-        .env(
-            "NSSA_WALLET_HOME_DIR",
-            wallet.wallet_home.as_os_str().to_string_lossy().to_string(),
-        )
+    let mut preflight_command = Command::new(&wallet.wallet_binary);
+    preflight_command
+        .env("NSSA_WALLET_HOME_DIR", wallet_home.clone())
+        .arg("account")
+        .arg("get")
+        .arg("--account-id")
+        .arg(&resolved_to);
+
+    let mut init_command = Command::new(&wallet.wallet_binary);
+    init_command
+        .env("NSSA_WALLET_HOME_DIR", wallet_home.clone())
+        .arg("auth-transfer")
+        .arg("init")
+        .arg("--account-id")
+        .arg(&resolved_to);
+
+    let mut pinata_command = Command::new(&wallet.wallet_binary);
+    pinata_command
+        .env("NSSA_WALLET_HOME_DIR", wallet_home.clone())
         .arg("pinata")
         .arg("claim")
         .arg("--to")
@@ -113,18 +128,63 @@ fn cmd_wallet_topup(
 
     if dry_run {
         println!("dry-run: wallet topup command will not be executed");
+        println!("NSSA_WALLET_HOME_DIR={wallet_home}");
+        println!("$ {}", render_command(&preflight_command));
+        println!("planned preflight: check destination wallet initialization");
         println!(
-            "NSSA_WALLET_HOME_DIR={}",
-            wallet.wallet_home.as_os_str().to_string_lossy()
+            "planned conditional step: run only if uninitialized -> {}",
+            render_command(&init_command)
         );
-        println!("$ {}", render_command(&command));
+        println!("$ {}", render_command(&pinata_command));
         println!("planned wallet: {resolved_to}");
         println!("planned method: pinata faucet claim");
         println!("planned network: local sequencer ({sequencer_addr})");
         return Ok(());
     }
 
-    let output = run_with_stdin(command, format!("{}\n", wallet_password()))
+    let preflight_output = run_with_stdin(preflight_command, password_input.clone())
+        .context("failed to execute wallet topup preflight command")?;
+    if !preflight_output.status.success() {
+        let summary = summarize_command_failure(&preflight_output.stdout, &preflight_output.stderr);
+        let combined = format!("{}\n{}", preflight_output.stdout, preflight_output.stderr);
+        if is_connectivity_failure(&combined) {
+            bail!(
+                "wallet topup failed during account preflight: {summary}\n{}",
+                sequencer_unreachable_hint(&sequencer_addr)
+            );
+        }
+
+        bail!(
+            "wallet topup failed while checking account initialization: {summary}\nHint: verify the destination with `logos-scaffold wallet -- account get --account-id {resolved_to}`."
+        );
+    }
+
+    let preflight_combined = format!("{}\n{}", preflight_output.stdout, preflight_output.stderr);
+    if is_uninitialized_account_output(&preflight_combined) {
+        println!(
+            "wallet topup preflight: destination is uninitialized; running auth-transfer init"
+        );
+        let init_output = run_with_stdin(init_command, password_input.clone())
+            .context("failed to execute wallet topup init command")?;
+
+        if !init_output.status.success() {
+            let summary = summarize_command_failure(&init_output.stdout, &init_output.stderr);
+            let combined = format!("{}\n{}", init_output.stdout, init_output.stderr);
+            if is_connectivity_failure(&combined) {
+                bail!(
+                    "wallet topup failed during account initialization: {summary}\n{}",
+                    sequencer_unreachable_hint(&sequencer_addr)
+                );
+            }
+            if is_already_initialized_failure(&combined) {
+                println!("wallet topup preflight: destination already initialized; continuing");
+            } else {
+                bail!("wallet topup failed while initializing destination wallet: {summary}");
+            }
+        }
+    }
+
+    let output = run_with_stdin(pinata_command, password_input)
         .context("failed to execute wallet topup command")?;
 
     if !output.status.success() {

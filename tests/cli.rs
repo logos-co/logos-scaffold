@@ -796,6 +796,10 @@ fn wallet_topup_dry_run_renders_pinata_claim_command() {
         .success()
         .stdout(
             predicate::str::contains("dry-run: wallet topup command will not be executed")
+                .and(predicate::str::contains(
+                    "planned preflight: check destination wallet initialization",
+                ))
+                .and(predicate::str::contains("auth-transfer init --account-id"))
                 .and(predicate::str::contains("pinata claim --to"))
                 .and(predicate::str::contains(
                     "planned method: pinata faucet claim",
@@ -821,6 +825,90 @@ fn wallet_topup_runs_pinata_claim_with_explicit_address() {
             predicate::str::contains("pinata claim --to Public/")
                 .and(predicate::str::contains("wallet topup complete")),
         );
+}
+
+#[test]
+fn wallet_topup_initializes_when_account_uninitialized_before_pinata() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("TOPUP_ACCOUNT_STATE", "uninitialized")
+        .env("TOPUP_GUARD_REQUIRE_INIT", "1")
+        .arg("wallet")
+        .arg("topup")
+        .arg("--address")
+        .arg(VALID_PUBLIC_ADDRESS)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wallet topup complete"));
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let init_pos = stdout
+        .find("auth-transfer init --account-id Public/")
+        .expect("init command should be present");
+    let pinata_pos = stdout
+        .find("pinata claim --to Public/")
+        .expect("pinata command should be present");
+    assert!(
+        init_pos < pinata_pos,
+        "auth-transfer init must run before pinata claim, got output:\n{stdout}"
+    );
+}
+
+#[test]
+fn wallet_topup_skips_init_when_account_already_initialized() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("TOPUP_ACCOUNT_STATE", "initialized")
+        .arg("wallet")
+        .arg("topup")
+        .arg("--address")
+        .arg(VALID_PUBLIC_ADDRESS)
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    assert!(
+        !stdout.contains("auth-transfer init --account-id"),
+        "init command must not run for initialized accounts, got output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("pinata claim --to Public/"),
+        "pinata claim should still run, got output:\n{stdout}"
+    );
+}
+
+#[test]
+fn wallet_topup_preflight_failure_blocks_pinata() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("TOPUP_PREFLIGHT_FAIL", "1")
+        .arg("wallet")
+        .arg("topup")
+        .arg("--address")
+        .arg(VALID_PUBLIC_ADDRESS)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "wallet topup failed while checking account initialization",
+        ));
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    assert!(
+        !stdout.contains("pinata claim --to"),
+        "pinata must not run when preflight fails, got output:\n{stdout}"
+    );
 }
 
 #[test]
@@ -942,6 +1030,63 @@ fn wallet_topup_shows_sequencer_hint_on_connectivity_failure() {
                 .and(predicate::str::contains("logos-scaffold localnet start"))
                 .and(predicate::str::contains("Another project's sequencer")),
         );
+}
+
+#[test]
+fn wallet_topup_init_connectivity_failure_shows_sequencer_hint() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("TOPUP_ACCOUNT_STATE", "uninitialized")
+        .env("TOPUP_INIT_FAIL_CONNECT", "1")
+        .arg("wallet")
+        .arg("topup")
+        .arg("--address")
+        .arg(VALID_PUBLIC_ADDRESS)
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("sequencer appears unavailable")
+                .and(predicate::str::contains("logos-scaffold localnet start"))
+                .and(predicate::str::contains("Another project's sequencer")),
+        );
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    assert!(
+        !stdout.contains("pinata claim --to"),
+        "pinata must not run when init fails with connectivity error, got output:\n{stdout}"
+    );
+}
+
+#[test]
+fn wallet_topup_continues_when_init_reports_already_initialized() {
+    let temp = tempdir().expect("tempdir");
+    let wallet_stub = write_wallet_stub(temp.path());
+    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("TOPUP_ACCOUNT_STATE", "uninitialized")
+        .env("TOPUP_INIT_FAIL_ALREADY", "1")
+        .arg("wallet")
+        .arg("topup")
+        .arg("--address")
+        .arg(VALID_PUBLIC_ADDRESS)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("destination already initialized; continuing")
+                .and(predicate::str::contains("wallet topup complete")),
+        );
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    assert!(
+        stdout.contains("pinata claim --to Public/"),
+        "pinata should run after tolerated init race, got output:\n{stdout}"
+    );
 }
 
 #[test]
@@ -1301,8 +1446,44 @@ if [ "$#" -ge 2 ] && [ "$1" = "account" ] && [ "$2" = "list" ]; then
   exit 0
 fi
 
+if [ "$#" -ge 2 ] && [ "$1" = "account" ] && [ "$2" = "get" ]; then
+  if [ "${TOPUP_PREFLIGHT_FAIL:-0}" = "1" ]; then
+    echo "simulated account get failure" >&2
+    exit 4
+  fi
+  if [ "${TOPUP_ACCOUNT_STATE:-initialized}" = "uninitialized" ]; then
+    echo "Account is Uninitialized"
+  else
+    echo "Account state: Initialized"
+  fi
+  exit 0
+fi
+
+if [ "$#" -ge 3 ] && [ "$1" = "auth-transfer" ] && [ "$2" = "init" ] && [ "$3" = "--account-id" ]; then
+  require_password_if_configured
+  if [ "${TOPUP_INIT_FAIL_CONNECT:-0}" = "1" ]; then
+    echo "connection refused" >&2
+    exit 1
+  fi
+  if [ "${TOPUP_INIT_FAIL_ALREADY:-0}" = "1" ]; then
+    echo "Error: Account must be uninitialized" >&2
+    exit 1
+  fi
+  marker_path="${NSSA_WALLET_HOME_DIR:-.}/.topup-init-ran"
+  : > "$marker_path"
+  echo "init ok"
+  exit 0
+fi
+
 if [ "$#" -ge 2 ] && [ "$1" = "pinata" ] && [ "$2" = "claim" ]; then
   require_password_if_configured
+  if [ "${TOPUP_GUARD_REQUIRE_INIT:-0}" = "1" ]; then
+    marker_path="${NSSA_WALLET_HOME_DIR:-.}/.topup-init-ran"
+    if [ ! -f "$marker_path" ]; then
+      echo "pinata called before init" >&2
+      exit 9
+    fi
+  fi
   if [ "${TOPUP_FAIL_CONNECT:-0}" = "1" ]; then
     echo "connection refused" >&2
     exit 1
