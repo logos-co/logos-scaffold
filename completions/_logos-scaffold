@@ -1,0 +1,212 @@
+#compdef logos-scaffold
+
+_logos-scaffold() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    _arguments -C \
+        '(-h --help)'{-h,--help}'[Show help information]' \
+        '(-V --version)'{-V,--version}'[Show version information]' \
+        '1: :_logos_scaffold_commands' \
+        '*::args:->args'
+
+    case $state in
+        args)
+            case $words[1] in
+                create|new)    _logos_scaffold_create ;;
+                setup)         _logos_scaffold_setup ;;
+                build)         _logos_scaffold_build ;;
+                deploy)        _logos_scaffold_deploy ;;
+                localnet)      _logos_scaffold_localnet ;;
+                wallet)        _logos_scaffold_wallet ;;
+                doctor)        _logos_scaffold_doctor ;;
+                report)        _logos_scaffold_report ;;
+            esac
+            ;;
+    esac
+}
+
+_logos_scaffold_commands() {
+    local commands=(
+        'create:Create a new logos-scaffold project'
+        'new:Alias for create'
+        'setup:Set up a logos-scaffold project'
+        'build:Build project components'
+        'deploy:Deploy programs to the sequencer'
+        'localnet:Manage local sequencer network'
+        'wallet:Manage wallet and accounts'
+        'doctor:Diagnose project environment'
+        'report:Collect sanitized diagnostics archive'
+    )
+    _describe 'command' commands
+}
+
+_logos_scaffold_create() {
+    _arguments \
+        '1:project name:' \
+        '--vendor-deps[Vendor dependencies locally]' \
+        '--lssa-path[Custom path to LSSA repository]:path:_files -/' \
+        '--cache-root[Custom cache root directory]:path:_files -/' \
+        '--template[Template to use (default: default)]:template:(default lez-framework)'
+}
+
+_logos_scaffold_setup() {
+    _arguments \
+        '--wallet-install[Wallet installation mode (default: auto)]:mode:(auto always never)'
+}
+
+_logos_scaffold_build() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    _arguments -C \
+        '1: :_logos_scaffold_build_subcommands' \
+        '*::args:->args'
+
+    case $state in
+        args)
+            case $words[1] in
+                idl|client)
+                    _arguments '1:project path:_files -/'
+                    ;;
+                *)
+                    _arguments '1:project path:_files -/'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_logos_scaffold_build_subcommands() {
+    local subcommands=(
+        'idl:Build IDL files from the current project'
+        'client:Build client code from IDL files'
+    )
+    _describe 'subcommand' subcommands
+}
+
+_logos_scaffold_deploy() {
+    _arguments \
+        '1:program name:'
+}
+
+_logos_scaffold_localnet() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    _arguments -C \
+        '1: :_logos_scaffold_localnet_subcommands' \
+        '*::args:->args'
+
+    case $state in
+        args)
+            case $words[1] in
+                start)
+                    _arguments \
+                        '--timeout-sec[Startup timeout in seconds (default: 20)]:seconds:'
+                    ;;
+                status)
+                    _arguments \
+                        '--json[Output status as JSON]'
+                    ;;
+                logs)
+                    _arguments \
+                        '--tail[Number of log lines to show (default: 200)]:lines:'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_logos_scaffold_localnet_subcommands() {
+    local subcommands=(
+        'start:Start the local sequencer'
+        'stop:Stop the local sequencer'
+        'status:Check localnet status'
+        'logs:View localnet logs'
+    )
+    _describe 'subcommand' subcommands
+}
+
+_logos_scaffold_wallet() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    _arguments -C \
+        '1: :_logos_scaffold_wallet_subcommands' \
+        '*::args:->args'
+
+    case $state in
+        args)
+            case $words[1] in
+                list)
+                    _arguments \
+                        '--long[Show detailed account information]'
+                    ;;
+                topup)
+                    _arguments \
+                        '1:wallet address:' \
+                        '--address[Wallet address to fund]:address:' \
+                        '--dry-run[Show what would be executed without running]'
+                    ;;
+                default)
+                    _logos_scaffold_wallet_default
+                    ;;
+                --)
+                    # Passthrough to underlying wallet binary — no completions
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_logos_scaffold_wallet_subcommands() {
+    local subcommands=(
+        'list:List wallet accounts'
+        'topup:Top up wallet using pinata faucet claim'
+        'default:Manage project default wallet'
+        '--:Forward arguments directly to the wallet binary'
+    )
+    _describe 'subcommand' subcommands
+}
+
+_logos_scaffold_wallet_default() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    _arguments -C \
+        '1: :_logos_scaffold_wallet_default_subcommands' \
+        '*::args:->args'
+
+    case $state in
+        args)
+            case $words[1] in
+                set)
+                    _arguments \
+                        '1:wallet address:' \
+                        '--address[Address to set as default]:address:'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_logos_scaffold_wallet_default_subcommands() {
+    local subcommands=(
+        'set:Set the default wallet address'
+    )
+    _describe 'subcommand' subcommands
+}
+
+_logos_scaffold_doctor() {
+    _arguments \
+        '--json[Output report as JSON]'
+}
+
+_logos_scaffold_report() {
+    _arguments \
+        '--out[Output path for the archive]:path:_files' \
+        '--tail[Number of log lines to include (default: 500)]:lines:'
+}
+
+_logos-scaffold "$@"
