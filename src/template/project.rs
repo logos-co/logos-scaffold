@@ -211,7 +211,7 @@ mod tests {
 
         for path in [
             "Cargo.toml",
-            "crates/lssa-client-gen/Cargo.toml",
+            "crates/spel-client-gen/Cargo.toml", // also matches legacy lssa-client-gen
             "methods/guest/Cargo.toml",
         ] {
             assert!(
@@ -222,7 +222,7 @@ mod tests {
 
         for path in [
             "Cargo.toml.template",
-            "crates/lssa-client-gen/Cargo.toml.template",
+            "crates/spel-client-gen/Cargo.toml.template",
             "methods/guest/Cargo.toml.template",
         ] {
             assert!(
