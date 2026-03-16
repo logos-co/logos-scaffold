@@ -13,7 +13,7 @@ members = [
   ".",
   "methods",
   "methods/guest",
-  "crates/lssa-client-gen",
+  "crates/spel-client-gen",
 ]
 
 [workspace.dependencies]
@@ -25,9 +25,9 @@ common = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_p
 risc0-zkvm = { version = "3.0.5", features = ["std"] }
 risc0-build = "3.0.5"
 
-lez-framework = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }
-lez-framework-core = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }
-lez-client-gen = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }
+lez-framework = { git = "https://github.com/logos-co/spel.git", rev = "6465f70c22084afa6c793baa7f46cdd5e4022bc2" }
+lez-framework-core = { git = "https://github.com/logos-co/spel.git", rev = "6465f70c22084afa6c793baa7f46cdd5e4022bc2" }
+lez-client-gen = { git = "https://github.com/logos-co/spel.git", rev = "6465f70c22084afa6c793baa7f46cdd5e4022bc2" }
 
 hex = "0.4.3"
 bytemuck = "1.24.0"
