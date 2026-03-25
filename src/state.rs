@@ -4,8 +4,8 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail};
 
-use crate::model::LocalnetState;
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
+use crate::model::LocalnetState;
 use crate::DynResult;
 
 pub(crate) fn write_text(path: &Path, text: &str) -> DynResult<()> {

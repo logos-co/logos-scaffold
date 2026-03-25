@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use anyhow::bail;
 
 use super::wallet_support::wallet_password;
+use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
 use crate::constants::DEFAULT_LSSA_PIN;
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
@@ -14,7 +15,6 @@ use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
 use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo, which};
 use crate::project::load_project;
 use crate::state::read_localnet_state;
-use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
 use crate::DynResult;
 
 const STEP_SETUP: &str = "logos-scaffold setup";
