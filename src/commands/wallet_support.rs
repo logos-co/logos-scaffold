@@ -43,23 +43,26 @@ pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeC
 }
 
 fn read_wallet_config(wallet_home: &Path) -> DynResult<(PathBuf, Value)> {
-    let candidates = [
-        wallet_home.join(WALLET_CONFIG_PRIMARY),
-        wallet_home.join(WALLET_CONFIG_FALLBACK),
-    ];
+    let primary = wallet_home.join(WALLET_CONFIG_PRIMARY);
+    let fallback = wallet_home.join(WALLET_CONFIG_FALLBACK);
 
-    let path = candidates
-        .iter()
-        .find(|path| path.exists())
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "missing wallet config. Expected `{}` or `{}` under {}. Run `logos-scaffold setup`.",
-                WALLET_CONFIG_PRIMARY,
-                WALLET_CONFIG_FALLBACK,
-                wallet_home.display()
-            )
-        })?;
+    let path = if primary.exists() {
+        primary
+    } else if fallback.exists() {
+        // Legacy: older `setup` runs wrote "config.json" instead of
+        // "wallet_config.json". Re-run `logos-scaffold setup` to migrate.
+        eprintln!(
+            "warning: found legacy wallet config '{}';              re-run `logos-scaffold setup` to migrate to '{}'.",
+            WALLET_CONFIG_FALLBACK,
+            WALLET_CONFIG_PRIMARY,
+        );
+        fallback
+    } else {
+        return Err(anyhow::anyhow!(
+            "missing wallet config at \'{}\'. Run `logos-scaffold setup`.",
+            wallet_home.join(WALLET_CONFIG_PRIMARY).display()
+        ));
+    };
 
     let text = fs::read_to_string(&path)
         .with_context(|| format!("failed to read wallet config at {}", path.display()))?;
