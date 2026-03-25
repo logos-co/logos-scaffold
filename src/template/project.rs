@@ -125,6 +125,22 @@ fn find_unresolved_placeholder(text: &str) -> Option<&str> {
     }
 }
 
+pub(crate) fn available_templates() -> Vec<String> {
+    let mut names: Vec<String> = TEMPLATES_DIR
+        .dirs()
+        .map(|d| {
+            d.path()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    names.sort();
+    names
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

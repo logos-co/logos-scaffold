@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use anyhow::anyhow;
 use clap::{CommandFactory, Parser, Subcommand};
@@ -14,7 +15,18 @@ use crate::commands::report::cmd_report;
 use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
 use crate::commands::wallet::{cmd_wallet, WalletAction};
 use crate::constants::VERSION;
+use crate::template::project::available_templates;
 use crate::DynResult;
+
+static CREATE_ABOUT: LazyLock<String> = LazyLock::new(|| {
+    let templates = available_templates().join(", ");
+    format!("Create a new logos-scaffold project (templates: {templates})")
+});
+
+static NEW_ABOUT: LazyLock<String> = LazyLock::new(|| {
+    let templates = available_templates().join(", ");
+    format!("Alias for `create` (templates: {templates})")
+});
 
 #[derive(Debug, Parser)]
 #[command(
@@ -30,8 +42,10 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     #[command(about = "Create a new logos-scaffold project")]
+    #[command(before_long_help = CREATE_ABOUT.as_str())]
     Create(NewArgs),
     #[command(about = "Alias for `create`")]
+    #[command(before_long_help = NEW_ABOUT.as_str())]
     New(NewArgs),
     Setup(SetupArgs),
     Build(BuildArgs),
