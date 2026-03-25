@@ -55,7 +55,7 @@ pub(crate) struct Captured {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum LocalnetOwnership {
+pub enum LocalnetOwnership {
     Managed,
     Foreign,
     StaleState,
@@ -64,15 +64,15 @@ pub(crate) enum LocalnetOwnership {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct LocalnetStatusReport {
-    pub(crate) tracked_pid: Option<u32>,
-    pub(crate) tracked_running: bool,
-    pub(crate) listener_present: bool,
-    pub(crate) listener_pid: Option<u32>,
-    pub(crate) ownership: LocalnetOwnership,
-    pub(crate) ready: bool,
-    pub(crate) log_path: String,
-    pub(crate) remediation: Vec<String>,
+pub struct LocalnetStatusReport {
+    pub tracked_pid: Option<u32>,
+    pub tracked_running: bool,
+    pub listener_present: bool,
+    pub listener_pid: Option<u32>,
+    pub ownership: LocalnetOwnership,
+    pub ready: bool,
+    pub log_path: String,
+    pub remediation: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
