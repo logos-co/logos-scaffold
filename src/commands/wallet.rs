@@ -17,6 +17,7 @@ use super::wallet_support::{
 pub(crate) enum WalletAction {
     List {
         long: bool,
+        json: bool,
     },
     Proxy {
         args: Vec<String>,
@@ -24,6 +25,7 @@ pub(crate) enum WalletAction {
     Topup {
         address: Option<String>,
         dry_run: bool,
+        json: bool,
     },
     DefaultSet {
         address: String,
@@ -36,14 +38,14 @@ pub(crate) fn cmd_wallet(action: WalletAction) -> DynResult<()> {
     )?;
 
     match action {
-        WalletAction::List { long } => cmd_wallet_list(&project, long),
+        WalletAction::List { long, json } => cmd_wallet_list(&project, long, json),
         WalletAction::Proxy { args } => cmd_wallet_proxy(&project, &args),
-        WalletAction::Topup { address, dry_run } => cmd_wallet_topup(&project, address, dry_run),
+        WalletAction::Topup { address, dry_run, json } => cmd_wallet_topup(&project, address, dry_run, json),
         WalletAction::DefaultSet { address } => cmd_wallet_default_set(&project, &address),
     }
 }
 
-fn cmd_wallet_list(project: &crate::model::Project, long: bool) -> DynResult<()> {
+fn cmd_wallet_list(project: &crate::model::Project, long: bool, json: bool) -> DynResult<()> {
     let wallet = load_wallet_runtime(project)?;
 
     let mut command = Command::new(&wallet.wallet_binary);
@@ -55,7 +57,7 @@ fn cmd_wallet_list(project: &crate::model::Project, long: bool) -> DynResult<()>
         .arg("account")
         .arg("list");
 
-    if long {
+    if long || json {
         command.arg("--long");
     }
 
@@ -91,6 +93,7 @@ fn cmd_wallet_topup(
     project: &crate::model::Project,
     address: Option<String>,
     dry_run: bool,
+    json: bool,
 ) -> DynResult<()> {
     let wallet = load_wallet_runtime(project)?;
     let default_address = read_default_wallet_address(&project.root)?;
@@ -214,12 +217,23 @@ fn cmd_wallet_topup(
         );
     }
 
-    println!("wallet topup complete");
-    println!("  Address: {resolved_to}");
-    println!("  Method: pinata faucet claim");
-    println!("  Network: local sequencer ({sequencer_addr})");
-    if let Some(tx) = extract_tx_identifier(&output.stdout, &output.stderr) {
-        println!("  Tx: {tx}");
+    if json {
+        let tx = extract_tx_identifier(&output.stdout, &output.stderr);
+        let tx_val = tx.as_deref()
+            .map(|t| format!("\"{}\"", t))
+            .unwrap_or_else(|| "null".to_string());
+        println!(
+            "{{\"status\":\"ok\",\"address\":\"{}\",\"method\":\"pinata\",\"tx\":{}}}",
+            resolved_to, tx_val
+        );
+    } else {
+        println!("wallet topup complete");
+        println!("  Address: {resolved_to}");
+        println!("  Method: pinata faucet claim");
+        println!("  Network: local sequencer ({sequencer_addr})");
+        if let Some(tx) = extract_tx_identifier(&output.stdout, &output.stderr) {
+            println!("  Tx: {tx}");
+        }
     }
 
     Ok(())

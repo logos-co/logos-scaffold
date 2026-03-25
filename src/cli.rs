@@ -155,6 +155,9 @@ enum WalletSubcommand {
 struct WalletListArgs {
     #[arg(long)]
     long: bool,
+    /// Output as JSON for programmatic consumption
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -165,6 +168,9 @@ struct WalletTopupArgs {
     address_flag: Option<String>,
     #[arg(long)]
     dry_run: bool,
+    /// Output result as JSON for programmatic consumption
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -240,7 +246,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         }
         Some(Commands::Wallet(args)) => {
             let action = match args.command {
-                WalletSubcommand::List(args) => WalletAction::List { long: args.long },
+                WalletSubcommand::List(args) => WalletAction::List { long: args.long, json: args.json },
                 WalletSubcommand::Topup(args) => WalletAction::Topup {
                     address: merge_optional_address(
                         args.address,
@@ -248,6 +254,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                         "wallet topup",
                     )?,
                     dry_run: args.dry_run,
+                    json: args.json,
                 },
                 WalletSubcommand::Default(args) => match args.command {
                     WalletDefaultSubcommand::Set(set) => WalletAction::DefaultSet {
