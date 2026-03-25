@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail};
 
+use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
 use crate::model::LocalnetState;
 use crate::DynResult;
 
@@ -45,7 +46,7 @@ pub(crate) fn read_localnet_state(path: &Path) -> DynResult<LocalnetState> {
 
 pub(crate) fn prepare_wallet_home(lssa_repo: &Path, wallet_home: &Path) -> DynResult<()> {
     fs::create_dir_all(wallet_home)?;
-    let cfg_dst = wallet_home.join("config.json");
+    let cfg_dst = wallet_home.join(WALLET_CONFIG_PRIMARY);
     if !cfg_dst.exists() {
         let cfg_src = lssa_repo.join("wallet/configs/debug/wallet_config.json");
         if !cfg_src.exists() {

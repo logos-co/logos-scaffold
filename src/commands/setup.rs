@@ -175,6 +175,7 @@ fn ensure_wallet_install(
 
 #[cfg(test)]
 mod tests {
+    use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
     use std::fs;
 
     use tempfile::tempdir;
@@ -191,7 +192,7 @@ mod tests {
         let wallet_home = temp.path().join(".scaffold/wallet");
         fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
         fs::write(
-            wallet_home.join("config.json"),
+            wallet_home.join(WALLET_CONFIG_PRIMARY),
             format!(
                 r#"{{
   "initial_accounts": [
@@ -226,7 +227,7 @@ mod tests {
         let wallet_home = temp.path().join(".scaffold/wallet");
         fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
         fs::write(
-            wallet_home.join("config.json"),
+            wallet_home.join(WALLET_CONFIG_PRIMARY),
             format!(
                 r#"{{
   "initial_accounts": [

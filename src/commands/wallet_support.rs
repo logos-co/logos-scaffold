@@ -11,8 +11,8 @@ use crate::model::Project;
 use crate::state::write_text;
 use crate::DynResult;
 
-const WALLET_CONFIG_PRIMARY: &str = "wallet_config.json";
-const WALLET_CONFIG_FALLBACK: &str = "config.json";
+pub(crate) const WALLET_CONFIG_PRIMARY: &str = "wallet_config.json";
+pub(crate) const WALLET_CONFIG_FALLBACK: &str = "config.json";
 
 pub(crate) struct WalletRuntimeContext {
     pub(crate) wallet_home: PathBuf,
@@ -43,23 +43,26 @@ pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeC
 }
 
 fn read_wallet_config(wallet_home: &Path) -> DynResult<(PathBuf, Value)> {
-    let candidates = [
-        wallet_home.join(WALLET_CONFIG_PRIMARY),
-        wallet_home.join(WALLET_CONFIG_FALLBACK),
-    ];
+    let primary = wallet_home.join(WALLET_CONFIG_PRIMARY);
+    let fallback = wallet_home.join(WALLET_CONFIG_FALLBACK);
 
-    let path = candidates
-        .iter()
-        .find(|path| path.exists())
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "missing wallet config. Expected `{}` or `{}` under {}. Run `logos-scaffold setup`.",
-                WALLET_CONFIG_PRIMARY,
-                WALLET_CONFIG_FALLBACK,
-                wallet_home.display()
-            )
-        })?;
+    let path = if primary.exists() {
+        primary
+    } else if fallback.exists() {
+        // Legacy: older `setup` runs wrote "config.json" instead of
+        // "wallet_config.json". Re-run `logos-scaffold setup` to migrate.
+        eprintln!(
+            "warning: found legacy wallet config '{}';              re-run `logos-scaffold setup` to migrate to '{}'.",
+            WALLET_CONFIG_FALLBACK,
+            WALLET_CONFIG_PRIMARY,
+        );
+        fallback
+    } else {
+        return Err(anyhow::anyhow!(
+            "missing wallet config at \'{}\'. Run `logos-scaffold setup`.",
+            wallet_home.join(WALLET_CONFIG_PRIMARY).display()
+        ));
+    };
 
     let text = fs::read_to_string(&path)
         .with_context(|| format!("failed to read wallet config at {}", path.display()))?;
@@ -443,6 +446,7 @@ fn one_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{WALLET_CONFIG_FALLBACK, WALLET_CONFIG_PRIMARY};
     use std::fs;
 
     use tempfile::tempdir;
@@ -528,7 +532,7 @@ mod tests {
         let wallet_home = temp.path().join(".scaffold/wallet");
         fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
         fs::write(
-            wallet_home.join("wallet_config.json"),
+            wallet_home.join(WALLET_CONFIG_PRIMARY),
             r#"{
   "initial_accounts": [
     { "Private": { "account_id": "2ECgkFTaXzwjJBXR7ZKmXYQtpHbvTTHK9Auma4NL9AUo" } },
@@ -549,7 +553,7 @@ mod tests {
         let wallet_home = temp.path().join(".scaffold/wallet");
         fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
         fs::write(
-            wallet_home.join("wallet_config.json"),
+            wallet_home.join(WALLET_CONFIG_PRIMARY),
             r#"{
   "initial_accounts": [
     { "Private": { "account_id": "2ECgkFTaXzwjJBXR7ZKmXYQtpHbvTTHK9Auma4NL9AUo" } }

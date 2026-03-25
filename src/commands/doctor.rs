@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use anyhow::bail;
 
 use super::wallet_support::wallet_password;
+use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
 use crate::constants::DEFAULT_LSSA_PIN;
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
@@ -175,7 +176,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         });
     }
 
-    let wallet_cfg = wallet_home.join("config.json");
+    let wallet_cfg = wallet_home.join(WALLET_CONFIG_PRIMARY);
     if wallet_cfg.exists() {
         let cfg_text = fs::read_to_string(&wallet_cfg)?;
         if cfg_text.contains("127.0.0.1:3040") || cfg_text.contains("localhost:3040") {
@@ -191,7 +192,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
                 name: "wallet network config".to_string(),
                 detail: "wallet may point to non-local sequencer".to_string(),
                 remediation: Some(
-                    "Set .scaffold/wallet/config.json sequencer_addr=http://127.0.0.1:3040"
+                    "Set .scaffold/wallet/wallet_config.json sequencer_addr=http://127.0.0.1:3040"
                         .to_string(),
                 ),
             });
@@ -200,7 +201,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         rows.push(CheckRow {
             status: CheckStatus::Warn,
             name: "wallet network config".to_string(),
-            detail: "missing .scaffold/wallet/config.json".to_string(),
+            detail: "missing .scaffold/wallet/wallet_config.json".to_string(),
             remediation: Some("Run `logos-scaffold setup`".to_string()),
         });
     }
