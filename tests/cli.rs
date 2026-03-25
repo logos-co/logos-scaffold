@@ -61,7 +61,8 @@ fn deploy_help_lists_optional_program_name() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("deploy [PROGRAM_NAME]"));
+        .stdout(predicate::str::contains("[PROGRAM_NAME]"));
+    // Note: output includes [OPTIONS] when extra flags are present
 }
 
 #[test]

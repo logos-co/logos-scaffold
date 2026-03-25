@@ -106,6 +106,12 @@ struct BuildSubArgs {
 #[derive(Debug, clap::Args)]
 struct DeployArgs {
     program_name: Option<String>,
+    /// Path to a custom ELF binary to deploy directly (bypasses auto-discovery)
+    #[arg(long, value_name = "PATH")]
+    program_path: Option<PathBuf>,
+    /// Output result as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -245,7 +251,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             ),
             None => cmd_build_shortcut(args.project_path),
         },
-        Some(Commands::Deploy(args)) => cmd_deploy(args.program_name),
+        Some(Commands::Deploy(args)) => cmd_deploy(args.program_name, args.program_path, args.json),
         Some(Commands::Localnet(localnet)) => {
             let action = match localnet.command {
                 LocalnetSubcommand::Start(args) => LocalnetAction::Start {
