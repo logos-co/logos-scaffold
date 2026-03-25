@@ -9,6 +9,7 @@ use crate::commands::client::cmd_client;
 use crate::commands::deploy::cmd_deploy;
 use crate::commands::doctor::cmd_doctor;
 use crate::commands::idl::cmd_idl;
+use crate::commands::init::{cmd_init, InitCommand};
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
@@ -46,6 +47,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    #[command(about = "Initialise logos-scaffold in an existing project")]
+    Init(InitArgs),
     #[command(about = "Create a new logos-scaffold project")]
     #[command(before_long_help = CREATE_ABOUT.as_str())]
     Create(NewArgs),
@@ -75,6 +78,16 @@ struct NewArgs {
     cache_root: Option<PathBuf>,
     #[arg(long, default_value = "default", help = TEMPLATE_HELP.as_str())]
     template: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct InitArgs {
+    #[arg(long)]
+    vendor_deps: bool,
+    #[arg(long)]
+    lssa_path: Option<PathBuf>,
+    #[arg(long)]
+    cache_root: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -228,6 +241,11 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
     };
 
     match cli.command {
+        Some(Commands::Init(args)) => cmd_init(InitCommand {
+            lssa_path: args.lssa_path,
+            cache_root: args.cache_root,
+            vendor_deps: args.vendor_deps,
+        }),
         Some(Commands::Create(args)) | Some(Commands::New(args)) => cmd_new(NewCommand {
             name: args.name,
             vendor_deps: args.vendor_deps,
