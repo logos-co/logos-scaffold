@@ -18,6 +18,11 @@ use crate::constants::VERSION;
 use crate::template::project::available_templates;
 use crate::DynResult;
 
+static TEMPLATE_HELP: LazyLock<String> = LazyLock::new(|| {
+    let templates = available_templates().join(", ");
+    format!("Template to use (available: {templates})")
+});
+
 static CREATE_ABOUT: LazyLock<String> = LazyLock::new(|| {
     let templates = available_templates().join(", ");
     format!("Create a new logos-scaffold project (templates: {templates})")
@@ -68,7 +73,7 @@ struct NewArgs {
     lssa_path: Option<PathBuf>,
     #[arg(long)]
     cache_root: Option<PathBuf>,
-    #[arg(long, default_value = "default")]
+    #[arg(long, default_value = "default", help = TEMPLATE_HELP.as_str())]
     template: String,
 }
 
