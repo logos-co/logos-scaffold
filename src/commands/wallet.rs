@@ -61,8 +61,30 @@ fn cmd_wallet_list(project: &crate::model::Project, long: bool, json: bool) -> D
         command.arg("--long");
     }
 
-    run_forwarded(&mut command, "wallet account list")
-        .context("failed to execute wallet list command")?;
+    if json {
+        // Capture output and format as JSON
+        let output = command
+            .output()
+            .context("failed to execute wallet account list")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!("{}", serde_json::json!({ "error": stderr.trim() }));
+            return Ok(());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let accounts: Vec<serde_json::Value> = stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|line| serde_json::json!({ "account": line.trim() }))
+            .collect();
+
+        println!("{}", serde_json::to_string_pretty(&accounts)?);
+    } else {
+        run_forwarded(&mut command, "wallet account list")
+            .context("failed to execute wallet list command")?;
+    }
 
     Ok(())
 }
