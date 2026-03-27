@@ -28,6 +28,7 @@ pub(crate) enum WalletInstallMode {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SetupCommand {
     pub(crate) wallet_install: WalletInstallMode,
+    pub(crate) prebuilt: bool,
 }
 
 pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
@@ -44,17 +45,25 @@ pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
 
     ensure_dir_exists(&lssa, "lssa")?;
 
-    run_checked(
-        Command::new("cargo")
-            .current_dir(&lssa)
-            .arg("build")
-            .arg("--release")
-            .arg("--features")
-            .arg("standalone")
-            .arg("-p")
-            .arg("sequencer_runner"),
-        "build sequencer_runner (standalone)",
-    )?;
+    let built_from_prebuilt = if cmd.prebuilt {
+        try_download_prebuilt(&lssa, &project.config.lssa.pin)?
+    } else {
+        false
+    };
+
+    if !built_from_prebuilt {
+        run_checked(
+            Command::new("cargo")
+                .current_dir(&lssa)
+                .arg("build")
+                .arg("--release")
+                .arg("--features")
+                .arg("standalone")
+                .arg("-p")
+                .arg("sequencer_runner"),
+            "build sequencer_runner (standalone)",
+        )?;
+    }
 
     ensure_wallet_install(&lssa, &project.config.wallet_binary, cmd.wallet_install)
         .context("wallet setup failed")?;
@@ -171,6 +180,53 @@ fn ensure_wallet_install(
     }
 
     Ok(())
+}
+
+
+fn try_download_prebuilt(lssa: &Path, pin: &str) -> DynResult<bool> {
+    let commit = &pin[..8.min(pin.len())];
+    let arch = if cfg!(target_arch = "x86_64") { "x86_64" } else { "aarch64" };
+    let os = if cfg!(target_os = "linux") { "linux" } else { "macos" };
+    let tag = format!("lssa-prebuilt-{commit}-{arch}-{os}");
+
+    println!("Checking for prebuilt binaries (tag: {tag})...");
+
+    // Check GitHub releases for prebuilt binaries
+    let url = format!(
+        "https://github.com/logos-co/logos-scaffold/releases/download/{tag}/sequencer_runner"
+    );
+
+    let bin_dir = lssa.join("target/release");
+    std::fs::create_dir_all(&bin_dir)?;
+    let bin_path = bin_dir.join("sequencer_runner");
+
+    // Try to download using curl
+    let status = Command::new("curl")
+        .args([
+            "--fail", "--silent", "--location",
+            "--output", bin_path.to_str().unwrap_or("sequencer_runner"),
+            &url,
+        ])
+        .status();
+
+    match status {
+        Ok(s) if s.success() && bin_path.exists() => {
+            // Make binary executable
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&bin_path)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&bin_path, perms)?;
+            }
+            println!("prebuilt sequencer_runner downloaded successfully");
+            Ok(true)
+        }
+        _ => {
+            println!("no prebuilt found for tag {tag}, falling back to source build...");
+            Ok(false)
+        }
+    }
 }
 
 #[cfg(test)]

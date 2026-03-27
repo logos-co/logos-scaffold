@@ -15,6 +15,7 @@ pub(crate) fn cmd_build_shortcut(project_dir: Option<PathBuf>) -> DynResult<()> 
     run_in_project_dir(project_dir.as_deref(), || {
         cmd_setup(SetupCommand {
             wallet_install: WalletInstallMode::Auto,
+            prebuilt: false,
         })?;
         let cwd = env::current_dir()?;
 

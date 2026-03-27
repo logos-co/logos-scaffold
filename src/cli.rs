@@ -81,6 +81,11 @@ struct NewArgs {
 struct SetupArgs {
     #[arg(long, value_enum, default_value_t = WalletInstallMode::Auto)]
     wallet_install: WalletInstallMode,
+
+    /// Download prebuilt binaries instead of compiling from source.
+    /// Falls back to source build if no prebuilt exists for the pinned commit.
+    #[arg(long, default_value_t = false)]
+    prebuilt: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -237,6 +242,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         }),
         Some(Commands::Setup(args)) => cmd_setup(SetupCommand {
             wallet_install: args.wallet_install,
+            prebuilt: args.prebuilt,
         }),
         Some(Commands::Build(args)) => match args.subcommand {
             Some(BuildSubcommand::Idl(sub)) => cmd_idl(
