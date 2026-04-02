@@ -2,7 +2,7 @@ use anyhow::bail;
 
 use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, LSSA_URL,
+    DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, LEZ_URL,
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, RepoRef};
 use crate::DynResult;
@@ -13,10 +13,10 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     let mut version = String::new();
     let mut cache_root = String::new();
 
-    let mut lssa_url = String::new();
-    let mut lssa_source = String::new();
-    let mut lssa_path = String::new();
-    let mut lssa_pin = String::new();
+    let mut lez_url = String::new();
+    let mut lez_source = String::new();
+    let mut lez_path = String::new();
+    let mut lez_pin = String::new();
 
     let mut wallet_binary = String::new();
     let mut wallet_home_dir = String::new();
@@ -51,13 +51,13 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
             }
             "repos.lssa" => {
                 if key == "url" {
-                    lssa_url = value;
+                    lez_url = value;
                 } else if key == "source" {
-                    lssa_source = value;
+                    lez_source = value;
                 } else if key == "path" {
-                    lssa_path = value;
+                    lez_path = value;
                 } else if key == "pin" {
-                    lssa_pin = value;
+                    lez_pin = value;
                 }
             }
             "framework" => {
@@ -89,11 +89,11 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         bail!("invalid scaffold.toml: missing [scaffold] keys");
     }
 
-    if lssa_url.is_empty() {
-        lssa_url = LSSA_URL.to_string();
+    if lez_url.is_empty() {
+        lez_url = LEZ_URL.to_string();
     }
 
-    if lssa_source.is_empty() || lssa_path.is_empty() || lssa_pin.is_empty() {
+    if lez_source.is_empty() || lez_path.is_empty() || lez_pin.is_empty() {
         bail!("invalid scaffold.toml: missing required repos.lssa keys");
     }
 
@@ -121,10 +121,10 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         version,
         cache_root,
         lssa: RepoRef {
-            url: lssa_url,
-            source: lssa_source,
-            path: lssa_path,
-            pin: lssa_pin,
+            url: lez_url,
+            source: lez_source,
+            path: lez_path,
+            pin: lez_pin,
         },
         wallet_binary,
         wallet_home_dir,

@@ -40,9 +40,9 @@ pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
         RepoSyncOptions::fail_on_source_mismatch()
     };
 
-    sync_repo_to_pin(&mut project.config.lssa, "lssa", sync_opts)?;
+    sync_repo_to_pin(&mut project.config.lssa, "lez", sync_opts)?;
 
-    ensure_dir_exists(&lssa, "lssa")?;
+    ensure_dir_exists(&lssa, "lez")?;
 
     run_checked(
         Command::new("cargo")

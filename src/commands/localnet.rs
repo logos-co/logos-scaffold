@@ -102,7 +102,7 @@ fn cmd_localnet_start(
     log_path: &Path,
     timeout_sec: u64,
 ) -> DynResult<()> {
-    ensure_dir_exists(lssa, "lssa")?;
+    ensure_dir_exists(lssa, "lez")?;
     let sequencer_bin = lssa.join("target/release/sequencer_runner");
     if !sequencer_bin.exists() {
         return Err(LocalnetError::MissingSequencerBinary {

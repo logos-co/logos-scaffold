@@ -299,7 +299,7 @@ mod tests {
             &cache_repo,
             &source_b.display().to_string(),
             &pin_b,
-            "lssa",
+            "lez",
             RepoSyncOptions::auto_reclone_cache_repo(),
         )
         .expect("sync success");
@@ -323,7 +323,7 @@ mod tests {
             &repo,
             &source_b.display().to_string(),
             &pin_a,
-            "lssa",
+            "lez",
             RepoSyncOptions::fail_on_source_mismatch(),
         )
         .expect_err("must fail");
@@ -349,7 +349,7 @@ mod tests {
             &cache_repo,
             &source_b.display().to_string(),
             &pin_a,
-            "lssa",
+            "lez",
             RepoSyncOptions {
                 source_mismatch: SourceMismatchPolicy::AutoRecloneIfClean,
             },

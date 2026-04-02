@@ -16,9 +16,9 @@ members = [
 ]
 
 [workspace.dependencies]
-nssa = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
-nssa_core = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
-wallet = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
+nssa = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lez_pin}}" }
+nssa_core = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lez_pin}}" }
+wallet = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lez_pin}}" }
 
 anyhow = "1.0.98"
 risc0-zkvm = { version = "3.0.5", features = ["std"] }

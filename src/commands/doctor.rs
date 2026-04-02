@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use anyhow::bail;
 
 use super::wallet_support::wallet_password;
-use crate::constants::DEFAULT_LSSA_PIN;
+use crate::constants::DEFAULT_LEZ_PIN;
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
     check_standalone_support, one_line, print_rows,
@@ -84,10 +84,10 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     rows.push(check_binary("kill", true));
     rows.push(check_container_runtime());
 
-    rows.push(check_repo("lssa", &lssa, &project.config.lssa.pin));
+    rows.push(check_repo("lez", &lssa, &project.config.lssa.pin));
 
     rows.push(CheckRow {
-        status: if project.config.lssa.pin == DEFAULT_LSSA_PIN {
+        status: if project.config.lssa.pin == DEFAULT_LEZ_PIN {
             CheckStatus::Pass
         } else {
             CheckStatus::Warn
@@ -95,14 +95,14 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         name: "lssa standalone pin".to_string(),
         detail: format!(
             "configured pin={} expected={}",
-            project.config.lssa.pin, DEFAULT_LSSA_PIN
+            project.config.lssa.pin, DEFAULT_LEZ_PIN
         ),
-        remediation: if project.config.lssa.pin == DEFAULT_LSSA_PIN {
+        remediation: if project.config.lssa.pin == DEFAULT_LEZ_PIN {
             None
         } else {
             Some(format!(
                 "Set repos.lssa.pin in scaffold.toml to {} and run `{}`",
-                DEFAULT_LSSA_PIN, STEP_SETUP
+                DEFAULT_LEZ_PIN, STEP_SETUP
             ))
         },
     });

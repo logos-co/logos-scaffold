@@ -15,7 +15,7 @@ use predicates::prelude::*;
 use tar::Archive;
 use tempfile::tempdir;
 
-const TEST_PIN: &str = "767b5afd388c7981bcdf6f5b5c80159607e07e5b";
+const TEST_PIN: &str = "ffcbc15972adbf557939bf3e2852af276422631b";
 const VALID_ACCOUNT_ID: &str = "6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
 const VALID_PUBLIC_ADDRESS: &str = "Public/6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
 const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
@@ -257,10 +257,10 @@ fn report_keeps_non_utf8_logs_via_lossy_decoding() {
 #[test]
 fn report_manifest_scrubs_absolute_paths_in_warnings() {
     let temp = tempdir().expect("tempdir");
-    let lssa_path = temp.path().join("lssa");
-    fs::create_dir_all(&lssa_path).expect("create lssa path");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lssa path");
     let missing_wallet = temp.path().join("bin/missing-wallet");
-    write_scaffold_toml(temp.path(), &lssa_path, &missing_wallet.to_string_lossy());
+    write_scaffold_toml(temp.path(), &lez_path, &missing_wallet.to_string_lossy());
     write_wallet_config(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
@@ -549,9 +549,9 @@ fn report_skips_unreadable_optional_file_and_keeps_succeeding() {
 #[test]
 fn localnet_status_json_is_parseable() {
     let temp = tempdir().expect("tempdir");
-    let lssa_path = temp.path().join("lssa");
-    fs::create_dir_all(&lssa_path).expect("create lssa path");
-    write_scaffold_toml(temp.path(), &lssa_path, "wallet-not-installed-for-tests");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lssa path");
+    write_scaffold_toml(temp.path(), &lez_path, "wallet-not-installed-for-tests");
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -573,9 +573,9 @@ fn localnet_status_json_is_parseable() {
 #[test]
 fn doctor_json_outputs_machine_readable_report() {
     let temp = tempdir().expect("tempdir");
-    let lssa_path = temp.path().join("lssa");
-    fs::create_dir_all(&lssa_path).expect("create lssa path");
-    write_scaffold_toml(temp.path(), &lssa_path, "wallet-not-installed-for-tests");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lssa path");
+    write_scaffold_toml(temp.path(), &lez_path, "wallet-not-installed-for-tests");
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -631,8 +631,8 @@ fn doctor_uses_password_env_override_for_wallet_health() {
 #[test]
 fn localnet_start_fails_when_process_exits_before_ready() {
     let temp = tempdir().expect("tempdir");
-    let lssa_path = temp.path().join("lssa");
-    let sequencer_bin = lssa_path.join("target/release/sequencer_runner");
+    let lez_path = temp.path().join("lez");
+    let sequencer_bin = lez_path.join("target/release/sequencer_runner");
     fs::create_dir_all(sequencer_bin.parent().expect("parent")).expect("create dirs");
     fs::write(&sequencer_bin, "#!/bin/sh\nexit 1\n").expect("write fake sequencer");
 
@@ -646,7 +646,7 @@ fn localnet_start_fails_when_process_exits_before_ready() {
         fs::set_permissions(&sequencer_bin, perms).expect("chmod");
     }
 
-    write_scaffold_toml(temp.path(), &lssa_path, "wallet-not-installed-for-tests");
+    write_scaffold_toml(temp.path(), &lez_path, "wallet-not-installed-for-tests");
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1387,11 +1387,11 @@ fn archive_entry_content<'a>(entries: &'a [(String, String)], suffix: &str) -> &
         .unwrap_or_else(|| panic!("archive missing expected entry suffix `{suffix}`"))
 }
 
-fn write_scaffold_toml(project_root: &Path, lssa_path: &Path, wallet_binary: &str) {
+fn write_scaffold_toml(project_root: &Path, lez_path: &Path, wallet_binary: &str) {
     let content = format!(
         "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"https://github.com/logos-blockchain/lssa.git\"\nsource = \"https://github.com/logos-blockchain/lssa.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \".scaffold/wallet\"\n",
         project_root.join("cache").display(),
-        lssa_path.display(),
+        lez_path.display(),
         TEST_PIN,
         wallet_binary
     );
@@ -1400,9 +1400,9 @@ fn write_scaffold_toml(project_root: &Path, lssa_path: &Path, wallet_binary: &st
 }
 
 fn setup_wallet_project(project_root: &Path, wallet_binary: &str, sequencer_addr: Option<&str>) {
-    let lssa_path = project_root.join("lssa");
-    fs::create_dir_all(&lssa_path).expect("create lssa path");
-    write_scaffold_toml(project_root, &lssa_path, wallet_binary);
+    let lez_path = project_root.join("lez");
+    fs::create_dir_all(&lez_path).expect("create lssa path");
+    write_scaffold_toml(project_root, &lez_path, wallet_binary);
     write_wallet_config(project_root, sequencer_addr);
 }
 
