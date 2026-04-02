@@ -149,8 +149,8 @@ fn cmd_localnet_start(
     let existing_listener_pid = listener_pid(localnet_port);
     if port_open(&localnet_addr) {
         let mut message = match existing_listener_pid {
-            Some(pid) => format!("cannot start localnet: port 3040 is already in use (pid={pid})"),
-            None => "cannot start localnet: port 3040 is already in use (pid=unknown)".to_string(),
+            Some(pid) => format!("cannot start localnet: port {localnet_port} is already in use (pid={pid})"),
+            None => format!("cannot start localnet: port {localnet_port} is already in use (pid=unknown)"),
         };
         message.push_str(
             "\nThis may be a sequencer started from another project and may not work with the current project.",
