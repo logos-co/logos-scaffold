@@ -17,17 +17,17 @@ members = [
 ]
 
 [workspace.dependencies]
-nssa = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
-nssa_core = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
-wallet = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
-common = { git = "https://github.com/logos-blockchain/lssa.git", rev = "{{lssa_pin}}" }
+nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "{{lssa_pin}}" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "{{lssa_pin}}" }
+wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "{{lssa_pin}}" }
+common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "{{lssa_pin}}" }
 
 risc0-zkvm = { version = "3.0.5", features = ["std"] }
 risc0-build = "3.0.5"
 
-spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "e45857e0e286cced50772e4d52354ef864f839a6" }
-spel-framework-core = { git = "https://github.com/logos-co/spel.git", rev = "e45857e0e286cced50772e4d52354ef864f839a6" }
-spel-client-gen = { git = "https://github.com/logos-co/spel.git", rev = "e45857e0e286cced50772e4d52354ef864f839a6" }
+spel-framework = { git = "https://github.com/logos-co/spel.git", tag = "v0.2.0" }
+spel-framework-core = { git = "https://github.com/logos-co/spel.git", tag = "v0.2.0" }
+spel-client-gen = { git = "https://github.com/logos-co/spel.git", tag = "v0.2.0" }
 
 hex = "0.4.3"
 bytemuck = "1.24.0"
