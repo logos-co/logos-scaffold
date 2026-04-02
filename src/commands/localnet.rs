@@ -147,7 +147,7 @@ fn cmd_localnet_start(
     }
 
     let existing_listener_pid = listener_pid(localnet_port);
-    if port_open(&localnet_addr) {
+    if port_open(localnet_addr) {
         let mut message = match existing_listener_pid {
             Some(pid) => format!("cannot start localnet: port {localnet_port} is already in use (pid={pid})"),
             None => format!("cannot start localnet: port {localnet_port} is already in use (pid=unknown)"),
@@ -198,7 +198,7 @@ fn wait_for_readiness(
 
     loop {
         let running = pid_running(pid);
-        let ready = running && port_open(&localnet_addr);
+        let ready = running && port_open(localnet_addr);
         if ready {
             return Ok(());
         }
@@ -349,7 +349,7 @@ fn build_status_report(
     let state = read_localnet_state(state_path).unwrap_or_default();
     let tracked_pid = state.sequencer_pid;
     let tracked_running = tracked_pid.map(pid_running).unwrap_or(false);
-    let listener_present = port_open(&localnet_addr);
+    let listener_present = port_open(localnet_addr);
     let listener_pid = if listener_present {
         listener_pid(localnet_port)
     } else {
