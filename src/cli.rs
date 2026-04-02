@@ -8,6 +8,7 @@ use crate::commands::build::cmd_build_shortcut;
 use crate::commands::client::cmd_client;
 use crate::commands::deploy::cmd_deploy;
 use crate::commands::doctor::cmd_doctor;
+use crate::commands::migrate::cmd_migrate;
 use crate::commands::idl::cmd_idl;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
@@ -58,6 +59,8 @@ enum Commands {
     Localnet(LocalnetArgs),
     Wallet(WalletArgs),
     Doctor(DoctorArgs),
+    #[command(about = "Migrate scaffold.toml from old lssa naming to lez")]
+    Migrate,
     #[command(about = "Collect a sanitized diagnostics archive for issue reporting")]
     Report(ReportArgs),
     #[command(hide = true)]
@@ -281,6 +284,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             cmd_wallet(action)
         }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
+        Some(Commands::Migrate) => cmd_migrate(),
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
         Some(Commands::Help) => print_help(),
         None => print_help(),

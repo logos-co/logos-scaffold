@@ -233,3 +233,22 @@ mod tests {
         assert!(row.remediation.is_some());
     }
 }
+
+pub(crate) fn check_migration(config_text: &str) -> CheckRow {
+    use crate::commands::migrate::needs_migration;
+    if needs_migration(config_text) {
+        CheckRow {
+            status: CheckStatus::Warn,
+            name: "config migration".to_string(),
+            detail: "scaffold.toml uses deprecated lssa keys — run `logos-scaffold migrate`".to_string(),
+            remediation: Some("logos-scaffold migrate".to_string()),
+        }
+    } else {
+        CheckRow {
+            status: CheckStatus::Pass,
+            name: "config migration".to_string(),
+            detail: "scaffold.toml is up to date".to_string(),
+            remediation: None,
+        }
+    }
+}

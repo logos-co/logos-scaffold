@@ -7,7 +7,7 @@ use anyhow::bail;
 use super::wallet_support::wallet_password;
 use crate::constants::DEFAULT_LEZ_PIN;
 use crate::doctor_checks::{
-    check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
+    check_binary, check_container_runtime, check_migration, check_path, check_port_warn, check_repo,
     check_standalone_support, one_line, print_rows,
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
@@ -69,6 +69,8 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
 
 pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     let project = load_project()?;
+    let config_path = project.root.join("scaffold.toml");
+    let config_text = std::fs::read_to_string(&config_path).unwrap_or_default();
     let lssa = PathBuf::from(&project.config.lssa.path);
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     let localnet_state_path = project.root.join(".scaffold/state/localnet.state");
@@ -83,6 +85,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     rows.push(check_binary("ps", true));
     rows.push(check_binary("kill", true));
     rows.push(check_container_runtime());
+    rows.push(check_migration(&config_text));
 
     rows.push(check_repo("lez", &lssa, &project.config.lssa.pin));
 
