@@ -73,7 +73,7 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
             risc0_dev_mode,
             &localnet_addr,
         ),
-        LocalnetAction::Stop => cmd_localnet_stop(&state_path),
+        LocalnetAction::Stop => cmd_localnet_stop(&state_path, localnet_port),
         LocalnetAction::Status { json } => {
             cmd_localnet_status(&state_path, &log_path, json, &localnet_addr, localnet_port)
         }
@@ -94,7 +94,7 @@ fn cmd_localnet_stop_outside_project() -> DynResult<()> {
         .map(|pid| pid.to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    println!("listener detected on 127.0.0.1:3040 (pid={pid_text})");
+    println!("listener detected on {default_addr} (pid={pid_text})");
     println!(
         "This command is running outside a logos-scaffold project; it will not stop unmanaged processes automatically."
     );
@@ -108,7 +108,7 @@ fn cmd_localnet_stop_outside_project() -> DynResult<()> {
         }
         println!("Try: kill {pid}");
     } else {
-        println!("Try: lsof -nP -iTCP:3040 -sTCP:LISTEN");
+        println!("Try: lsof -nP -iTCP:{default_port} -sTCP:LISTEN");
     }
 
     Ok(())
@@ -224,12 +224,13 @@ fn wait_for_readiness(
     }
 }
 
-fn cmd_localnet_stop(state_path: &Path) -> DynResult<()> {
+fn cmd_localnet_stop(state_path: &Path, localnet_port: u16) -> DynResult<()> {
+    let localnet_addr = format!("127.0.0.1:{localnet_port}");
     let report = build_status_report(
         state_path,
         Path::new(".scaffold/logs/sequencer.log"),
-        "127.0.0.1:3040",
-        3040,
+        &localnet_addr,
+        localnet_port,
     );
     if let Some(pid) = report.tracked_pid {
         if report.tracked_running {
@@ -252,7 +253,7 @@ fn cmd_localnet_stop(state_path: &Path) -> DynResult<()> {
             .map(|pid| pid.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         println!(
-            "foreign listener detected on 127.0.0.1:3040 (pid={pid_text}); not stopping unmanaged process"
+            "foreign listener detected on {localnet_addr} (pid={pid_text}); not stopping unmanaged process"
         );
         return Ok(());
     }
@@ -289,9 +290,9 @@ fn cmd_localnet_status(
             .listener_pid
             .map(|pid| pid.to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        println!("listener 127.0.0.1:3040: reachable (pid={pid_text})");
+        println!("listener {localnet_addr}: reachable (pid={pid_text})");
     } else {
-        println!("listener 127.0.0.1:3040: not reachable");
+        println!("listener {localnet_addr}: not reachable");
     }
 
     println!("ownership: {}", ownership_label(report.ownership));
@@ -382,8 +383,7 @@ fn build_status_report(
             "Run `logos-scaffold localnet start` to restart localnet".to_string(),
         ],
         LocalnetOwnership::Foreign => vec![
-            "Stop the external listener on 127.0.0.1:3040 or choose a clean environment"
-                .to_string(),
+            format!("Stop the external listener on {localnet_addr} or choose a clean environment"),
             "Then run `logos-scaffold localnet start`".to_string(),
         ],
         LocalnetOwnership::Stopped => vec!["Run `logos-scaffold localnet start`".to_string()],
