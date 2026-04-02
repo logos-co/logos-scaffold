@@ -1,13 +1,13 @@
-# LEZ Framework Template
+# SPEL Framework Template
 
 This project was generated with:
 
 ```bash
-logos-scaffold new <name> --template lez-framework
+logos-scaffold new <name> --template spel
 ```
 
-It uses the [LEZ Framework](https://github.com/jimmy-claw/lez-framework) for an
-ergonomic developer experience similar to Anchor on Solana:
+It uses the [SPEL Framework](https://github.com/logos-co/spel) (formerly LEZ Framework)
+for an ergonomic developer experience similar to Anchor on Solana:
 
 - `#[lez_program]` macro eliminates boilerplate
 - `#[instruction]` attribute marks instruction handlers

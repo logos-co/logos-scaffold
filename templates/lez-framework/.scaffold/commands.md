@@ -1,4 +1,4 @@
-# Command References (`lez-framework`)
+# Command References (`spel`)
 
 - setup tools + sequencer + wallet: `logos-scaffold setup`
 - start localnet sequencer: `logos-scaffold localnet start`

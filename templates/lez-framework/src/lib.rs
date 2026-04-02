@@ -30,8 +30,6 @@ pub mod runner_support {
 use lez_framework::prelude::*;
 use lez_framework::error::{LezError, LezResult};
 use lez_framework_core::types::LezOutput;
-use nssa_core::program::AccountPostState;
-use nssa_core::account::AccountWithMetadata;
 
 #[lez_program]
 mod lez_counter {

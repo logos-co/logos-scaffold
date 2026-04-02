@@ -64,13 +64,20 @@ fn generate_clients_from_project_idl(project: &Project) -> DynResult<()> {
     let out_dir = project.root.join("src/generated");
     fs::create_dir_all(&out_dir)?;
 
-    let generator_manifest = project.root.join("crates/lssa-client-gen/Cargo.toml");
-    if !generator_manifest.exists() {
-        bail!(
-            "missing client generator crate at {}",
-            generator_manifest.display()
-        );
-    }
+    // Support both new (spel-client-gen) and legacy (lssa-client-gen) crate names.
+    let generator_manifest = project.root.join("crates/spel-client-gen/Cargo.toml");
+    let generator_manifest = if generator_manifest.exists() {
+        generator_manifest
+    } else {
+        let legacy = project.root.join("crates/lssa-client-gen/Cargo.toml");
+        if !legacy.exists() {
+            bail!(
+                "missing client generator crate at {} (also checked legacy lssa-client-gen)",
+                generator_manifest.display()
+            );
+        }
+        legacy
+    };
 
     run_checked(
         Command::new("cargo")
