@@ -672,6 +672,72 @@ fn localnet_start_fails_when_process_exits_before_ready() {
 }
 
 #[test]
+fn localnet_start_passes_configured_port_to_sequencer() {
+    let temp = tempdir().expect("tempdir");
+    let lssa_path = temp.path().join("lssa");
+    let sequencer_bin = lssa_path.join("target/release/sequencer_runner");
+    let args_log = temp.path().join("sequencer-args.log");
+    let env_log = temp.path().join("sequencer-env.log");
+    let localnet_port = unused_local_port();
+
+    fs::create_dir_all(sequencer_bin.parent().expect("parent")).expect("create dirs");
+    fs::write(
+        &sequencer_bin,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"${{RISC0_DEV_MODE:-}}\" > '{}'\nport=3040\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"--port\" ]; then\n    shift\n    port=\"$1\"\n    break\n  fi\n  shift\ndone\nexec python3 -m http.server \"$port\" --bind 127.0.0.1\n",
+            args_log.display(),
+            env_log.display(),
+        ),
+    )
+    .expect("write fake sequencer");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&sequencer_bin)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&sequencer_bin, perms).expect("chmod");
+    }
+
+    write_scaffold_toml_with_localnet(
+        temp.path(),
+        &lssa_path,
+        "wallet-not-installed-for-tests",
+        Some(localnet_port),
+        Some(false),
+    );
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("localnet")
+        .arg("start")
+        .arg("--timeout-sec")
+        .arg("5")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("localnet ready"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("localnet")
+        .arg("stop")
+        .assert()
+        .success();
+
+    let args = fs::read_to_string(&args_log).expect("read args log");
+    assert!(
+        args.contains("sequencer_runner/configs/debug\n--port\n")
+            && args.contains(&format!("--port\n{localnet_port}\n")),
+        "expected configured port in sequencer args, got: {args}"
+    );
+
+    let env = fs::read_to_string(&env_log).expect("read env log");
+    assert_eq!(env, "0", "expected risc0 dev mode override to be passed");
+}
+
+#[test]
 fn localnet_stop_outside_project_succeeds() {
     let temp = tempdir().expect("tempdir");
 
@@ -1389,7 +1455,17 @@ fn archive_entry_content<'a>(entries: &'a [(String, String)], suffix: &str) -> &
 }
 
 fn write_scaffold_toml(project_root: &Path, lssa_path: &Path, wallet_binary: &str) {
-    let content = format!(
+    write_scaffold_toml_with_localnet(project_root, lssa_path, wallet_binary, None, None);
+}
+
+fn write_scaffold_toml_with_localnet(
+    project_root: &Path,
+    lssa_path: &Path,
+    wallet_binary: &str,
+    localnet_port: Option<u16>,
+    risc0_dev_mode: Option<bool>,
+) {
+    let mut content = format!(
         "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"https://github.com/logos-blockchain/lssa.git\"\nsource = \"https://github.com/logos-blockchain/lssa.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \".scaffold/wallet\"\n",
         project_root.join("cache").display(),
         lssa_path.display(),
@@ -1397,7 +1473,22 @@ fn write_scaffold_toml(project_root: &Path, lssa_path: &Path, wallet_binary: &st
         wallet_binary
     );
 
+    if let Some(port) = localnet_port {
+        let risc0_dev_mode = risc0_dev_mode.unwrap_or(true);
+        content.push_str(&format!(
+            "\n[localnet]\nport = {port}\nrisc0_dev_mode = {risc0_dev_mode}\n"
+        ));
+    }
+
     fs::write(project_root.join("scaffold.toml"), content).expect("write scaffold.toml");
+}
+
+fn unused_local_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .expect("bind unused local port")
+        .local_addr()
+        .expect("local addr")
+        .port()
 }
 
 fn setup_wallet_project(project_root: &Path, wallet_binary: &str, sequencer_addr: Option<&str>) {

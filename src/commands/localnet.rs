@@ -149,8 +149,12 @@ fn cmd_localnet_start(
     let existing_listener_pid = listener_pid(localnet_port);
     if port_open(localnet_addr) {
         let mut message = match existing_listener_pid {
-            Some(pid) => format!("cannot start localnet: port {localnet_port} is already in use (pid={pid})"),
-            None => format!("cannot start localnet: port {localnet_port} is already in use (pid=unknown)"),
+            Some(pid) => {
+                format!("cannot start localnet: port {localnet_port} is already in use (pid={pid})")
+            }
+            None => format!(
+                "cannot start localnet: port {localnet_port} is already in use (pid=unknown)"
+            ),
         };
         message.push_str(
             "\nThis may be a sequencer started from another project and may not work with the current project.",
@@ -166,6 +170,8 @@ fn cmd_localnet_start(
         Command::new(sequencer_bin)
             .current_dir(lssa)
             .arg("sequencer_runner/configs/debug")
+            .arg("--port")
+            .arg(localnet_port.to_string())
             .env("RUST_LOG", "info")
             .env("RISC0_DEV_MODE", if risc0_dev_mode { "1" } else { "0" }),
         log_path,
