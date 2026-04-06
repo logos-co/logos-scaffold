@@ -10,7 +10,7 @@ use crate::constants::{
     DEFAULT_LSSA_PIN, DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK,
     LSSA_URL, VERSION,
 };
-use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, RepoRef};
+use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
 use crate::project::default_cache_root;
 use crate::repo::{sync_repo_to_pin_at_path_with_opts, RepoSyncOptions};
 use crate::state::write_text;
@@ -107,6 +107,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
                 path: DEFAULT_FRAMEWORK_IDL_PATH.to_string(),
             },
         },
+        localnet: LocalnetConfig::default(),
     };
 
     let template_root = lssa_repo_path.join("examples/program_deployment");

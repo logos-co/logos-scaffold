@@ -4,7 +4,7 @@ use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
     DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, LSSA_URL,
 };
-use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, RepoRef};
+use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
 use crate::DynResult;
 
 pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
@@ -20,6 +20,9 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 
     let mut wallet_binary = String::new();
     let mut wallet_home_dir = String::new();
+
+    let mut localnet_port: u16 = 3040;
+    let mut localnet_risc0_dev_mode: bool = true;
 
     let mut framework_kind = String::new();
     let mut framework_version = String::new();
@@ -81,6 +84,15 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     wallet_home_dir = value;
                 }
             }
+            "localnet" => {
+                if key == "port" {
+                    if let Ok(p) = value.parse::<u16>() {
+                        localnet_port = p;
+                    }
+                } else if key == "risc0_dev_mode" {
+                    localnet_risc0_dev_mode = value != "false" && value != "0";
+                }
+            }
             _ => {}
         }
     }
@@ -128,6 +140,10 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         },
         wallet_binary,
         wallet_home_dir,
+        localnet: LocalnetConfig {
+            port: localnet_port,
+            risc0_dev_mode: localnet_risc0_dev_mode,
+        },
         framework: FrameworkConfig {
             kind: framework_kind,
             version: framework_version,
@@ -141,7 +157,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 
 pub(crate) fn serialize_config(cfg: &Config) -> String {
     format!(
-        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n",
+        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
         escape_toml_string(&cfg.version),
         escape_toml_string(&cfg.cache_root),
         escape_toml_string(&cfg.lssa.url),
@@ -154,6 +170,8 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
         escape_toml_string(&cfg.framework.version),
         escape_toml_string(&cfg.framework.idl.spec),
         escape_toml_string(&cfg.framework.idl.path),
+        cfg.localnet.port,
+        cfg.localnet.risc0_dev_mode,
     )
 }
 

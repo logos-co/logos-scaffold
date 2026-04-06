@@ -14,7 +14,7 @@ use crate::project::{ensure_dir_exists, find_project_root, load_project};
 use crate::state::{read_localnet_state, write_localnet_state};
 use crate::DynResult;
 
-const LOCALNET_ADDR: &str = "127.0.0.1:3040";
+// LOCALNET_ADDR is now read from project config (localnet.port)
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum LocalnetAction {
@@ -45,10 +45,18 @@ pub(crate) fn cmd_localnet(action: LocalnetAction) -> DynResult<()> {
 pub(crate) fn build_localnet_status_for_project(project: &Project) -> LocalnetStatusReport {
     let state_path = project.root.join(".scaffold/state/localnet.state");
     let log_path = project.root.join(".scaffold/logs/sequencer.log");
-    build_status_report(&state_path, &log_path)
+    build_status_report(
+        &state_path,
+        &log_path,
+        &format!("127.0.0.1:{}", project.config.localnet.port),
+        project.config.localnet.port,
+    )
 }
 
 fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResult<()> {
+    let localnet_port = project.config.localnet.port;
+    let risc0_dev_mode = project.config.localnet.risc0_dev_mode;
+    let localnet_addr = format!("127.0.0.1:{localnet_port}");
     let lssa = PathBuf::from(&project.config.lssa.path);
     let state_path = project.root.join(".scaffold/state/localnet.state");
     let logs_dir = project.root.join(".scaffold/logs");
@@ -56,27 +64,37 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
     fs::create_dir_all(&logs_dir)?;
 
     match action {
-        LocalnetAction::Start { timeout_sec } => {
-            cmd_localnet_start(&lssa, &state_path, &log_path, timeout_sec)
+        LocalnetAction::Start { timeout_sec } => cmd_localnet_start(
+            &lssa,
+            &state_path,
+            &log_path,
+            timeout_sec,
+            localnet_port,
+            risc0_dev_mode,
+            &localnet_addr,
+        ),
+        LocalnetAction::Stop => cmd_localnet_stop(&state_path, localnet_port),
+        LocalnetAction::Status { json } => {
+            cmd_localnet_status(&state_path, &log_path, json, &localnet_addr, localnet_port)
         }
-        LocalnetAction::Stop => cmd_localnet_stop(&state_path),
-        LocalnetAction::Status { json } => cmd_localnet_status(&state_path, &log_path, json),
         LocalnetAction::Logs { tail } => cmd_localnet_logs(&log_path, tail),
     }
 }
 
 fn cmd_localnet_stop_outside_project() -> DynResult<()> {
-    if !port_open(LOCALNET_ADDR) {
-        println!("localnet not running (no listener on 127.0.0.1:3040)");
+    let default_addr = "127.0.0.1:3040";
+    let default_port: u16 = 3040;
+    if !port_open(default_addr) {
+        println!("localnet not running (no listener on {default_addr})");
         return Ok(());
     }
 
-    let listener_pid = listener_pid(3040);
+    let listener_pid = listener_pid(default_port);
     let pid_text = listener_pid
         .map(|pid| pid.to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    println!("listener detected on 127.0.0.1:3040 (pid={pid_text})");
+    println!("listener detected on {default_addr} (pid={pid_text})");
     println!(
         "This command is running outside a logos-scaffold project; it will not stop unmanaged processes automatically."
     );
@@ -90,7 +108,7 @@ fn cmd_localnet_stop_outside_project() -> DynResult<()> {
         }
         println!("Try: kill {pid}");
     } else {
-        println!("Try: lsof -nP -iTCP:3040 -sTCP:LISTEN");
+        println!("Try: lsof -nP -iTCP:{default_port} -sTCP:LISTEN");
     }
 
     Ok(())
@@ -101,6 +119,9 @@ fn cmd_localnet_start(
     state_path: &Path,
     log_path: &Path,
     timeout_sec: u64,
+    localnet_port: u16,
+    risc0_dev_mode: bool,
+    localnet_addr: &str,
 ) -> DynResult<()> {
     ensure_dir_exists(lssa, "lssa")?;
     let sequencer_bin = lssa.join("target/release/sequencer_runner");
@@ -114,7 +135,7 @@ fn cmd_localnet_start(
     let mut state = read_localnet_state(state_path).unwrap_or_default();
     if let Some(pid) = state.sequencer_pid {
         if pid_running(pid) {
-            wait_for_readiness(pid, timeout_sec, log_path)?;
+            wait_for_readiness(pid, timeout_sec, log_path, localnet_addr)?;
             println!("localnet ready (sequencer pid={pid})");
             return Ok(());
         }
@@ -125,11 +146,15 @@ fn cmd_localnet_start(
         state = LocalnetState::default();
     }
 
-    let existing_listener_pid = listener_pid(3040);
-    if port_open(LOCALNET_ADDR) {
+    let existing_listener_pid = listener_pid(localnet_port);
+    if port_open(localnet_addr) {
         let mut message = match existing_listener_pid {
-            Some(pid) => format!("cannot start localnet: port 3040 is already in use (pid={pid})"),
-            None => "cannot start localnet: port 3040 is already in use (pid=unknown)".to_string(),
+            Some(pid) => {
+                format!("cannot start localnet: port {localnet_port} is already in use (pid={pid})")
+            }
+            None => format!(
+                "cannot start localnet: port {localnet_port} is already in use (pid=unknown)"
+            ),
         };
         message.push_str(
             "\nThis may be a sequencer started from another project and may not work with the current project.",
@@ -145,15 +170,17 @@ fn cmd_localnet_start(
         Command::new(sequencer_bin)
             .current_dir(lssa)
             .arg("sequencer_runner/configs/debug")
+            .arg("--port")
+            .arg(localnet_port.to_string())
             .env("RUST_LOG", "info")
-            .env("RISC0_DEV_MODE", "1"),
+            .env("RISC0_DEV_MODE", if risc0_dev_mode { "1" } else { "0" }),
         log_path,
     )?;
 
     state.sequencer_pid = Some(sequencer_pid);
     write_localnet_state(state_path, &state)?;
 
-    if let Err(err) = wait_for_readiness(sequencer_pid, timeout_sec, log_path) {
+    if let Err(err) = wait_for_readiness(sequencer_pid, timeout_sec, log_path, localnet_addr) {
         if pid_alive(sequencer_pid) {
             let _ = Command::new("kill").arg(sequencer_pid.to_string()).status();
         }
@@ -167,12 +194,17 @@ fn cmd_localnet_start(
     Ok(())
 }
 
-fn wait_for_readiness(pid: u32, timeout_sec: u64, log_path: &Path) -> DynResult<()> {
+fn wait_for_readiness(
+    pid: u32,
+    timeout_sec: u64,
+    log_path: &Path,
+    localnet_addr: &str,
+) -> DynResult<()> {
     let deadline = Instant::now() + Duration::from_secs(timeout_sec.max(1));
 
     loop {
         let running = pid_running(pid);
-        let ready = running && port_open(LOCALNET_ADDR);
+        let ready = running && port_open(localnet_addr);
         if ready {
             return Ok(());
         }
@@ -198,8 +230,14 @@ fn wait_for_readiness(pid: u32, timeout_sec: u64, log_path: &Path) -> DynResult<
     }
 }
 
-fn cmd_localnet_stop(state_path: &Path) -> DynResult<()> {
-    let report = build_status_report(state_path, Path::new(".scaffold/logs/sequencer.log"));
+fn cmd_localnet_stop(state_path: &Path, localnet_port: u16) -> DynResult<()> {
+    let localnet_addr = format!("127.0.0.1:{localnet_port}");
+    let report = build_status_report(
+        state_path,
+        Path::new(".scaffold/logs/sequencer.log"),
+        &localnet_addr,
+        localnet_port,
+    );
     if let Some(pid) = report.tracked_pid {
         if report.tracked_running {
             println!("$ kill {pid} # sequencer");
@@ -221,7 +259,7 @@ fn cmd_localnet_stop(state_path: &Path) -> DynResult<()> {
             .map(|pid| pid.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         println!(
-            "foreign listener detected on 127.0.0.1:3040 (pid={pid_text}); not stopping unmanaged process"
+            "foreign listener detected on {localnet_addr} (pid={pid_text}); not stopping unmanaged process"
         );
         return Ok(());
     }
@@ -230,8 +268,14 @@ fn cmd_localnet_stop(state_path: &Path) -> DynResult<()> {
     Ok(())
 }
 
-fn cmd_localnet_status(state_path: &Path, log_path: &Path, as_json: bool) -> DynResult<()> {
-    let report = build_status_report(state_path, log_path);
+fn cmd_localnet_status(
+    state_path: &Path,
+    log_path: &Path,
+    as_json: bool,
+    localnet_addr: &str,
+    localnet_port: u16,
+) -> DynResult<()> {
+    let report = build_status_report(state_path, log_path, localnet_addr, localnet_port);
 
     if as_json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -252,9 +296,9 @@ fn cmd_localnet_status(state_path: &Path, log_path: &Path, as_json: bool) -> Dyn
             .listener_pid
             .map(|pid| pid.to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        println!("listener 127.0.0.1:3040: reachable (pid={pid_text})");
+        println!("listener {localnet_addr}: reachable (pid={pid_text})");
     } else {
-        println!("listener 127.0.0.1:3040: not reachable");
+        println!("listener {localnet_addr}: not reachable");
     }
 
     println!("ownership: {}", ownership_label(report.ownership));
@@ -302,13 +346,18 @@ fn cmd_localnet_logs(log_path: &Path, tail: usize) -> DynResult<()> {
     Ok(())
 }
 
-fn build_status_report(state_path: &Path, log_path: &Path) -> LocalnetStatusReport {
+fn build_status_report(
+    state_path: &Path,
+    log_path: &Path,
+    localnet_addr: &str,
+    localnet_port: u16,
+) -> LocalnetStatusReport {
     let state = read_localnet_state(state_path).unwrap_or_default();
     let tracked_pid = state.sequencer_pid;
     let tracked_running = tracked_pid.map(pid_running).unwrap_or(false);
-    let listener_present = port_open(LOCALNET_ADDR);
+    let listener_present = port_open(localnet_addr);
     let listener_pid = if listener_present {
-        listener_pid(3040)
+        listener_pid(localnet_port)
     } else {
         None
     };
@@ -340,8 +389,7 @@ fn build_status_report(state_path: &Path, log_path: &Path) -> LocalnetStatusRepo
             "Run `logos-scaffold localnet start` to restart localnet".to_string(),
         ],
         LocalnetOwnership::Foreign => vec![
-            "Stop the external listener on 127.0.0.1:3040 or choose a clean environment"
-                .to_string(),
+            format!("Stop the external listener on {localnet_addr} or choose a clean environment"),
             "Then run `logos-scaffold localnet start`".to_string(),
         ],
         LocalnetOwnership::Stopped => vec!["Run `logos-scaffold localnet start`".to_string()],
