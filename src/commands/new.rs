@@ -202,3 +202,51 @@ pub(crate) fn to_cargo_crate_name(input: &str) -> String {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::to_cargo_crate_name;
+
+    #[test]
+    fn simple_name_is_lowercased() {
+        assert_eq!(to_cargo_crate_name("MyApp"), "myapp");
+    }
+
+    #[test]
+    fn spaces_become_dashes() {
+        assert_eq!(to_cargo_crate_name("my app"), "my-app");
+    }
+
+    #[test]
+    fn special_chars_become_single_dash() {
+        assert_eq!(to_cargo_crate_name("my--app"), "my-app");
+        assert_eq!(to_cargo_crate_name("my___app"), "my-app");
+    }
+
+    #[test]
+    fn leading_and_trailing_dashes_are_trimmed() {
+        assert_eq!(to_cargo_crate_name("--myapp--"), "myapp");
+        assert_eq!(to_cargo_crate_name("_myapp_"), "myapp");
+    }
+
+    #[test]
+    fn empty_string_returns_default() {
+        assert_eq!(to_cargo_crate_name(""), "program_deployment");
+    }
+
+    #[test]
+    fn only_special_chars_returns_default() {
+        assert_eq!(to_cargo_crate_name("---"), "program_deployment");
+        assert_eq!(to_cargo_crate_name("!!!"), "program_deployment");
+    }
+
+    #[test]
+    fn alphanumeric_preserved() {
+        assert_eq!(to_cargo_crate_name("my-app-123"), "my-app-123");
+    }
+
+    #[test]
+    fn unicode_becomes_dash() {
+        assert_eq!(to_cargo_crate_name("héllo"), "h-llo");
+    }
+}
