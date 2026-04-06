@@ -2,6 +2,7 @@ use anyhow::bail;
 
 use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
+    DEFAULT_LOCALNET_SEQUENCER_BINARY, DEFAULT_LOCALNET_SEQUENCER_CONFIG_PATH,
     DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, LSSA_URL,
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
@@ -23,6 +24,8 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 
     let mut localnet_port: u16 = 3040;
     let mut localnet_risc0_dev_mode: bool = true;
+    let mut localnet_sequencer_binary = String::new();
+    let mut localnet_sequencer_config_path = String::new();
 
     let mut framework_kind = String::new();
     let mut framework_version = String::new();
@@ -91,6 +94,10 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     }
                 } else if key == "risc0_dev_mode" {
                     localnet_risc0_dev_mode = value != "false" && value != "0";
+                } else if key == "sequencer_binary" {
+                    localnet_sequencer_binary = value;
+                } else if key == "sequencer_config_path" {
+                    localnet_sequencer_config_path = value;
                 }
             }
             _ => {}
@@ -114,6 +121,12 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     }
     if wallet_home_dir.is_empty() {
         wallet_home_dir = ".scaffold/wallet".to_string();
+    }
+    if localnet_sequencer_binary.is_empty() {
+        localnet_sequencer_binary = DEFAULT_LOCALNET_SEQUENCER_BINARY.to_string();
+    }
+    if localnet_sequencer_config_path.is_empty() {
+        localnet_sequencer_config_path = DEFAULT_LOCALNET_SEQUENCER_CONFIG_PATH.to_string();
     }
 
     if framework_kind.is_empty() {
@@ -143,6 +156,8 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         localnet: LocalnetConfig {
             port: localnet_port,
             risc0_dev_mode: localnet_risc0_dev_mode,
+            sequencer_binary: localnet_sequencer_binary,
+            sequencer_config_path: localnet_sequencer_config_path,
         },
         framework: FrameworkConfig {
             kind: framework_kind,
@@ -157,7 +172,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 
 pub(crate) fn serialize_config(cfg: &Config) -> String {
     format!(
-        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
+        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\nsequencer_binary = \"{}\"\nsequencer_config_path = \"{}\"\n",
         escape_toml_string(&cfg.version),
         escape_toml_string(&cfg.cache_root),
         escape_toml_string(&cfg.lssa.url),
@@ -172,6 +187,8 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
         escape_toml_string(&cfg.framework.idl.path),
         cfg.localnet.port,
         cfg.localnet.risc0_dev_mode,
+        escape_toml_string(&cfg.localnet.sequencer_binary),
+        escape_toml_string(&cfg.localnet.sequencer_config_path),
     )
 }
 

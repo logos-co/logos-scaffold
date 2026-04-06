@@ -150,6 +150,7 @@ pub(crate) fn check_standalone_support(lssa_path: &Path) -> CheckRow {
     let files = [
         lssa_path.join("Cargo.toml"),
         lssa_path.join("sequencer_runner/Cargo.toml"),
+        lssa_path.join("sequencer/service/Cargo.toml"),
         lssa_path.join("README.md"),
     ];
 

@@ -738,6 +738,62 @@ fn localnet_start_passes_configured_port_to_sequencer() {
 }
 
 #[test]
+fn localnet_start_uses_configured_sequencer_binary_and_config_path() {
+    let temp = tempdir().expect("tempdir");
+    let lssa_path = temp.path().join("lssa");
+    let sequencer_bin = lssa_path.join("target/release/sequencer_service");
+    let localnet_port = TcpListener::bind("127.0.0.1:0")
+        .expect("bind ephemeral port")
+        .local_addr()
+        .expect("read local addr")
+        .port();
+    fs::create_dir_all(sequencer_bin.parent().expect("parent")).expect("create dirs");
+    fs::write(&sequencer_bin, "#!/bin/sh\nsleep 2\n").expect("write fake sequencer");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&sequencer_bin)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&sequencer_bin, perms).expect("chmod");
+    }
+
+    let scaffold_toml = format!(
+        "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"https://github.com/logos-blockchain/lssa.git\"\nsource = \"https://github.com/logos-blockchain/lssa.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"wallet-not-installed-for-tests\"\nhome_dir = \".scaffold/wallet\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = true\nsequencer_binary = \"sequencer_service\"\nsequencer_config_path = \"sequencer/service/configs/debug/sequencer_config.json\"\n",
+        temp.path().join("cache").display(),
+        lssa_path.display(),
+        TEST_PIN,
+        localnet_port,
+    );
+    fs::write(temp.path().join("scaffold.toml"), scaffold_toml).expect("write scaffold.toml");
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("localnet")
+        .arg("start")
+        .arg("--timeout-sec")
+        .arg("1")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("sequencer process exited before becoming ready")
+                .or(predicate::str::contains("localnet start timed out after")),
+        );
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    assert!(
+        stdout.contains("target/release/sequencer_service"),
+        "expected spawned command to use configured sequencer binary, got output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("sequencer/service/configs/debug/sequencer_config.json"),
+        "expected spawned command to use configured sequencer config path, got output:\n{stdout}"
+    );
+}
+
+#[test]
 fn localnet_stop_outside_project_succeeds() {
     let temp = tempdir().expect("tempdir");
 

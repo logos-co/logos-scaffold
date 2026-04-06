@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+use crate::constants::{DEFAULT_LOCALNET_SEQUENCER_BINARY, DEFAULT_LOCALNET_SEQUENCER_CONFIG_PATH};
+
 #[derive(Clone, Debug)]
 pub(crate) struct RepoRef {
     pub(crate) url: String,
@@ -14,6 +16,8 @@ pub(crate) struct RepoRef {
 pub(crate) struct LocalnetConfig {
     pub(crate) port: u16,
     pub(crate) risc0_dev_mode: bool,
+    pub(crate) sequencer_binary: String,
+    pub(crate) sequencer_config_path: String,
 }
 
 impl Default for LocalnetConfig {
@@ -21,6 +25,8 @@ impl Default for LocalnetConfig {
         Self {
             port: 3040,
             risc0_dev_mode: true,
+            sequencer_binary: DEFAULT_LOCALNET_SEQUENCER_BINARY.to_string(),
+            sequencer_config_path: DEFAULT_LOCALNET_SEQUENCER_CONFIG_PATH.to_string(),
         }
     }
 }

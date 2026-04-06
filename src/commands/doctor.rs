@@ -112,7 +112,9 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
 
     rows.push(check_path(
         "sequencer binary",
-        &lssa.join("target/release/sequencer_runner"),
+        &lssa
+            .join("target/release")
+            .join(&project.config.localnet.sequencer_binary),
         "Run `logos-scaffold setup`",
     ));
 
