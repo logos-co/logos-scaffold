@@ -54,7 +54,7 @@ pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
             .arg("--release")
             .arg("--features")
             .arg("standalone")
-            .arg("-p")
+            .arg("--bin")
             .arg(sequencer_binary),
         &build_label,
     )?;
