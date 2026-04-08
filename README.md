@@ -2,6 +2,11 @@
 
 `logos-scaffold` is a Rust CLI for bootstrapping LSSA `program_deployment` projects in standalone mode.
 
+## Documentation
+
+- [FURPS+](FURPS.md) — Functional and non-functional requirements
+- [ADR](ADR.md) — Architecture Decision Records
+
 ## Platform
 
 The CLI is currently Unix-only.
