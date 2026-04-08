@@ -323,14 +323,25 @@ fn ownership_label(ownership: LocalnetOwnership) -> &'static str {
     }
 }
 
+fn print_log_lines(tail: usize, lines: &[&str], log_path: &Path, json: bool) -> DynResult<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "tail": tail,
+            "lines": lines,
+        }))?);
+    } else if lines.is_empty() {
+        println!("log file is empty: {}", log_path.display());
+    } else {
+        for line in lines {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
 fn cmd_localnet_logs(log_path: &Path, tail: usize, json: bool) -> DynResult<()> {
     if !log_path.exists() {
-        if json {
-            println!("{}", serde_json::json!({ "tail": tail, "lines": [] }));
-        } else {
-            println!("log file does not exist yet: {}", log_path.display());
-        }
-        return Ok(());
+        return print_log_lines(tail, &[], log_path, json);
     }
 
     let content = fs::read_to_string(log_path)
@@ -338,24 +349,7 @@ fn cmd_localnet_logs(log_path: &Path, tail: usize, json: bool) -> DynResult<()> 
 
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(tail);
-    let tail_lines: Vec<&str> = lines[start..].to_vec();
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "tail": tail,
-            "lines": tail_lines,
-        }))?);
-    } else {
-        if tail_lines.is_empty() {
-            println!("log file is empty: {}", log_path.display());
-            return Ok(());
-        }
-        for line in &tail_lines {
-            println!("{line}");
-        }
-    }
-
-    Ok(())
+    print_log_lines(tail, &lines[start..], log_path, json)
 }
 
 fn build_status_report(
