@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::bail;
 
 use crate::constants::{
@@ -87,19 +89,23 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     wallet_home_dir = value;
                 }
             }
-            "localnet" => {
-                if key == "port" {
+            "localnet" => match key {
+                "port" => {
                     if let Ok(p) = value.parse::<u16>() {
                         localnet_port = p;
                     }
-                } else if key == "risc0_dev_mode" {
+                }
+                "risc0_dev_mode" => {
                     localnet_risc0_dev_mode = value != "false" && value != "0";
-                } else if key == "sequencer_binary" {
+                }
+                "sequencer_binary" => {
                     localnet_sequencer_binary = value;
-                } else if key == "sequencer_config_path" {
+                }
+                "sequencer_config_path" => {
                     localnet_sequencer_config_path = value;
                 }
-            }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -128,6 +134,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     if localnet_sequencer_config_path.is_empty() {
         localnet_sequencer_config_path = DEFAULT_LOCALNET_SEQUENCER_CONFIG_PATH.to_string();
     }
+    validate_sequencer_binary_name(&localnet_sequencer_binary)?;
 
     if framework_kind.is_empty() {
         framework_kind = FRAMEWORK_KIND_DEFAULT.to_string();
@@ -198,6 +205,19 @@ pub(crate) fn unquote(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn validate_sequencer_binary_name(name: &str) -> DynResult<()> {
+    let path = Path::new(name);
+    if name.is_empty()
+        || name.starts_with('-')
+        || path.is_absolute()
+        || name.contains('/')
+        || name.contains('\\')
+    {
+        bail!("invalid scaffold.toml: localnet.sequencer_binary must be a binary name");
+    }
+    Ok(())
 }
 
 pub(crate) fn escape_toml_string(s: &str) -> String {

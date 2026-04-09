@@ -51,7 +51,7 @@ logos-scaffold help
 ## Command Semantics
 
 - `create` and `new` are aliases.
-- `setup` syncs LSSA to pinned commit, builds standalone `sequencer_runner`, installs wallet based on `--wallet-install` policy, and seeds a deterministic default wallet from preconfigured public accounts when none is set.
+- `setup` syncs LSSA to pinned commit, builds the configured standalone sequencer binary, installs wallet based on `--wallet-install` policy, and seeds a deterministic default wallet from preconfigured public accounts when none is set.
 - `build [project-path]` runs `setup` with wallet policy `auto` and then `cargo build --workspace`.
 - `deploy [program-name]` deploys one or all guest programs discovered in `methods/guest/src/bin/*.rs` using prebuilt `.bin` artifacts.
 - `localnet start` waits until localnet is actually ready (`pid alive` + `127.0.0.1:3040` reachable), otherwise fails with diagnostics.
@@ -90,6 +90,16 @@ Checkpoint commands:
 ```bash
 logos-scaffold localnet status
 logos-scaffold doctor
+```
+
+If your LEZ checkout uses a different standalone sequencer layout, override it in `scaffold.toml`:
+
+```toml
+[localnet]
+port = 3040
+risc0_dev_mode = true
+sequencer_binary = "sequencer_service"
+sequencer_config_path = "sequencer/service/configs/debug/sequencer_config.json"
 ```
 
 ## LEZ Framework

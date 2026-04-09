@@ -118,6 +118,19 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         "Run `logos-scaffold setup`",
     ));
 
+    let sequencer_config_path = PathBuf::from(&project.config.localnet.sequencer_config_path);
+    let sequencer_config_path = if sequencer_config_path.is_absolute() {
+        sequencer_config_path
+    } else {
+        lssa.join(sequencer_config_path)
+    };
+
+    rows.push(check_path(
+        "sequencer config",
+        &sequencer_config_path,
+        "Fix localnet.sequencer_config_path in scaffold.toml",
+    ));
+
     rows.push(check_port_warn(
         "sequencer port 3040",
         "127.0.0.1:3040",
