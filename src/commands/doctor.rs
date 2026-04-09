@@ -116,9 +116,11 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         "Run `logos-scaffold setup`",
     ));
 
+    let localnet_port = project.config.localnet.port;
+    let localnet_addr = format!("127.0.0.1:{localnet_port}");
     rows.push(check_port_warn(
-        "sequencer port 3040",
-        "127.0.0.1:3040",
+        &format!("sequencer port {localnet_port}"),
+        &localnet_addr,
         "Run `logos-scaffold localnet start` (required before running example binaries)",
     ));
 
