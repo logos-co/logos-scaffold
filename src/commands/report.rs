@@ -1,3 +1,4 @@
+use crate::constants::GUEST_BIN_REL_PATH;
 use std::collections::VecDeque;
 use std::env;
 use std::fs::{self, File};
@@ -23,7 +24,6 @@ use crate::state::write_text;
 use crate::DynResult;
 
 const REPORT_WARNING: &str = "WARNING: This diagnostics bundle is sanitized on a best-effort basis and may still contain sensitive data. Inspect every file before sharing it publicly.";
-const GUEST_BIN_REL_PATH: &str = "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
 
 pub(crate) fn cmd_report(out: Option<PathBuf>, tail: usize) -> DynResult<()> {
     let project = load_project().context(

@@ -10,3 +10,5 @@ pub(crate) const FRAMEWORK_KIND_LEZ_FRAMEWORK: &str = "lez-framework";
 pub(crate) const DEFAULT_FRAMEWORK_VERSION: &str = "0.1.0";
 pub(crate) const DEFAULT_FRAMEWORK_IDL_SPEC: &str = "lssa-idl/0.1.0";
 pub(crate) const DEFAULT_FRAMEWORK_IDL_PATH: &str = "idl";
+
+pub(crate) const GUEST_BIN_REL_PATH: &str = "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
