@@ -202,3 +202,61 @@ pub(crate) fn to_cargo_crate_name(input: &str) -> String {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::to_cargo_crate_name;
+
+    #[test]
+    fn lowercase_conversion() {
+        assert_eq!(to_cargo_crate_name("HelloWorld"), "helloworld");
+    }
+
+    #[test]
+    fn spaces_become_dashes() {
+        assert_eq!(to_cargo_crate_name("hello world"), "hello-world");
+    }
+
+    #[test]
+    fn special_chars_become_dashes() {
+        assert_eq!(to_cargo_crate_name("hello@world!"), "hello-world");
+    }
+
+    #[test]
+    fn consecutive_special_chars_collapse() {
+        assert_eq!(to_cargo_crate_name("hello---world"), "hello-world");
+        assert_eq!(to_cargo_crate_name("hello   world"), "hello-world");
+    }
+
+    #[test]
+    fn leading_trailing_dashes_trimmed() {
+        assert_eq!(to_cargo_crate_name("-hello-"), "hello");
+        assert_eq!(to_cargo_crate_name("  hello  "), "hello");
+    }
+
+    #[test]
+    fn empty_string_returns_default() {
+        assert_eq!(to_cargo_crate_name(""), "program_deployment");
+    }
+
+    #[test]
+    fn only_special_chars_returns_default() {
+        assert_eq!(to_cargo_crate_name("---"), "program_deployment");
+        assert_eq!(to_cargo_crate_name("@#$"), "program_deployment");
+    }
+
+    #[test]
+    fn alphanumeric_passthrough() {
+        assert_eq!(to_cargo_crate_name("myproject123"), "myproject123");
+    }
+
+    #[test]
+    fn unicode_becomes_dashes() {
+        assert_eq!(to_cargo_crate_name("héllo"), "h-llo");
+    }
+
+    #[test]
+    fn mixed_input() {
+        assert_eq!(to_cargo_crate_name("My Awesome Project!"), "my-awesome-project");
+    }
+}
