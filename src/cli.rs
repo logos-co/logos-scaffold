@@ -158,6 +158,8 @@ struct LocalnetStatusArgs {
 struct LocalnetLogsArgs {
     #[arg(long, default_value_t = 200)]
     tail: usize,
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -259,7 +261,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 },
                 LocalnetSubcommand::Stop => LocalnetAction::Stop,
                 LocalnetSubcommand::Status(args) => LocalnetAction::Status { json: args.json },
-                LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
+                LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail, json: args.json },
             };
             cmd_localnet(action)
         }

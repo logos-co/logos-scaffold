@@ -21,7 +21,7 @@ pub(crate) enum LocalnetAction {
     Start { timeout_sec: u64 },
     Stop,
     Status { json: bool },
-    Logs { tail: usize },
+    Logs { tail: usize, json: bool },
 }
 
 pub(crate) fn cmd_localnet(action: LocalnetAction) -> DynResult<()> {
@@ -77,7 +77,7 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
         LocalnetAction::Status { json } => {
             cmd_localnet_status(&state_path, &log_path, json, &localnet_addr, localnet_port)
         }
-        LocalnetAction::Logs { tail } => cmd_localnet_logs(&log_path, tail),
+        LocalnetAction::Logs { tail, json } => cmd_localnet_logs(&log_path, tail, json),
     }
 }
 
@@ -323,9 +323,13 @@ fn ownership_label(ownership: LocalnetOwnership) -> &'static str {
     }
 }
 
-fn cmd_localnet_logs(log_path: &Path, tail: usize) -> DynResult<()> {
+fn cmd_localnet_logs(log_path: &Path, tail: usize, as_json: bool) -> DynResult<()> {
     if !log_path.exists() {
-        println!("log file does not exist yet: {}", log_path.display());
+        if as_json {
+            println!("{}", serde_json::json!({"tail": tail, "lines": [], "error": "log file does not exist yet"}));
+        } else {
+            println!("log file does not exist yet: {}", log_path.display());
+        }
         return Ok(());
     }
 
@@ -333,14 +337,27 @@ fn cmd_localnet_logs(log_path: &Path, tail: usize) -> DynResult<()> {
         .with_context(|| format!("failed to read log file {}", log_path.display()))?;
 
     if content.trim().is_empty() {
-        println!("log file is empty: {}", log_path.display());
+        if as_json {
+            println!("{}", serde_json::json!({"tail": tail, "lines": []}));
+        } else {
+            println!("log file is empty: {}", log_path.display());
+        }
         return Ok(());
     }
 
-    let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(tail);
-    for line in &lines[start..] {
-        println!("{line}");
+    let all_lines: Vec<&str> = content.lines().collect();
+    let start = all_lines.len().saturating_sub(tail);
+    let lines: Vec<&str> = all_lines[start..].to_vec();
+
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "tail": tail,
+            "lines": lines,
+        }))?);
+    } else {
+        for line in &lines {
+            println!("{line}");
+        }
     }
 
     Ok(())
