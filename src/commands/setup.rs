@@ -44,6 +44,9 @@ pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
 
     ensure_dir_exists(&lssa, "lssa")?;
 
+    let sequencer_binary = &project.config.localnet.sequencer_binary;
+    let build_label = format!("build {sequencer_binary} (standalone)");
+
     run_checked(
         Command::new("cargo")
             .current_dir(&lssa)
@@ -51,9 +54,9 @@ pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
             .arg("--release")
             .arg("--features")
             .arg("standalone")
-            .arg("-p")
-            .arg("sequencer_runner"),
-        "build sequencer_runner (standalone)",
+            .arg("--bin")
+            .arg(sequencer_binary),
+        &build_label,
     )?;
 
     ensure_wallet_install(&lssa, &project.config.wallet_binary, cmd.wallet_install)
