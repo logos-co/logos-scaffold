@@ -634,7 +634,14 @@ fn localnet_start_fails_when_process_exits_before_ready() {
     let temp = tempdir().expect("tempdir");
     let lssa_path = temp.path().join("lssa");
     let sequencer_bin = lssa_path.join("target/release/sequencer_runner");
+    let config_dir = lssa_path.join("sequencer_runner/configs/debug");
     fs::create_dir_all(sequencer_bin.parent().expect("parent")).expect("create dirs");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(
+        config_dir.join("sequencer_config.json"),
+        r#"{"port": 3040}"#,
+    )
+    .expect("write sequencer config");
     fs::write(&sequencer_bin, "#!/bin/sh\nexit 1\n").expect("write fake sequencer");
 
     #[cfg(unix)]
@@ -672,19 +679,26 @@ fn localnet_start_fails_when_process_exits_before_ready() {
 }
 
 #[test]
-fn localnet_start_passes_configured_port_to_sequencer() {
+fn localnet_start_patches_config_and_uses_configured_port() {
     let temp = tempdir().expect("tempdir");
     let lssa_path = temp.path().join("lssa");
     let sequencer_bin = lssa_path.join("target/release/sequencer_runner");
+    let config_dir = lssa_path.join("sequencer_runner/configs/debug");
+    let config_path = config_dir.join("sequencer_config.json");
     let args_log = temp.path().join("sequencer-args.log");
     let env_log = temp.path().join("sequencer-env.log");
     let localnet_port = unused_local_port();
 
     fs::create_dir_all(sequencer_bin.parent().expect("parent")).expect("create dirs");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::write(&config_path, r#"{"port": 3040}"#).expect("write sequencer config");
+
+    // Fake sequencer: reads port from sequencer_config.json (like the real one),
+    // logs args and env for assertions.
     fs::write(
         &sequencer_bin,
         format!(
-            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"${{RISC0_DEV_MODE:-}}\" > '{}'\nport=3040\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"--port\" ]; then\n    shift\n    port=\"$1\"\n    break\n  fi\n  shift\ndone\nexec python3 -m http.server \"$port\" --bind 127.0.0.1\n",
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"${{RISC0_DEV_MODE:-}}\" > '{}'\nconfig=\"$1/sequencer_config.json\"\nport=$(python3 -c \"import json,sys; print(json.load(open(sys.argv[1]))['port'])\" \"$config\")\nexec python3 -m http.server \"$port\" --bind 127.0.0.1\n",
             args_log.display(),
             env_log.display(),
         ),
@@ -726,11 +740,21 @@ fn localnet_start_passes_configured_port_to_sequencer() {
         .assert()
         .success();
 
+    // Verify sequencer_config.json was patched with the configured port
+    let patched_config = fs::read_to_string(&config_path).expect("read patched config");
+    let config_json: serde_json::Value =
+        serde_json::from_str(&patched_config).expect("parse patched config");
+    assert_eq!(
+        config_json["port"],
+        serde_json::Value::Number(localnet_port.into()),
+        "expected port in sequencer_config.json to be patched to {localnet_port}, got: {patched_config}"
+    );
+
+    // Verify --port was NOT passed as a CLI arg
     let args = fs::read_to_string(&args_log).expect("read args log");
     assert!(
-        args.contains("sequencer_runner/configs/debug\n--port\n")
-            && args.contains(&format!("--port\n{localnet_port}\n")),
-        "expected configured port in sequencer args, got: {args}"
+        !args.contains("--port"),
+        "expected --port NOT to appear in sequencer args, got: {args}"
     );
 
     let env = fs::read_to_string(&env_log).expect("read env log");

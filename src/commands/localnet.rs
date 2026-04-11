@@ -6,6 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
+use serde_json::Value;
 
 use crate::error::LocalnetError;
 use crate::model::{LocalnetOwnership, LocalnetState, LocalnetStatusReport, Project};
@@ -166,12 +167,12 @@ fn cmd_localnet_start(
         bail!("{message}");
     }
 
+    patch_sequencer_port(lssa, localnet_port)?;
+
     let sequencer_pid = spawn_to_log(
         Command::new(sequencer_bin)
             .current_dir(lssa)
             .arg("sequencer_runner/configs/debug")
-            .arg("--port")
-            .arg(localnet_port.to_string())
             .env("RUST_LOG", "info")
             .env("RISC0_DEV_MODE", if risc0_dev_mode { "1" } else { "0" }),
         log_path,
@@ -405,6 +406,31 @@ fn build_status_report(
         log_path: log_path.display().to_string(),
         remediation,
     }
+}
+
+/// Update the port in `sequencer_runner/configs/debug/sequencer_config.json`
+/// so the sequencer listens on the configured port.  The pinned LSSA version
+/// does not accept `--port` as a CLI flag — it reads the port from this file.
+fn patch_sequencer_port(lssa: &Path, port: u16) -> DynResult<()> {
+    let config_path = lssa.join("sequencer_runner/configs/debug/sequencer_config.json");
+    let text = fs::read_to_string(&config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let mut doc: Value =
+        serde_json::from_str(&text).context("failed to parse sequencer_config.json")?;
+
+    if let Some(obj) = doc.as_object_mut() {
+        obj.insert("port".to_string(), Value::Number(port.into()));
+    } else {
+        bail!(
+            "sequencer_config.json is not a JSON object: {}",
+            config_path.display()
+        );
+    }
+
+    let updated = serde_json::to_string_pretty(&doc).context("failed to serialize config")?;
+    fs::write(&config_path, format!("{updated}\n"))
+        .with_context(|| format!("failed to write {}", config_path.display()))?;
+    Ok(())
 }
 
 fn read_log_tail(log_path: &Path, tail: usize) -> String {
