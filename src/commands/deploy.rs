@@ -274,8 +274,12 @@ fn deploy_single_program(
         let summary = summarize_command_failure(&output.stdout, &output.stderr);
         if json {
             eprintln!(
-                "{{\"status\":\"failed\",\"program\":\"{}\",\"error\":\"{}\"}}",
-                program_name, summary
+                "{}",
+                serde_json::json!({
+                    "status": "failed",
+                    "program": program_name,
+                    "error": summary,
+                })
             );
         } else {
             println!("FAIL {program_name} deployment failed");
@@ -285,13 +289,13 @@ fn deploy_single_program(
     }
 
     if json {
-        let tx_val = tx
-            .as_deref()
-            .map(|t| format!("\"{}\"", t))
-            .unwrap_or_else(|| "null".to_string());
         println!(
-            "{{\"status\":\"submitted\",\"program\":\"{}\",\"tx\":{}}}",
-            program_name, tx_val
+            "{}",
+            serde_json::json!({
+                "status": "submitted",
+                "program": program_name,
+                "tx": tx,
+            })
         );
     } else {
         println!("OK  {program_name} submitted");
