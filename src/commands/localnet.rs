@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context};
 use serde_json::Value;
 
+use crate::constants::{SEQUENCER_BIN_REL_PATH, SEQUENCER_CONFIG_DIR_REL_PATH};
 use crate::error::LocalnetError;
 use crate::model::{LocalnetOwnership, LocalnetState, LocalnetStatusReport, Project};
 use crate::process::{listener_pid, pid_alive, pid_command, pid_running, port_open, spawn_to_log};
@@ -125,7 +126,7 @@ fn cmd_localnet_start(
     localnet_addr: &str,
 ) -> DynResult<()> {
     ensure_dir_exists(lssa, "lssa")?;
-    let sequencer_bin = lssa.join("target/release/sequencer_runner");
+    let sequencer_bin = lssa.join(SEQUENCER_BIN_REL_PATH);
     if !sequencer_bin.exists() {
         return Err(LocalnetError::MissingSequencerBinary {
             path: sequencer_bin.display().to_string(),
@@ -169,10 +170,14 @@ fn cmd_localnet_start(
 
     patch_sequencer_port(lssa, localnet_port)?;
 
+    // Use a path relative to lssa (the child's cwd), not relative to the
+    // parent's cwd.  `current_dir(lssa)` applies before exec, so a parent-
+    // relative path like `.scaffold/cache/repos/lssa/target/release/…`
+    // would be resolved inside lssa and fail with ENOENT.
     let sequencer_pid = spawn_to_log(
-        Command::new(sequencer_bin)
+        Command::new(format!("./{SEQUENCER_BIN_REL_PATH}"))
             .current_dir(lssa)
-            .arg("sequencer_runner/configs/debug")
+            .arg(SEQUENCER_CONFIG_DIR_REL_PATH)
             .env("RUST_LOG", "info")
             .env("RISC0_DEV_MODE", if risc0_dev_mode { "1" } else { "0" }),
         log_path,
@@ -408,11 +413,13 @@ fn build_status_report(
     }
 }
 
-/// Update the port in `sequencer_runner/configs/debug/sequencer_config.json`
-/// so the sequencer listens on the configured port.  The pinned LSSA version
-/// does not accept `--port` as a CLI flag — it reads the port from this file.
+/// Update the port in `sequencer_config.json` so the sequencer listens on the
+/// configured port.  The pinned LSSA version does not accept `--port` as a CLI
+/// flag — it reads the port from this file.
 fn patch_sequencer_port(lssa: &Path, port: u16) -> DynResult<()> {
-    let config_path = lssa.join("sequencer_runner/configs/debug/sequencer_config.json");
+    let config_path = lssa
+        .join(SEQUENCER_CONFIG_DIR_REL_PATH)
+        .join("sequencer_config.json");
     let text = fs::read_to_string(&config_path)
         .with_context(|| format!("failed to read {}", config_path.display()))?;
     let mut doc: Value =
