@@ -59,7 +59,7 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
     let localnet_port = project.config.localnet.port;
     let risc0_dev_mode = project.config.localnet.risc0_dev_mode;
     let localnet_addr = format!("127.0.0.1:{localnet_port}");
-    let lssa = PathBuf::from(&project.config.lssa.path);
+    let lez = PathBuf::from(&project.config.lez.path);
     let state_path = project.root.join(".scaffold/state/localnet.state");
     let logs_dir = project.root.join(".scaffold/logs");
     let log_path = logs_dir.join("sequencer.log");
@@ -67,7 +67,7 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
 
     match action {
         LocalnetAction::Start { timeout_sec } => cmd_localnet_start(
-            &lssa,
+            &lez,
             &state_path,
             &log_path,
             timeout_sec,
@@ -117,7 +117,7 @@ fn cmd_localnet_stop_outside_project() -> DynResult<()> {
 }
 
 fn cmd_localnet_start(
-    lssa: &Path,
+    lez: &Path,
     state_path: &Path,
     log_path: &Path,
     timeout_sec: u64,
@@ -125,8 +125,8 @@ fn cmd_localnet_start(
     risc0_dev_mode: bool,
     localnet_addr: &str,
 ) -> DynResult<()> {
-    ensure_dir_exists(lssa, "lssa")?;
-    let sequencer_bin = lssa.join(SEQUENCER_BIN_REL_PATH);
+    ensure_dir_exists(lez, "lez")?;
+    let sequencer_bin = lez.join(SEQUENCER_BIN_REL_PATH);
     if !sequencer_bin.exists() {
         return Err(LocalnetError::MissingSequencerBinary {
             path: sequencer_bin.display().to_string(),
@@ -168,15 +168,15 @@ fn cmd_localnet_start(
         bail!("{message}");
     }
 
-    patch_sequencer_port(lssa, localnet_port)?;
+    patch_sequencer_port(lez, localnet_port)?;
 
-    // Use a path relative to lssa (the child's cwd), not relative to the
-    // parent's cwd.  `current_dir(lssa)` applies before exec, so a parent-
-    // relative path like `.scaffold/cache/repos/lssa/target/release/…`
-    // would be resolved inside lssa and fail with ENOENT.
+    // Use a path relative to lez (the child's cwd), not relative to the
+    // parent's cwd.  `current_dir(lez)` applies before exec, so a parent-
+    // relative path like `.scaffold/cache/repos/lez/target/release/…`
+    // would be resolved inside lez and fail with ENOENT.
     let sequencer_pid = spawn_to_log(
         Command::new(format!("./{SEQUENCER_BIN_REL_PATH}"))
-            .current_dir(lssa)
+            .current_dir(lez)
             .arg(SEQUENCER_CONFIG_DIR_REL_PATH)
             .env("RUST_LOG", "info")
             .env("RISC0_DEV_MODE", if risc0_dev_mode { "1" } else { "0" }),
@@ -414,10 +414,10 @@ fn build_status_report(
 }
 
 /// Update the port in `sequencer_config.json` so the sequencer listens on the
-/// configured port.  The pinned LSSA version does not accept `--port` as a CLI
+/// configured port.  The pinned LEZ version does not accept `--port` as a CLI
 /// flag — it reads the port from this file.
-fn patch_sequencer_port(lssa: &Path, port: u16) -> DynResult<()> {
-    let config_path = lssa
+fn patch_sequencer_port(lez: &Path, port: u16) -> DynResult<()> {
+    let config_path = lez
         .join(SEQUENCER_CONFIG_DIR_REL_PATH)
         .join("sequencer_config.json");
     let text = fs::read_to_string(&config_path)

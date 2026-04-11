@@ -105,7 +105,7 @@ pub(crate) fn ensure_pin_exists(
     .is_err()
     {
         bail!(
-            "configured {label} pin {pin} is not available in {} from source `{source}`. Ensure the repo source contains this commit (try `--lssa-path` pointing to a repo that has it).",
+            "configured {label} pin {pin} is not available in {} from source `{source}`. Ensure the repo source contains this commit (try `--lez-path` pointing to a repo that has it).",
             path.display(),
         );
     }
@@ -157,7 +157,7 @@ fn reconcile_repo_source(
 
     match opts.source_mismatch {
         SourceMismatchPolicy::Fail => bail!(
-            "{label} repository at {} uses origin `{origin}`, which does not match requested source `{source}`. Refusing to reuse this repo. Use `--lssa-path` with a matching repo, choose a different `--cache-root`, or remove the stale cache repo and retry.",
+            "{label} repository at {} uses origin `{origin}`, which does not match requested source `{source}`. Refusing to reuse this repo. Use `--lez-path` with a matching repo, choose a different `--cache-root`, or remove the stale cache repo and retry.",
             path.display(),
         ),
         SourceMismatchPolicy::AutoRecloneIfClean => {
