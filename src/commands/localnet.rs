@@ -341,15 +341,20 @@ fn print_log_lines(tail: usize, lines: &[&str], log_path: &Path, json: bool) -> 
 
 fn cmd_localnet_logs(log_path: &Path, tail: usize, json: bool) -> DynResult<()> {
     if !log_path.exists() {
-        return print_log_lines(tail, &[], log_path, json);
+        if json {
+            return print_log_lines(tail, &[], log_path, true);
+        }
+        println!("log file does not exist yet: {}", log_path.display());
+        return Ok(());
     }
 
     let content = fs::read_to_string(log_path)
         .with_context(|| format!("failed to read log file {}", log_path.display()))?;
 
     let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(tail);
-    print_log_lines(tail, &lines[start..], log_path, json)
+    let non_empty: Vec<&str> = lines.iter().filter(|l| !l.trim().is_empty()).copied().collect();
+    let start = non_empty.len().saturating_sub(tail);
+    print_log_lines(tail, &non_empty[start..], log_path, json)
 }
 
 fn build_status_report(
