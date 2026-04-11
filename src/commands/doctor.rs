@@ -6,7 +6,7 @@ use anyhow::bail;
 
 use super::wallet_support::wallet_password;
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
-use crate::constants::DEFAULT_LSSA_PIN;
+use crate::constants::{DEFAULT_LSSA_PIN, SEQUENCER_BIN_REL_PATH};
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
     check_standalone_support, one_line, print_rows,
@@ -112,7 +112,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
 
     rows.push(check_path(
         "sequencer binary",
-        &lssa.join("target/release/sequencer_runner"),
+        &lssa.join(SEQUENCER_BIN_REL_PATH),
         "Run `logos-scaffold setup`",
     ));
 

@@ -10,3 +10,5 @@ pub(crate) const FRAMEWORK_KIND_LEZ_FRAMEWORK: &str = "lez-framework";
 pub(crate) const DEFAULT_FRAMEWORK_VERSION: &str = "0.1.0";
 pub(crate) const DEFAULT_FRAMEWORK_IDL_SPEC: &str = "lssa-idl/0.1.0";
 pub(crate) const DEFAULT_FRAMEWORK_IDL_PATH: &str = "idl";
+pub(crate) const SEQUENCER_BIN_REL_PATH: &str = "target/release/sequencer_runner";
+pub(crate) const SEQUENCER_CONFIG_DIR_REL_PATH: &str = "sequencer_runner/configs/debug";
