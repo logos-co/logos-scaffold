@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use serde_json::Value;
 
-use crate::constants::DEFAULT_WALLET_PASSWORD;
+use crate::constants::{DEFAULT_WALLET_PASSWORD, WALLET_BIN_REL_PATH};
 use crate::model::Project;
 use crate::state::write_text;
 use crate::DynResult;
@@ -16,11 +16,20 @@ pub(crate) const WALLET_CONFIG_FALLBACK: &str = "config.json";
 
 pub(crate) struct WalletRuntimeContext {
     pub(crate) wallet_home: PathBuf,
-    pub(crate) wallet_binary: String,
+    pub(crate) wallet_binary: PathBuf,
     pub(crate) sequencer_addr: Option<String>,
 }
 
 pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeContext> {
+    let lez = PathBuf::from(&project.config.lez.path);
+    let wallet_binary = lez.join(WALLET_BIN_REL_PATH);
+    if !wallet_binary.exists() {
+        bail!(
+            "missing wallet binary at {}. Run `logos-scaffold setup`.",
+            wallet_binary.display()
+        );
+    }
+
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     if !wallet_home.exists() {
         bail!(
@@ -37,7 +46,7 @@ pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeC
 
     Ok(WalletRuntimeContext {
         wallet_home,
-        wallet_binary: project.config.wallet_binary.clone(),
+        wallet_binary,
         sequencer_addr,
     })
 }
