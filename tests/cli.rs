@@ -634,14 +634,10 @@ fn localnet_start_fails_when_process_exits_before_ready() {
     let temp = tempdir().expect("tempdir");
     let lez_path = temp.path().join("lez");
     let sequencer_bin = lez_path.join("target/release/sequencer_service");
-    let config_dir = lez_path.join("sequencer/service/configs/debug");
+    let config_path = lez_path.join("sequencer/service/configs/debug/sequencer_config.json");
     fs::create_dir_all(sequencer_bin.parent().expect("parent")).expect("create dirs");
-    fs::create_dir_all(&config_dir).expect("create config dir");
-    fs::write(
-        config_dir.join("sequencer_config.json"),
-        r#"{"port": 3040}"#,
-    )
-    .expect("write sequencer config");
+    fs::create_dir_all(config_path.parent().expect("parent")).expect("create config dir");
+    fs::write(&config_path, r#"{"port": 3040}"#).expect("write sequencer config");
     fs::write(&sequencer_bin, "#!/bin/sh\nexit 1\n").expect("write fake sequencer");
 
     #[cfg(unix)]
@@ -683,14 +679,13 @@ fn localnet_start_patches_config_and_uses_configured_port() {
     let temp = tempdir().expect("tempdir");
     let lez_path = temp.path().join("lez");
     let sequencer_bin = lez_path.join("target/release/sequencer_service");
-    let config_dir = lez_path.join("sequencer/service/configs/debug");
-    let config_path = config_dir.join("sequencer_config.json");
+    let config_path = lez_path.join("sequencer/service/configs/debug/sequencer_config.json");
     let args_log = temp.path().join("sequencer-args.log");
     let env_log = temp.path().join("sequencer-env.log");
     let localnet_port = unused_local_port();
 
     fs::create_dir_all(sequencer_bin.parent().expect("parent")).expect("create dirs");
-    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::create_dir_all(config_path.parent().expect("parent")).expect("create config dir");
     fs::write(&config_path, r#"{"port": 3040}"#).expect("write sequencer config");
 
     // Fake sequencer: reads port from sequencer_config.json (like the real one),
@@ -698,7 +693,7 @@ fn localnet_start_patches_config_and_uses_configured_port() {
     fs::write(
         &sequencer_bin,
         format!(
-            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"${{RISC0_DEV_MODE:-}}\" > '{}'\nconfig=\"$1/sequencer_config.json\"\nport=$(python3 -c \"import json,sys; print(json.load(open(sys.argv[1]))['port'])\" \"$config\")\nexec python3 -m http.server \"$port\" --bind 127.0.0.1\n",
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"${{RISC0_DEV_MODE:-}}\" > '{}'\nport=$(python3 -c \"import json,sys; print(json.load(open(sys.argv[1]))['port'])\" \"$1\")\nexec python3 -m http.server \"$port\" --bind 127.0.0.1\n",
             args_log.display(),
             env_log.display(),
         ),
