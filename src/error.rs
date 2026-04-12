@@ -21,3 +21,12 @@ pub(crate) enum LocalnetError {
         log_tail: String,
     },
 }
+
+#[derive(Debug, Error)]
+pub(crate) enum ResetError {
+    #[error("sequencer started but is not producing blocks after 30s.\nCheck 'logos-scaffold localnet logs --tail 200' for errors.\nRun 'logos-scaffold localnet status' for diagnostics.")]
+    BlocksNotProduced,
+
+    #[error("verification poll failed: {0}")]
+    VerificationPollFailed(String),
+}
