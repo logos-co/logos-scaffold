@@ -137,6 +137,7 @@ enum LocalnetSubcommand {
     Stop,
     Status(LocalnetStatusArgs),
     Logs(LocalnetLogsArgs),
+    Reset(#[command(long_about = "Reset localnet to a clean state: stop the sequencer, delete the sequencer\ndatabase, delete wallet state, re-run setup, restart the sequencer, and\nverify block production.\n\nUse --keep-wallet to preserve the existing wallet (useful when you want to\nreset the sequencer DB without losing your wallet keypairs).")] LocalnetResetArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -155,6 +156,12 @@ struct LocalnetStatusArgs {
 struct LocalnetLogsArgs {
     #[arg(long, default_value_t = 200)]
     tail: usize,
+}
+
+#[derive(Debug, clap::Args)]
+struct LocalnetResetArgs {
+    #[arg(long)]
+    keep_wallet: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -255,6 +262,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 LocalnetSubcommand::Stop => LocalnetAction::Stop,
                 LocalnetSubcommand::Status(args) => LocalnetAction::Status { json: args.json },
                 LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
+                LocalnetSubcommand::Reset(args) => LocalnetAction::Reset { keep_wallet: args.keep_wallet },
             };
             cmd_localnet(action)
         }
