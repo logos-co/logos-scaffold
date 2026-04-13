@@ -378,7 +378,7 @@ D1 validates the scaffold pipeline up to deploy and wallet health. This scenario
 
 - Default-template project exists with D1 completed (setup, build, deploy done).
 - Localnet is running and `wallet -- check-health` succeeds.
-- At least one public account exists. If not, create one:
+- Create a fresh public account for this scenario:
 
 ```bash
 "$SCAFFOLD_BIN" wallet -- account new public
@@ -423,7 +423,7 @@ The first runner (`run_hello_world`) submits a basic public transaction. The sec
 ### Execution Notes
 
 - `NSSA_WALLET_HOME_DIR` must be set for runners that initialize `WalletCore::from_env()`. The scaffold wallet commands set this automatically, but direct `cargo run` does not.
-- Create a fresh public account for this scenario rather than reusing accounts from other scenarios. This avoids confusion about pre-existing state.
+- Use the fresh public account created in the preconditions rather than reusing accounts from other scenarios. This avoids confusion about pre-existing state.
 - If additional runners are available (e.g., `run_hello_world_private`, `run_hello_world_through_tail_call`), exercising them is valuable but not required for this scenario.
 
 ## L1. LEZ Template Bootstrap
