@@ -63,6 +63,7 @@ fn build_workspace_for_current_project(cwd: &Path) -> DynResult<()> {
 fn build_methods_guests(cwd: &Path) -> DynResult<()> {
     let methods_manifest = cwd.join("methods").join("Cargo.toml");
     if methods_manifest.is_file() {
+        println!("Building guest methods...");
         run_checked(
             Command::new("cargo")
                 .current_dir(cwd)
