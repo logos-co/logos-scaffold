@@ -706,7 +706,7 @@ ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lez-client-gen
 
 - Invalid `--template` name fails with a clear error listing the available templates (`default`, `lez-framework`).
 - `--template lez-framework` creates a project with LEZ-specific structure (same as L1).
-- `--vendor-deps` creates a project that will vendor LSSA dependencies during setup (the flag itself should be accepted without error).
+- `--vendor-deps` is accepted without error and creates a project that vendors the LEZ repo into the generated project (for example, under `.scaffold/repos/lez`).
 - `--cache-root` is honored and scaffold uses the specified directory for cache operations.
 
 ### Failure Signals / Common Pitfalls
