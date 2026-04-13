@@ -28,7 +28,7 @@ logos-scaffold localnet status
 logos-scaffold doctor
 ```
 
-## Optional: Manual Deploy with Raw Wallet Command
+## Optional: Manual Deploy with Wallet Passthrough
 
 ```bash
 export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release
