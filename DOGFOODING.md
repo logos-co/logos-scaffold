@@ -118,7 +118,7 @@ Use `new` for the main runnable project and `create` as the lightweight alias-pa
 
 ### Expected Success Signals
 
-- Project creation succeeds and prints the destination path, pinned LSSA commit, and cache root.
+- Project creation succeeds and prints the destination path, pinned LEZ commit, and cache root.
 - `setup` completes and either seeds the default wallet or reports that a default wallet is already configured.
 - `localnet start` reports a ready localnet rather than only a spawned PID.
 - `build` exits successfully after preparing the project workspace.
