@@ -43,7 +43,7 @@ At minimum:
 
 - Onboarding, project creation, setup, localnet, or build changes: rerun `D1` and `D2`.
 - Deploy, wallet, or diagnostics changes: rerun the affected `D3` to `D5` scenarios.
-- LEZ template or generated-artifact changes: rerun `L1` to `L3`.
+- LEZ template or generated-artifact changes: rerun `L1` to `L4`.
 
 ```bash
 cargo build
