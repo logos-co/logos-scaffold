@@ -457,13 +457,13 @@ The `ls` step verifies that LEZ-specific directories were scaffolded before proc
 ### Expected Success Signals
 
 - Project creation succeeds with the LEZ template.
-- The generated project contains `idl/`, `crates/lssa-client-gen/`, `methods/guest/src/bin/lez_counter.rs`, and `src/bin/run_lez_counter.rs`.
+- The generated project contains `idl/`, `crates/lez-client-gen/`, `methods/guest/src/bin/lez_counter.rs`, and `src/bin/run_lez_counter.rs`.
 - `setup`, `localnet start`, and `doctor` behave the same way they do for the default template.
 - `build` succeeds for the LEZ project workspace and also runs IDL generation and client generation automatically.
 
 ### Failure Signals / Common Pitfalls
 
-- If the generated project is missing LEZ-specific paths such as `idl/`, `crates/lssa-client-gen/`, or `methods/guest/src/bin/lez_counter.rs`, record that immediately.
+- If the generated project is missing LEZ-specific paths such as `idl/`, `crates/lez-client-gen/`, or `methods/guest/src/bin/lez_counter.rs`, record that immediately.
 - If LEZ bootstrap behavior diverges from the default template in setup/localnet/doctor flows, capture the difference explicitly.
 - If `build` does not automatically trigger IDL + client generation for the LEZ template, record that as a regression.
 
