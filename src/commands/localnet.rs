@@ -23,7 +23,7 @@ pub(crate) enum LocalnetAction {
     Start { timeout_sec: u64 },
     Stop,
     Status { json: bool },
-    Logs { tail: usize },
+    Logs { tail: usize, json: bool },
 }
 
 pub(crate) fn cmd_localnet(action: LocalnetAction) -> DynResult<()> {
@@ -79,7 +79,7 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
         LocalnetAction::Status { json } => {
             cmd_localnet_status(&state_path, &log_path, json, &localnet_addr, localnet_port)
         }
-        LocalnetAction::Logs { tail } => cmd_localnet_logs(&log_path, tail),
+        LocalnetAction::Logs { tail, json } => cmd_localnet_logs(&log_path, tail, json),
     }
 }
 
@@ -329,8 +329,27 @@ fn ownership_label(ownership: LocalnetOwnership) -> &'static str {
     }
 }
 
-fn cmd_localnet_logs(log_path: &Path, tail: usize) -> DynResult<()> {
+fn print_log_lines(tail: usize, lines: &[&str], log_path: &Path, json: bool) -> DynResult<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "tail": tail,
+            "lines": lines,
+        }))?);
+    } else if lines.is_empty() {
+        println!("log file is empty: {}", log_path.display());
+    } else {
+        for line in lines {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_localnet_logs(log_path: &Path, tail: usize, json: bool) -> DynResult<()> {
     if !log_path.exists() {
+        if json {
+            return print_log_lines(tail, &[], log_path, true);
+        }
         println!("log file does not exist yet: {}", log_path.display());
         return Ok(());
     }
@@ -338,18 +357,10 @@ fn cmd_localnet_logs(log_path: &Path, tail: usize) -> DynResult<()> {
     let content = fs::read_to_string(log_path)
         .with_context(|| format!("failed to read log file {}", log_path.display()))?;
 
-    if content.trim().is_empty() {
-        println!("log file is empty: {}", log_path.display());
-        return Ok(());
-    }
-
     let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(tail);
-    for line in &lines[start..] {
-        println!("{line}");
-    }
-
-    Ok(())
+    let non_empty: Vec<&str> = lines.iter().filter(|l| !l.trim().is_empty()).copied().collect();
+    let start = non_empty.len().saturating_sub(tail);
+    print_log_lines(tail, &non_empty[start..], log_path, json)
 }
 
 fn build_status_report(

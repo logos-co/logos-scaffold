@@ -1675,3 +1675,64 @@ fn respond_last_block(stream: &mut TcpStream) {
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
+
+
+#[test]
+fn localnet_logs_json_flag_shown_in_help() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .args(["localnet", "logs", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn localnet_logs_json_outputs_valid_json_when_no_log_file() {
+    let temp = tempdir().expect("tempdir");
+    let lssa_path = temp.path().join("lssa");
+    fs::create_dir_all(&lssa_path).expect("create lssa path");
+    write_scaffold_toml(temp.path(), &lssa_path, "wallet-not-installed-for-tests");
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["localnet", "logs", "--json"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+
+    assert!(value.get("tail").is_some());
+    assert!(value.get("lines").is_some());
+    assert_eq!(value["lines"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn localnet_logs_json_outputs_lines_array() {
+    let temp = tempdir().expect("tempdir");
+    let lssa_path = temp.path().join("lssa");
+    fs::create_dir_all(&lssa_path).expect("create lssa path");
+    write_scaffold_toml(temp.path(), &lssa_path, "wallet-not-installed-for-tests");
+
+    fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
+    fs::write(
+        temp.path().join(".scaffold/logs/sequencer.log"),
+        "line-one\nline-two\nline-three\n",
+    )
+    .expect("write sequencer log");
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["localnet", "logs", "--json", "--tail", "2"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+
+    let lines = value["lines"].as_array().expect("lines array");
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].as_str().unwrap(), "line-two");
+    assert_eq!(lines[1].as_str().unwrap(), "line-three");
+    assert_eq!(value["tail"].as_u64().unwrap(), 2);
+}
