@@ -30,6 +30,8 @@ The recommended dogfooding pattern is:
 
 For repo dogfooding, prefer the freshly built local binary over an already-installed global binary.
 
+Scaffold now treats LEZ tooling as project-local state. For non-vendored projects, the shared cache layout is `<cache_root>/repos/lez/<pin>/...`; for vendored projects, LEZ lives under `<project>/.scaffold/repos/lez`. In both cases, the wallet binary under test is the LEZ-local build artifact at `<lez>/target/release/wallet`, invoked through `logos-scaffold wallet ...` rather than a `wallet` binary on `PATH`.
+
 ```bash
 export REPO_ROOT=/absolute/path/to/logos-scaffold
 export SCRATCH_ROOT=/absolute/path/to/dogfood-runs
@@ -57,6 +59,7 @@ Do not run project-scoped commands from the repository root unless the scenario 
 - Docker or Podman available for guest builds.
 - No conflicting listener on the scaffold localnet port before `localnet start`.
 - Network access available for setup/build flows that fetch dependencies.
+- No preinstalled `wallet` binary is required. If one exists on `PATH`, do not treat it as the runtime under test for scaffold wallet scenarios.
 - Optional but supported: `LOGOS_SCAFFOLD_WALLET_PASSWORD` when validating password override behavior.
 
 ## Scenario Index
@@ -119,18 +122,20 @@ Use `new` for the main runnable project and `create` as the lightweight alias-pa
 ### Expected Success Signals
 
 - Project creation succeeds and prints the destination path, pinned LEZ commit, and cache root.
-- `setup` completes and either seeds the default wallet or reports that a default wallet is already configured.
+- `setup` completes after syncing LEZ to the configured pin, building both `sequencer_service` and `wallet` inside the project's LEZ tree, and either seeding the default wallet or reporting that a default wallet is already configured.
 - `localnet start` reports a ready localnet rather than only a spawned PID.
 - `build` exits successfully after preparing the project workspace.
 - `deploy` prints a submission summary with zero failures when built binaries are present.
 - `wallet topup` succeeds without an explicit address because the project default wallet was seeded during setup.
-- `wallet -- check-health` succeeds against the running localnet.
+- `wallet -- check-health` succeeds against the running localnet without requiring a global `wallet` install or manual `PATH` changes.
+- Generated `scaffold.toml` stores `[wallet].home_dir` but does not carry a wallet binary override; wallet location is derived from the pinned LEZ checkout.
 
 ### Failure Signals / Common Pitfalls
 
 - Running `setup`, `build`, `deploy`, or wallet commands outside the generated project root should fail with a project-scoped message.
 - A foreign listener or stale state on the localnet port is a real dogfooding finding; capture `localnet status`, not just the final error.
 - If `wallet topup` without an address says no destination is configured, record that as a regression in default-wallet seeding or persistence.
+- If `setup` or wallet commands depend on `wallet` being installed globally or on `PATH`, record that as a regression in the self-contained project model.
 - If `deploy` fails due to missing binaries after a successful `build`, capture the exact missing path.
 
 ### Evidence to Capture
@@ -281,11 +286,11 @@ Use a real address from `wallet list` when explicitly validating `wallet default
 
 ### Expected Success Signals
 
-- `wallet list` and `wallet list --long` proxy wallet account enumeration from the project-scoped wallet home.
+- `wallet list` and `wallet list --long` proxy wallet account enumeration from the project-scoped wallet home using the LEZ-local wallet binary.
 - `wallet default set` accepts either positional address or `--address` and persists the normalized project default.
 - `wallet topup --dry-run` renders the underlying faucet claim command instead of mutating state.
 - `wallet topup` without an explicit address uses the saved default wallet.
-- `wallet -- ...` preserves the project wallet environment while forwarding the raw wallet command.
+- `wallet -- ...` preserves the project wallet environment while forwarding the raw wallet command to `<lez>/target/release/wallet`.
 
 Optional: validate `LOGOS_SCAFFOLD_WALLET_PASSWORD` override behavior by setting the env var to a non-default value and observing whether wallet commands honor it.
 
@@ -299,6 +304,7 @@ LOGOS_SCAFFOLD_WALLET_PASSWORD="custom-pw" "$SCAFFOLD_BIN" wallet topup --dry-ru
 - If both positional address and `--address` are supplied together, that is a user error and should remain clearly reported.
 - Connectivity failures during topup should mention localnet/sequencer reachability rather than only raw wallet output.
 - Passthrough flows require the literal `--`; if the CLI starts accepting or mangling passthrough without it, record that change.
+- If wallet flows only succeed when `wallet` is separately installed on `PATH`, or if missing-binary errors point anywhere other than the LEZ-local `target/release/wallet`, record that as a regression.
 
 ### Evidence to Capture
 
@@ -631,6 +637,8 @@ From the repo root:
 "$SCAFFOLD_BIN" --help
 "$SCAFFOLD_BIN" --version
 "$SCAFFOLD_BIN" help
+"$SCAFFOLD_BIN" setup --help
+"$SCAFFOLD_BIN" setup --wallet-install auto
 "$SCAFFOLD_BIN" nonexistent-command
 "$SCAFFOLD_BIN" build
 "$SCAFFOLD_BIN" deploy
@@ -656,6 +664,8 @@ Check that no new directories were created by the `--help` invocations.
 - `--help` prints a usage summary listing all top-level commands.
 - `--version` prints the version string and exits.
 - `help` prints the same top-level usage summary as `--help` and exits successfully.
+- `setup --help` documents the setup workflow without a `--wallet-install` flag.
+- Legacy `setup --wallet-install auto` is rejected during argument parsing as an unknown argument.
 - `nonexistent-command` fails with an error and directs the user to `--help` or an equivalent corrective hint.
 - `build`, `deploy`, `doctor`, `localnet status`, and `wallet list` run from outside a project fail with a message like `Not a logos-scaffold project ... Run logos-scaffold create <name>`.
 - `create --help` and `new --help` do not create directories or files in the current working directory.
@@ -665,6 +675,7 @@ Check that no new directories were created by the `--help` invocations.
 - If `create --help` or `new --help` creates a directory named `--help`, that is a significant UX regression. Record it and the exact argv used.
 - If project-context errors are missing or unhelpful (e.g., a raw file-not-found instead of a scaffold-specific message), record the exact output.
 - If some subcommands support `--help` and others do not, document the inconsistency.
+- If `setup --help` still advertises `--wallet-install`, or the deprecated flag is silently accepted, record that as a command-surface regression.
 
 ### Evidence to Capture
 
@@ -700,6 +711,8 @@ cd "$SCRATCH_ROOT"
 ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lez-client-gen
 "$SCAFFOLD_BIN" new dogfood-vendor --vendor-deps
 "$SCAFFOLD_BIN" new dogfood-cache --cache-root "$SCRATCH_ROOT/custom-cache"
+find "$SCRATCH_ROOT/custom-cache/repos/lez" -maxdepth 2 -mindepth 1 -type d | sort
+grep -n "^\[wallet\]\|^home_dir\|^binary" dogfood-cache/scaffold.toml
 ```
 
 ### Expected Success Signals
@@ -707,19 +720,23 @@ ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lez-client-gen
 - Invalid `--template` name fails with a clear error listing the available templates (`default`, `lez-framework`).
 - `--template lez-framework` creates a project with LEZ-specific structure (same as L1).
 - `--vendor-deps` is accepted without error and creates a project that vendors the pinned LEZ repo under `.scaffold/repos/lez`.
-- `--cache-root` is honored and scaffold uses the specified directory for cache operations.
+- `--cache-root` is honored and scaffold uses the specified directory for cache operations, with non-vendored LEZ clones isolated by pin under `<cache-root>/repos/lez/<pin>/`.
+- Generated `scaffold.toml` includes `[wallet].home_dir` and does not include a deprecated `wallet.binary` field.
 
 ### Failure Signals / Common Pitfalls
 
 - If an invalid template name silently falls back to `default`, record that as a regression.
 - If `--vendor-deps` or `--cache-root` are silently ignored or produce an error, record the exact output.
 - If `--lez-path` is tested and the path does not exist, verify the error message points to the bad path.
+- If non-vendored cache reuse collapses different LEZ pins into a single shared `repos/lez` checkout, record that as a cache-isolation regression.
 
 ### Evidence to Capture
 
 - Error output for invalid `--template`.
 - Creation output for `--template lez-framework` with directory listing.
 - Creation output for `--vendor-deps` and `--cache-root` if tested.
+- Directory listing proving the pin-isolated cache path.
+- `scaffold.toml` excerpt showing wallet home config without a wallet binary field.
 
 ### Execution Notes
 
