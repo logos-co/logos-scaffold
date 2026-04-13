@@ -114,7 +114,7 @@ cd dogfood-default
 "$SCAFFOLD_BIN" wallet -- check-health
 ```
 
-Use `new` for the main runnable project and `create` as the lightweight alias-parity check in a separate directory. Both commands also accept `--template`, `--vendor-deps`, `--lssa-path`, and `--cache-root`, but this scenario uses defaults only. See E2 for advanced flag coverage.
+Use `new` for the main runnable project and `create` as the lightweight alias-parity check in a separate directory. Both commands also accept `--template`, `--vendor-deps`, `--lez-path`, and `--cache-root`, but this scenario uses defaults only. See E2 for advanced flag coverage.
 
 ### Expected Success Signals
 
@@ -445,7 +445,7 @@ From the scratch workspace:
 cd "$SCRATCH_ROOT"
 "$SCAFFOLD_BIN" new dogfood-lez --template lez-framework
 cd dogfood-lez
-ls -d idl crates/lssa-client-gen methods/guest/src/bin src/bin
+ls -d idl crates/lez-client-gen methods/guest/src/bin src/bin
 "$SCAFFOLD_BIN" setup
 "$SCAFFOLD_BIN" localnet start
 "$SCAFFOLD_BIN" doctor
@@ -655,8 +655,8 @@ Check that no new directories were created by the `--help` invocations.
 
 - `--help` prints a usage summary listing all top-level commands.
 - `--version` prints the version string and exits.
-- `help` either prints usage or fails with a clear message (record which behavior is current).
-- `nonexistent-command` fails with an error suggesting the closest known command.
+- `help` prints the same top-level usage summary as `--help`.
+- `nonexistent-command` fails with an `unrecognized subcommand` error and points the user to `--help`.
 - `build`, `deploy`, `doctor`, `localnet status`, and `wallet list` run from outside a project fail with a message like `Not a logos-scaffold project ... Run logos-scaffold create <name>`.
 - `create --help` and `new --help` do not create directories or files in the current working directory.
 
@@ -682,7 +682,7 @@ Check that no new directories were created by the `--help` invocations.
 
 ### Goal
 
-Validate that `create`/`new` handle the `--template`, `--vendor-deps`, `--lssa-path`, and `--cache-root` flags correctly, including error cases for invalid inputs.
+Validate that `create`/`new` handle the `--template`, `--vendor-deps`, `--lez-path`, and `--cache-root` flags correctly, including error cases for invalid inputs.
 
 ### Preconditions
 
@@ -697,7 +697,7 @@ From the scratch workspace:
 cd "$SCRATCH_ROOT"
 "$SCAFFOLD_BIN" new dogfood-invalid-template --template nonexistent-template
 "$SCAFFOLD_BIN" new dogfood-lez-explicit --template lez-framework
-ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lssa-client-gen
+ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lez-client-gen
 "$SCAFFOLD_BIN" new dogfood-vendor --vendor-deps
 "$SCAFFOLD_BIN" new dogfood-cache --cache-root "$SCRATCH_ROOT/custom-cache"
 ```
@@ -706,14 +706,14 @@ ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lssa-client-gen
 
 - Invalid `--template` name fails with a clear error listing the available templates (`default`, `lez-framework`).
 - `--template lez-framework` creates a project with LEZ-specific structure (same as L1).
-- `--vendor-deps` creates a project that will vendor LSSA dependencies during setup (the flag itself should be accepted without error).
+- `--vendor-deps` creates a project that vendors the pinned LEZ repo under `.scaffold/repos/lez` at creation time.
 - `--cache-root` is honored and scaffold uses the specified directory for cache operations.
 
 ### Failure Signals / Common Pitfalls
 
 - If an invalid template name silently falls back to `default`, record that as a regression.
 - If `--vendor-deps` or `--cache-root` are silently ignored or produce an error, record the exact output.
-- If `--lssa-path` is tested and the path does not exist, verify the error message points to the bad path.
+- If `--lez-path` is tested and the path does not exist, verify the error message points to the bad path.
 
 ### Evidence to Capture
 
@@ -724,7 +724,7 @@ ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lssa-client-gen
 ### Execution Notes
 
 - Clean up the generated projects after this scenario to avoid consuming disk space with multiple scaffolded projects.
-- The `--lssa-path` flag is optional to test here because it requires a real LSSA checkout. Only probe it if one is available.
+- The `--lez-path` flag is optional to test here because it requires a real LEZ checkout. Only probe it if one is available.
 
 ## Minimum Rerun Guidance for Future Changes
 
