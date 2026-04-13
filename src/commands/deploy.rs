@@ -146,7 +146,7 @@ pub(crate) fn cmd_deploy(
         .filter(|result| matches!(result.status, DeployStatus::Failed))
         .count();
 
-    println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LSSA wallet/RPC for scaffold.");
+    println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LEZ wallet/RPC for scaffold.");
     println!("Summary:");
     println!("  Succeeded: {success_count}");
     println!("  Failed: {failed_count}");

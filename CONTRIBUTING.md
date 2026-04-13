@@ -45,4 +45,17 @@ At minimum:
 - Deploy, wallet, or diagnostics changes: rerun the affected `D3` to `D5` scenarios.
 - LEZ template or generated-artifact changes: rerun `L1` to `L3`.
 
+```bash
+cargo build
+cargo run --bin logos-scaffold -- new dogfood-app --lez-path /absolute/path/to/logos-execution-zone
+cd dogfood-app
+logos-scaffold setup
+logos-scaffold localnet start
+logos-scaffold doctor
+logos-scaffold build
+logos-scaffold deploy
+logos-scaffold wallet topup
+logos-scaffold localnet stop
+```
+
 Keep all temporary dogfood directories inside your local workspace and remove them after validation.
