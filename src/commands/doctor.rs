@@ -6,7 +6,7 @@ use anyhow::bail;
 
 use super::wallet_support::wallet_password;
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
-use crate::constants::{DEFAULT_LSSA_PIN, SEQUENCER_BIN_REL_PATH};
+use crate::constants::{DEFAULT_LEZ_PIN, SEQUENCER_BIN_REL_PATH};
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
     check_standalone_support, one_line, print_rows,
@@ -70,7 +70,7 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
 
 pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     let project = load_project()?;
-    let lssa = PathBuf::from(&project.config.lssa.path);
+    let lez = PathBuf::from(&project.config.lez.path);
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     let localnet_state_path = project.root.join(".scaffold/state/localnet.state");
 
@@ -85,34 +85,34 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     rows.push(check_binary("kill", true));
     rows.push(check_container_runtime());
 
-    rows.push(check_repo("lssa", &lssa, &project.config.lssa.pin));
+    rows.push(check_repo("lez", &lez, &project.config.lez.pin));
 
     rows.push(CheckRow {
-        status: if project.config.lssa.pin == DEFAULT_LSSA_PIN {
+        status: if project.config.lez.pin == DEFAULT_LEZ_PIN {
             CheckStatus::Pass
         } else {
             CheckStatus::Warn
         },
-        name: "lssa standalone pin".to_string(),
+        name: "lez standalone pin".to_string(),
         detail: format!(
             "configured pin={} expected={}",
-            project.config.lssa.pin, DEFAULT_LSSA_PIN
+            project.config.lez.pin, DEFAULT_LEZ_PIN
         ),
-        remediation: if project.config.lssa.pin == DEFAULT_LSSA_PIN {
+        remediation: if project.config.lez.pin == DEFAULT_LEZ_PIN {
             None
         } else {
             Some(format!(
-                "Set repos.lssa.pin in scaffold.toml to {} and run `{}`",
-                DEFAULT_LSSA_PIN, STEP_SETUP
+                "Set repos.lez.pin in scaffold.toml to {} and run `{}`",
+                DEFAULT_LEZ_PIN, STEP_SETUP
             ))
         },
     });
 
-    rows.push(check_standalone_support(&lssa));
+    rows.push(check_standalone_support(&lez));
 
     rows.push(check_path(
         "sequencer binary",
-        &lssa.join(SEQUENCER_BIN_REL_PATH),
+        &lez.join(SEQUENCER_BIN_REL_PATH),
         "Run `logos-scaffold setup`",
     ));
 

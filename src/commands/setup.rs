@@ -32,35 +32,35 @@ pub(crate) struct SetupCommand {
 
 pub(crate) fn cmd_setup(cmd: SetupCommand) -> DynResult<()> {
     let mut project = load_project()?;
-    let lssa = PathBuf::from(&project.config.lssa.path);
+    let lez = PathBuf::from(&project.config.lez.path);
     let cache_root = PathBuf::from(&project.config.cache_root);
-    let sync_opts = if is_cache_managed_repo_path(&cache_root, &lssa) {
+    let sync_opts = if is_cache_managed_repo_path(&cache_root, &lez) {
         RepoSyncOptions::auto_reclone_cache_repo()
     } else {
         RepoSyncOptions::fail_on_source_mismatch()
     };
 
-    sync_repo_to_pin(&mut project.config.lssa, "lssa", sync_opts)?;
+    sync_repo_to_pin(&mut project.config.lez, "lez", sync_opts)?;
 
-    ensure_dir_exists(&lssa, "lssa")?;
+    ensure_dir_exists(&lez, "lez")?;
 
     run_checked(
         Command::new("cargo")
-            .current_dir(&lssa)
+            .current_dir(&lez)
             .arg("build")
             .arg("--release")
             .arg("--features")
             .arg("standalone")
             .arg("-p")
-            .arg("sequencer_runner"),
-        "build sequencer_runner (standalone)",
+            .arg("sequencer_service"),
+        "build sequencer_service (standalone)",
     )?;
 
-    ensure_wallet_install(&lssa, &project.config.wallet_binary, cmd.wallet_install)
+    ensure_wallet_install(&lez, &project.config.wallet_binary, cmd.wallet_install)
         .context("wallet setup failed")?;
 
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
-    prepare_wallet_home(&lssa, &wallet_home)?;
+    prepare_wallet_home(&lez, &wallet_home)?;
     ensure_default_wallet_seeded(&project.root, &wallet_home)?;
 
     save_project_config(&project)?;
@@ -130,7 +130,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 fn ensure_wallet_install(
-    lssa: &Path,
+    lez: &Path,
     wallet_binary: &str,
     mode: WalletInstallMode,
 ) -> DynResult<()> {
@@ -142,7 +142,7 @@ fn ensure_wallet_install(
             }
             run_checked(
                 Command::new("cargo")
-                    .current_dir(lssa)
+                    .current_dir(lez)
                     .arg("install")
                     .arg("--path")
                     .arg("wallet"),
@@ -152,7 +152,7 @@ fn ensure_wallet_install(
         WalletInstallMode::Always => {
             run_checked(
                 Command::new("cargo")
-                    .current_dir(lssa)
+                    .current_dir(lez)
                     .arg("install")
                     .arg("--path")
                     .arg("wallet")

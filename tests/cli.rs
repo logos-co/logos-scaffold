@@ -258,10 +258,10 @@ fn report_keeps_non_utf8_logs_via_lossy_decoding() {
 #[test]
 fn report_manifest_scrubs_absolute_paths_in_warnings() {
     let temp = tempdir().expect("tempdir");
-    let lssa_path = temp.path().join("lssa");
-    fs::create_dir_all(&lssa_path).expect("create lssa path");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lez path");
     let missing_wallet = temp.path().join("bin/missing-wallet");
-    write_scaffold_toml(temp.path(), &lssa_path, &missing_wallet.to_string_lossy());
+    write_scaffold_toml(temp.path(), &lez_path, &missing_wallet.to_string_lossy());
     write_wallet_config(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
@@ -550,9 +550,9 @@ fn report_skips_unreadable_optional_file_and_keeps_succeeding() {
 #[test]
 fn localnet_status_json_is_parseable() {
     let temp = tempdir().expect("tempdir");
-    let lssa_path = temp.path().join("lssa");
-    fs::create_dir_all(&lssa_path).expect("create lssa path");
-    write_scaffold_toml(temp.path(), &lssa_path, "wallet-not-installed-for-tests");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lez path");
+    write_scaffold_toml(temp.path(), &lez_path, "wallet-not-installed-for-tests");
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -574,9 +574,9 @@ fn localnet_status_json_is_parseable() {
 #[test]
 fn doctor_json_outputs_machine_readable_report() {
     let temp = tempdir().expect("tempdir");
-    let lssa_path = temp.path().join("lssa");
-    fs::create_dir_all(&lssa_path).expect("create lssa path");
-    write_scaffold_toml(temp.path(), &lssa_path, "wallet-not-installed-for-tests");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lez path");
+    write_scaffold_toml(temp.path(), &lez_path, "wallet-not-installed-for-tests");
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -632,16 +632,12 @@ fn doctor_uses_password_env_override_for_wallet_health() {
 #[test]
 fn localnet_start_fails_when_process_exits_before_ready() {
     let temp = tempdir().expect("tempdir");
-    let lssa_path = temp.path().join("lssa");
-    let sequencer_bin = lssa_path.join("target/release/sequencer_runner");
-    let config_dir = lssa_path.join("sequencer_runner/configs/debug");
+    let lez_path = temp.path().join("lez");
+    let sequencer_bin = lez_path.join("target/release/sequencer_service");
+    let config_path = lez_path.join("sequencer/service/configs/debug/sequencer_config.json");
     fs::create_dir_all(sequencer_bin.parent().expect("parent")).expect("create dirs");
-    fs::create_dir_all(&config_dir).expect("create config dir");
-    fs::write(
-        config_dir.join("sequencer_config.json"),
-        r#"{"port": 3040}"#,
-    )
-    .expect("write sequencer config");
+    fs::create_dir_all(config_path.parent().expect("parent")).expect("create config dir");
+    fs::write(&config_path, r#"{"port": 3040}"#).expect("write sequencer config");
     fs::write(&sequencer_bin, "#!/bin/sh\nexit 1\n").expect("write fake sequencer");
 
     #[cfg(unix)]
@@ -654,7 +650,7 @@ fn localnet_start_fails_when_process_exits_before_ready() {
         fs::set_permissions(&sequencer_bin, perms).expect("chmod");
     }
 
-    write_scaffold_toml(temp.path(), &lssa_path, "wallet-not-installed-for-tests");
+    write_scaffold_toml(temp.path(), &lez_path, "wallet-not-installed-for-tests");
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -681,16 +677,15 @@ fn localnet_start_fails_when_process_exits_before_ready() {
 #[test]
 fn localnet_start_patches_config_and_uses_configured_port() {
     let temp = tempdir().expect("tempdir");
-    let lssa_path = temp.path().join("lssa");
-    let sequencer_bin = lssa_path.join("target/release/sequencer_runner");
-    let config_dir = lssa_path.join("sequencer_runner/configs/debug");
-    let config_path = config_dir.join("sequencer_config.json");
+    let lez_path = temp.path().join("lez");
+    let sequencer_bin = lez_path.join("target/release/sequencer_service");
+    let config_path = lez_path.join("sequencer/service/configs/debug/sequencer_config.json");
     let args_log = temp.path().join("sequencer-args.log");
     let env_log = temp.path().join("sequencer-env.log");
     let localnet_port = unused_local_port();
 
     fs::create_dir_all(sequencer_bin.parent().expect("parent")).expect("create dirs");
-    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::create_dir_all(config_path.parent().expect("parent")).expect("create config dir");
     fs::write(&config_path, r#"{"port": 3040}"#).expect("write sequencer config");
 
     // Fake sequencer: reads port from sequencer_config.json (like the real one),
@@ -698,7 +693,7 @@ fn localnet_start_patches_config_and_uses_configured_port() {
     fs::write(
         &sequencer_bin,
         format!(
-            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"${{RISC0_DEV_MODE:-}}\" > '{}'\nconfig=\"$1/sequencer_config.json\"\nport=$(python3 -c \"import json,sys; print(json.load(open(sys.argv[1]))['port'])\" \"$config\")\nexec python3 -m http.server \"$port\" --bind 127.0.0.1\n",
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"${{RISC0_DEV_MODE:-}}\" > '{}'\nport=$(python3 -c \"import json,sys; print(json.load(open(sys.argv[1]))['port'])\" \"$1\")\nexec python3 -m http.server \"$port\" --bind 127.0.0.1\n",
             args_log.display(),
             env_log.display(),
         ),
@@ -717,7 +712,7 @@ fn localnet_start_patches_config_and_uses_configured_port() {
 
     write_scaffold_toml_with_localnet(
         temp.path(),
-        &lssa_path,
+        &lez_path,
         "wallet-not-installed-for-tests",
         Some(localnet_port),
         Some(false),
@@ -1478,21 +1473,21 @@ fn archive_entry_content<'a>(entries: &'a [(String, String)], suffix: &str) -> &
         .unwrap_or_else(|| panic!("archive missing expected entry suffix `{suffix}`"))
 }
 
-fn write_scaffold_toml(project_root: &Path, lssa_path: &Path, wallet_binary: &str) {
-    write_scaffold_toml_with_localnet(project_root, lssa_path, wallet_binary, None, None);
+fn write_scaffold_toml(project_root: &Path, lez_path: &Path, wallet_binary: &str) {
+    write_scaffold_toml_with_localnet(project_root, lez_path, wallet_binary, None, None);
 }
 
 fn write_scaffold_toml_with_localnet(
     project_root: &Path,
-    lssa_path: &Path,
+    lez_path: &Path,
     wallet_binary: &str,
     localnet_port: Option<u16>,
     risc0_dev_mode: Option<bool>,
 ) {
     let mut content = format!(
-        "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"https://github.com/logos-blockchain/lssa.git\"\nsource = \"https://github.com/logos-blockchain/lssa.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \".scaffold/wallet\"\n",
+        "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \".scaffold/wallet\"\n",
         project_root.join("cache").display(),
-        lssa_path.display(),
+        lez_path.display(),
         TEST_PIN,
         wallet_binary
     );
@@ -1516,9 +1511,9 @@ fn unused_local_port() -> u16 {
 }
 
 fn setup_wallet_project(project_root: &Path, wallet_binary: &str, sequencer_addr: Option<&str>) {
-    let lssa_path = project_root.join("lssa");
-    fs::create_dir_all(&lssa_path).expect("create lssa path");
-    write_scaffold_toml(project_root, &lssa_path, wallet_binary);
+    let lez_path = project_root.join("lez");
+    fs::create_dir_all(&lez_path).expect("create lez path");
+    write_scaffold_toml(project_root, &lez_path, wallet_binary);
     write_wallet_config(project_root, sequencer_addr);
 }
 

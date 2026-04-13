@@ -41,7 +41,7 @@ For CLI changes affecting onboarding:
 
 ```bash
 cargo build
-cargo run --bin logos-scaffold -- new dogfood-app --lssa-path /absolute/path/to/lssa
+cargo run --bin logos-scaffold -- new dogfood-app --lez-path /absolute/path/to/logos-execution-zone
 cd dogfood-app
 logos-scaffold setup
 logos-scaffold localnet start

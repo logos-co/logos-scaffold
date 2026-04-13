@@ -69,8 +69,8 @@ struct NewArgs {
     name: String,
     #[arg(long)]
     vendor_deps: bool,
-    #[arg(long)]
-    lssa_path: Option<PathBuf>,
+    #[arg(long, alias = "lssa-path")]
+    lez_path: Option<PathBuf>,
     #[arg(long)]
     cache_root: Option<PathBuf>,
     #[arg(long, default_value = "default", help = TEMPLATE_HELP.as_str())]
@@ -231,7 +231,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         Some(Commands::Create(args)) | Some(Commands::New(args)) => cmd_new(NewCommand {
             name: args.name,
             vendor_deps: args.vendor_deps,
-            lssa_path: args.lssa_path,
+            lez_path: args.lez_path,
             cache_root: args.cache_root,
             template: args.template,
         }),
