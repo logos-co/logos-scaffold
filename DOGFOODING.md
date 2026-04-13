@@ -682,11 +682,7 @@ Check that no new directories were created by the `--help` invocations.
 
 ### Goal
 
-<<<<<<< HEAD
-Validate that `create`/`new` handle the `--template`, `--vendor-deps`, `--lez-path`, and `--cache-root` flags correctly, including error cases for invalid inputs.
-=======
 Validate that `create`/`new` handle the `--template`, `--vendor-deps`, `--lez-path` (legacy alias: `--lssa-path`), and `--cache-root` flags correctly, including error cases for invalid inputs.
->>>>>>> dec6343a3f1ff1b2a20542634ef7cdca6cba8ffa
 
 ### Preconditions
 
