@@ -655,8 +655,13 @@ Check that no new directories were created by the `--help` invocations.
 
 - `--help` prints a usage summary listing all top-level commands.
 - `--version` prints the version string and exits.
+<<<<<<< HEAD
 - `help` prints the same top-level usage summary as `--help`.
 - `nonexistent-command` fails with an `unrecognized subcommand` error and points the user to `--help`.
+=======
+- `help` prints the top-level usage summary and exits successfully.
+- `nonexistent-command` fails with an error suggesting the closest known command.
+>>>>>>> dec6343a3f1ff1b2a20542634ef7cdca6cba8ffa
 - `build`, `deploy`, `doctor`, `localnet status`, and `wallet list` run from outside a project fail with a message like `Not a logos-scaffold project ... Run logos-scaffold create <name>`.
 - `create --help` and `new --help` do not create directories or files in the current working directory.
 
@@ -682,7 +687,11 @@ Check that no new directories were created by the `--help` invocations.
 
 ### Goal
 
+<<<<<<< HEAD
 Validate that `create`/`new` handle the `--template`, `--vendor-deps`, `--lez-path`, and `--cache-root` flags correctly, including error cases for invalid inputs.
+=======
+Validate that `create`/`new` handle the `--template`, `--vendor-deps`, `--lez-path` (legacy alias: `--lssa-path`), and `--cache-root` flags correctly, including error cases for invalid inputs.
+>>>>>>> dec6343a3f1ff1b2a20542634ef7cdca6cba8ffa
 
 ### Preconditions
 
@@ -706,7 +715,11 @@ ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lez-client-gen
 
 - Invalid `--template` name fails with a clear error listing the available templates (`default`, `lez-framework`).
 - `--template lez-framework` creates a project with LEZ-specific structure (same as L1).
+<<<<<<< HEAD
 - `--vendor-deps` creates a project that vendors the pinned LEZ repo under `.scaffold/repos/lez` at creation time.
+=======
+- `--vendor-deps` is accepted without error and creates a project that vendors the LEZ repo into the generated project (for example, under `.scaffold/repos/lez`).
+>>>>>>> dec6343a3f1ff1b2a20542634ef7cdca6cba8ffa
 - `--cache-root` is honored and scaffold uses the specified directory for cache operations.
 
 ### Failure Signals / Common Pitfalls
