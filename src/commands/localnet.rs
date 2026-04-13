@@ -485,7 +485,10 @@ pub(crate) fn cmd_localnet_reset(
     let rocksdb_path = lssa.join("rocksdb");
     if rocksdb_path.exists() {
         fs::remove_dir_all(&rocksdb_path).with_context(|| {
-            format!("failed to delete sequencer DB at {}", rocksdb_path.display())
+            format!(
+                "failed to delete sequencer DB at {}",
+                rocksdb_path.display()
+            )
         })?;
     } else {
         println!(
@@ -499,11 +502,13 @@ pub(crate) fn cmd_localnet_reset(
     if keep_wallet {
         println!("skipping wallet deletion (--keep-wallet)");
     } else if wallet_path.exists() {
-        fs::remove_dir_all(&wallet_path).with_context(|| {
-            format!("failed to delete wallet at {}", wallet_path.display())
-        })?;
+        fs::remove_dir_all(&wallet_path)
+            .with_context(|| format!("failed to delete wallet at {}", wallet_path.display()))?;
     } else {
-        println!("wallet not found at {}; skipping deletion", wallet_path.display());
+        println!(
+            "wallet not found at {}; skipping deletion",
+            wallet_path.display()
+        );
     }
 
     // Step 4 — delete wallet state (unless --keep-wallet)
@@ -512,7 +517,10 @@ pub(crate) fn cmd_localnet_reset(
         // already skipped wallet deletion above
     } else if wallet_state_path.exists() {
         fs::remove_file(&wallet_state_path).with_context(|| {
-            format!("failed to delete wallet state at {}", wallet_state_path.display())
+            format!(
+                "failed to delete wallet state at {}",
+                wallet_state_path.display()
+            )
         })?;
     } else {
         println!(
@@ -664,27 +672,26 @@ mod tests {
 
         // Ensure rocksdb does NOT exist
         let rocksdb_path = lssa.join("rocksdb");
-        assert!(!rocksdb_path.exists(), "rocksdb should not exist before test");
+        assert!(
+            !rocksdb_path.exists(),
+            "rocksdb should not exist before test"
+        );
 
         // Call reset; step 2 should log "skipping deletion" rather than error
         // We can't easily capture println, but we can call the function and
         // verify it does NOT return an error for missing rocksdb.
         // Since setup/start will fail in a temp dir, we just verify the function
         // doesn't fail at the rocksdb step by checking the error type.
-        let _result = cmd_localnet_reset(
-            &project,
-            &lssa,
-            &state_path,
-            true,
-            3040,
-            "127.0.0.1:3040",
-        );
+        let _result =
+            cmd_localnet_reset(&project, &lssa, &state_path, true, 3040, "127.0.0.1:3040");
 
         // If it fails because setup/start is unavailable, that's fine.
         // If it fails with a "failed to delete sequencer DB" error, that's a bug.
         let err_str = _result.unwrap_err().to_string();
-        assert!(!err_str.contains("failed to delete sequencer DB"),
-            "reset should not error on missing rocksdb: {err_str}");
+        assert!(
+            !err_str.contains("failed to delete sequencer DB"),
+            "reset should not error on missing rocksdb: {err_str}"
+        );
     }
 
     #[test]
@@ -713,8 +720,10 @@ mod tests {
         );
 
         let err_str = _result.unwrap_err().to_string();
-        assert!(!err_str.contains("failed to delete wallet"),
-            "reset should not error on missing wallet: {err_str}");
+        assert!(
+            !err_str.contains("failed to delete wallet"),
+            "reset should not error on missing wallet: {err_str}"
+        );
     }
 
     #[test]
@@ -730,14 +739,8 @@ mod tests {
         let lssa = std::path::PathBuf::from(&project.config.lssa.path);
         let state_path = project.root.join(".scaffold/state/localnet.state");
 
-        let _result = cmd_localnet_reset(
-            &project,
-            &lssa,
-            &state_path,
-            true,
-            3040,
-            "127.0.0.1:3040",
-        );
+        let _result =
+            cmd_localnet_reset(&project, &lssa, &state_path, true, 3040, "127.0.0.1:3040");
 
         let err = _result.unwrap_err();
         let err_str = err.to_string();
