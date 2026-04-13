@@ -697,7 +697,7 @@ From the scratch workspace:
 cd "$SCRATCH_ROOT"
 "$SCAFFOLD_BIN" new dogfood-invalid-template --template nonexistent-template
 "$SCAFFOLD_BIN" new dogfood-lez-explicit --template lez-framework
-ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lssa-client-gen
+ls -d dogfood-lez-explicit/idl dogfood-lez-explicit/crates/lez-client-gen
 "$SCAFFOLD_BIN" new dogfood-vendor --vendor-deps
 "$SCAFFOLD_BIN" new dogfood-cache --cache-root "$SCRATCH_ROOT/custom-cache"
 ```
