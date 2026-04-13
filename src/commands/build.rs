@@ -5,7 +5,7 @@ use std::process::Command;
 
 use crate::commands::client::generate_clients_from_current_idl;
 use crate::commands::idl::build_idl_for_current_project;
-use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
+use crate::commands::setup::cmd_setup;
 use crate::constants::{FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK};
 use crate::process::run_checked;
 use crate::project::{load_project, run_in_project_dir};
@@ -13,9 +13,7 @@ use crate::DynResult;
 
 pub(crate) fn cmd_build_shortcut(project_dir: Option<PathBuf>) -> DynResult<()> {
     run_in_project_dir(project_dir.as_deref(), || {
-        cmd_setup(SetupCommand {
-            wallet_install: WalletInstallMode::Auto,
-        })?;
+        cmd_setup()?;
         let cwd = env::current_dir()?;
 
         let project = load_project()?;
