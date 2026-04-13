@@ -114,7 +114,7 @@ cd dogfood-default
 "$SCAFFOLD_BIN" wallet -- check-health
 ```
 
-Use `new` for the main runnable project and `create` as the lightweight alias-parity check in a separate directory. Both commands also accept `--template`, `--vendor-deps`, `--lssa-path`, and `--cache-root`, but this scenario uses defaults only. See E2 for advanced flag coverage.
+Use `new` for the main runnable project and `create` as the lightweight alias-parity check in a separate directory. Both commands also accept `--template`, `--vendor-deps`, `--lez-path`, and `--cache-root`; `--lssa-path` remains available as a legacy alias. This scenario uses defaults only. See E2 for advanced flag coverage.
 
 ### Expected Success Signals
 
