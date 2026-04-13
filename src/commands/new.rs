@@ -7,8 +7,7 @@ use anyhow::{bail, Context};
 use crate::config::serialize_config;
 use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    DEFAULT_LEZ_PIN, DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK,
-    LEZ_URL, VERSION,
+    DEFAULT_LEZ_PIN, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK, LEZ_URL, VERSION,
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
 use crate::project::default_cache_root;
@@ -77,7 +76,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         )?;
         lez_vendor
     } else {
-        let lez_cached = cache_root.join("repos/lez");
+        let lez_cached = cache_root.join("repos/lez").join(DEFAULT_LEZ_PIN);
         sync_repo_to_pin_at_path_with_opts(
             &lez_cached,
             &lez_source,
@@ -97,7 +96,6 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
             path: lez_repo_path.display().to_string(),
             pin: DEFAULT_LEZ_PIN.to_string(),
         },
-        wallet_binary: DEFAULT_WALLET_BINARY.to_string(),
         wallet_home_dir: ".scaffold/wallet".to_string(),
         framework: FrameworkConfig {
             kind: template_variant.clone(),

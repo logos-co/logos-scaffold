@@ -6,13 +6,13 @@ use anyhow::bail;
 
 use super::wallet_support::wallet_password;
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
-use crate::constants::{DEFAULT_LEZ_PIN, SEQUENCER_BIN_REL_PATH};
+use crate::constants::{DEFAULT_LEZ_PIN, SEQUENCER_BIN_REL_PATH, WALLET_BIN_REL_PATH};
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
     check_standalone_support, one_line, print_rows,
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
-use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo, which};
+use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo};
 use crate::project::load_project;
 use crate::state::read_localnet_state;
 use crate::DynResult;
@@ -79,7 +79,6 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     rows.push(check_binary("git", true));
     rows.push(check_binary("rustc", true));
     rows.push(check_binary("cargo", true));
-    rows.push(check_binary(&project.config.wallet_binary, true));
     rows.push(check_binary("lsof", true));
     rows.push(check_binary("ps", true));
     rows.push(check_binary("kill", true));
@@ -113,6 +112,13 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     rows.push(check_path(
         "sequencer binary",
         &lez.join(SEQUENCER_BIN_REL_PATH),
+        "Run `logos-scaffold setup`",
+    ));
+
+    let wallet_binary_path = lez.join(WALLET_BIN_REL_PATH);
+    rows.push(check_path(
+        "wallet binary",
+        &wallet_binary_path,
         "Run `logos-scaffold setup`",
     ));
 
@@ -206,8 +212,8 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         });
     }
 
-    if which(&project.config.wallet_binary).is_some() {
-        let mut version_cmd = Command::new(&project.config.wallet_binary);
+    if wallet_binary_path.exists() {
+        let mut version_cmd = Command::new(&wallet_binary_path);
         version_cmd.arg("--version");
         match run_capture(&mut version_cmd, "wallet --version") {
             Ok(out) => rows.push(CheckRow {
@@ -224,7 +230,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
             }),
         }
 
-        let mut health_cmd = Command::new(&project.config.wallet_binary);
+        let mut health_cmd = Command::new(&wallet_binary_path);
         health_cmd
             .env("NSSA_WALLET_HOME_DIR", wallet_home.display().to_string())
             .arg("check-health")

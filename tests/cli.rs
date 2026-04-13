@@ -84,8 +84,7 @@ fn report_help_lists_out_and_tail_flags() {
 #[test]
 fn report_generates_default_archive_with_warning_and_manifest() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
     fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
     fs::write(
         temp.path().join(".scaffold/logs/sequencer.log"),
@@ -138,8 +137,7 @@ fn report_generates_default_archive_with_warning_and_manifest() {
 #[test]
 fn report_supports_custom_output_path() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     let custom_out = temp.path().join("artifacts/support-report.tar.gz");
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
@@ -160,8 +158,7 @@ fn report_supports_custom_output_path() {
 #[test]
 fn report_excludes_wallet_files_from_archive() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     let wallet_dir = temp.path().join(".scaffold/wallet");
     fs::create_dir_all(&wallet_dir).expect("create wallet dir");
@@ -196,8 +193,7 @@ fn report_excludes_wallet_files_from_archive() {
 #[test]
 fn report_redacts_sensitive_values_in_logs() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
     fs::write(
@@ -228,8 +224,7 @@ fn report_redacts_sensitive_values_in_logs() {
 #[test]
 fn report_keeps_non_utf8_logs_via_lossy_decoding() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
     fs::write(
@@ -260,8 +255,8 @@ fn report_manifest_scrubs_absolute_paths_in_warnings() {
     let temp = tempdir().expect("tempdir");
     let lez_path = temp.path().join("lez");
     fs::create_dir_all(&lez_path).expect("create lez path");
-    let missing_wallet = temp.path().join("bin/missing-wallet");
-    write_scaffold_toml(temp.path(), &lez_path, &missing_wallet.to_string_lossy());
+    // No wallet stub — wallet binary is missing at lez/target/release/wallet
+    write_scaffold_toml(temp.path(), &lez_path);
     write_wallet_config(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
@@ -280,16 +275,15 @@ fn report_manifest_scrubs_absolute_paths_in_warnings() {
         "manifest should not leak absolute project path, got: {manifest}"
     );
     assert!(
-        manifest.contains("<PROJECT_ROOT>/bin/missing-wallet"),
-        "manifest should contain scrubbed wallet path warning, got: {manifest}"
+        manifest.contains("tool probe `wallet` did not succeed"),
+        "manifest should contain wallet probe warning, got: {manifest}"
     );
 }
 
 #[test]
 fn report_sanitizes_localnet_status_log_path() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -322,8 +316,7 @@ fn report_sanitizes_localnet_status_log_path() {
 #[test]
 fn report_sanitizes_doctor_json_paths() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -349,8 +342,7 @@ fn report_sanitizes_doctor_json_paths() {
 #[test]
 fn report_scrubs_tool_command_paths_in_summary() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -382,7 +374,7 @@ fn report_scrubs_tool_command_paths_in_summary() {
         .and_then(serde_json::Value::as_str)
         .expect("wallet command string");
     assert!(
-        wallet_command.contains("<PROJECT_ROOT>/wallet-stub.sh"),
+        wallet_command.contains("<PROJECT_ROOT>/lez/target/release/wallet"),
         "expected scrubbed wallet command path, got: {wallet_command}"
     );
 }
@@ -390,8 +382,7 @@ fn report_scrubs_tool_command_paths_in_summary() {
 #[test]
 fn report_redacts_multiline_private_key_blocks() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
     fs::write(
@@ -422,8 +413,7 @@ fn report_redacts_multiline_private_key_blocks() {
 #[test]
 fn report_redacts_url_userinfo_without_colon() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
     fs::write(
@@ -452,8 +442,7 @@ fn report_redacts_url_userinfo_without_colon() {
 #[test]
 fn report_tail_keeps_only_last_requested_lines() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     fs::create_dir_all(temp.path().join(".scaffold/logs")).expect("create logs dir");
     fs::write(
@@ -483,8 +472,7 @@ fn report_tail_keeps_only_last_requested_lines() {
 #[test]
 fn report_default_archive_names_are_unique_for_fast_repeats() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -524,8 +512,7 @@ fn report_fails_outside_project_with_project_scoped_message() {
 #[test]
 fn report_skips_unreadable_optional_file_and_keeps_succeeding() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
     fs::create_dir(temp.path().join(".env.local")).expect("make .env.local unreadable as dir");
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
@@ -552,7 +539,7 @@ fn localnet_status_json_is_parseable() {
     let temp = tempdir().expect("tempdir");
     let lez_path = temp.path().join("lez");
     fs::create_dir_all(&lez_path).expect("create lez path");
-    write_scaffold_toml(temp.path(), &lez_path, "wallet-not-installed-for-tests");
+    write_scaffold_toml(temp.path(), &lez_path);
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -576,7 +563,7 @@ fn doctor_json_outputs_machine_readable_report() {
     let temp = tempdir().expect("tempdir");
     let lez_path = temp.path().join("lez");
     fs::create_dir_all(&lez_path).expect("create lez path");
-    write_scaffold_toml(temp.path(), &lez_path, "wallet-not-installed-for-tests");
+    write_scaffold_toml(temp.path(), &lez_path);
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -596,8 +583,7 @@ fn doctor_json_outputs_machine_readable_report() {
 #[test]
 fn doctor_uses_password_env_override_for_wallet_health() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -650,7 +636,7 @@ fn localnet_start_fails_when_process_exits_before_ready() {
         fs::set_permissions(&sequencer_bin, perms).expect("chmod");
     }
 
-    write_scaffold_toml(temp.path(), &lez_path, "wallet-not-installed-for-tests");
+    write_scaffold_toml(temp.path(), &lez_path);
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -710,13 +696,7 @@ fn localnet_start_patches_config_and_uses_configured_port() {
         fs::set_permissions(&sequencer_bin, perms).expect("chmod");
     }
 
-    write_scaffold_toml_with_localnet(
-        temp.path(),
-        &lez_path,
-        "wallet-not-installed-for-tests",
-        Some(localnet_port),
-        Some(false),
-    );
+    write_scaffold_toml_with_localnet(temp.path(), &lez_path, Some(localnet_port), Some(false));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -813,8 +793,7 @@ fn localnet_stop_outside_project_with_listener_prints_hint() {
 #[test]
 fn wallet_list_proxies_account_list() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -831,8 +810,7 @@ fn wallet_list_proxies_account_list() {
 #[test]
 fn wallet_passthrough_account_list_works() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -851,8 +829,7 @@ fn wallet_passthrough_account_list_works() {
 #[test]
 fn wallet_passthrough_requires_args_after_double_dash() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -868,8 +845,7 @@ fn wallet_passthrough_requires_args_after_double_dash() {
 #[test]
 fn wallet_topup_dry_run_renders_pinata_claim_command() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -896,8 +872,7 @@ fn wallet_topup_dry_run_renders_pinata_claim_command() {
 #[test]
 fn wallet_topup_runs_pinata_claim_with_explicit_address() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -916,8 +891,7 @@ fn wallet_topup_runs_pinata_claim_with_explicit_address() {
 #[test]
 fn wallet_topup_initializes_when_account_uninitialized_before_pinata() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -947,8 +921,7 @@ fn wallet_topup_initializes_when_account_uninitialized_before_pinata() {
 #[test]
 fn wallet_topup_skips_init_when_account_already_initialized() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -974,8 +947,7 @@ fn wallet_topup_skips_init_when_account_already_initialized() {
 #[test]
 fn wallet_topup_preflight_failure_blocks_pinata() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1000,8 +972,7 @@ fn wallet_topup_preflight_failure_blocks_pinata() {
 #[test]
 fn wallet_topup_uses_password_env_override() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1019,8 +990,7 @@ fn wallet_topup_uses_password_env_override() {
 #[test]
 fn wallet_topup_falls_back_to_default_password_when_env_missing() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1037,8 +1007,7 @@ fn wallet_topup_falls_back_to_default_password_when_env_missing() {
 #[test]
 fn wallet_topup_uses_default_wallet_when_address_is_omitted() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1061,8 +1030,7 @@ fn wallet_topup_uses_default_wallet_when_address_is_omitted() {
 #[test]
 fn wallet_topup_errors_when_address_and_default_are_missing() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1079,8 +1047,7 @@ fn wallet_topup_errors_when_address_and_default_are_missing() {
 #[test]
 fn wallet_topup_rejects_invalid_address() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1099,8 +1066,7 @@ fn wallet_topup_rejects_invalid_address() {
 #[test]
 fn wallet_topup_shows_sequencer_hint_on_connectivity_failure() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1121,8 +1087,7 @@ fn wallet_topup_shows_sequencer_hint_on_connectivity_failure() {
 #[test]
 fn wallet_topup_init_connectivity_failure_shows_sequencer_hint() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1150,8 +1115,7 @@ fn wallet_topup_init_connectivity_failure_shows_sequencer_hint() {
 #[test]
 fn wallet_topup_continues_when_init_reports_already_initialized() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1178,8 +1142,7 @@ fn wallet_topup_continues_when_init_reports_already_initialized() {
 #[test]
 fn wallet_topup_timeout_is_reported_as_non_fatal() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1215,8 +1178,7 @@ fn wallet_topup_fails_outside_project_with_project_scoped_message() {
 #[test]
 fn wallet_default_set_persists_normalized_address_positional() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1236,8 +1198,7 @@ fn wallet_default_set_persists_normalized_address_positional() {
 #[test]
 fn wallet_default_set_accepts_flag_form() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:3040"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1254,8 +1215,7 @@ fn wallet_default_set_accepts_flag_form() {
 #[test]
 fn deploy_unknown_program_lists_available_programs() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, None);
+    setup_wallet_project(temp.path(), None);
     write_guest_program(temp.path(), "alpha");
     write_guest_program(temp.path(), "beta");
 
@@ -1276,8 +1236,7 @@ fn deploy_unknown_program_lists_available_programs() {
 fn deploy_single_program_submits_successfully() {
     let temp = tempdir().expect("tempdir");
     let rpc = RpcStub::start();
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some(&rpc.url));
+    setup_wallet_project(temp.path(), Some(&rpc.url));
     write_guest_program(temp.path(), "hello");
     write_guest_binary(temp.path(), "hello");
 
@@ -1301,8 +1260,7 @@ fn deploy_single_program_submits_successfully() {
 fn deploy_uses_password_env_override() {
     let temp = tempdir().expect("tempdir");
     let rpc = RpcStub::start();
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some(&rpc.url));
+    setup_wallet_project(temp.path(), Some(&rpc.url));
     write_guest_program(temp.path(), "hello");
     write_guest_binary(temp.path(), "hello");
 
@@ -1321,8 +1279,7 @@ fn deploy_uses_password_env_override() {
 fn deploy_missing_binary_shows_build_hint() {
     let temp = tempdir().expect("tempdir");
     let rpc = RpcStub::start();
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some(&rpc.url));
+    setup_wallet_project(temp.path(), Some(&rpc.url));
     write_guest_program(temp.path(), "hello");
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
@@ -1341,8 +1298,7 @@ fn deploy_missing_binary_shows_build_hint() {
 fn deploy_continues_and_summarizes_mixed_results() {
     let temp = tempdir().expect("tempdir");
     let rpc = RpcStub::start();
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some(&rpc.url));
+    setup_wallet_project(temp.path(), Some(&rpc.url));
     write_guest_program(temp.path(), "alpha");
     write_guest_program(temp.path(), "beta");
     write_guest_binary(temp.path(), "alpha");
@@ -1365,8 +1321,7 @@ fn deploy_continues_and_summarizes_mixed_results() {
 #[test]
 fn deploy_shows_hint_when_sequencer_is_unreachable_with_configured_addr() {
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, Some("http://127.0.0.1:65535"));
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:65535"));
     write_guest_program(temp.path(), "hello");
     write_guest_binary(temp.path(), "hello");
 
@@ -1392,8 +1347,7 @@ fn deploy_shows_hint_when_sequencer_is_unreachable_with_fallback_addr() {
     }
 
     let temp = tempdir().expect("tempdir");
-    let wallet_stub = write_wallet_stub(temp.path());
-    setup_wallet_project(temp.path(), &wallet_stub, None);
+    setup_wallet_project(temp.path(), None);
     write_guest_program(temp.path(), "hello");
     write_guest_binary(temp.path(), "hello");
 
@@ -1473,23 +1427,21 @@ fn archive_entry_content<'a>(entries: &'a [(String, String)], suffix: &str) -> &
         .unwrap_or_else(|| panic!("archive missing expected entry suffix `{suffix}`"))
 }
 
-fn write_scaffold_toml(project_root: &Path, lez_path: &Path, wallet_binary: &str) {
-    write_scaffold_toml_with_localnet(project_root, lez_path, wallet_binary, None, None);
+fn write_scaffold_toml(project_root: &Path, lez_path: &Path) {
+    write_scaffold_toml_with_localnet(project_root, lez_path, None, None);
 }
 
 fn write_scaffold_toml_with_localnet(
     project_root: &Path,
     lez_path: &Path,
-    wallet_binary: &str,
     localnet_port: Option<u16>,
     risc0_dev_mode: Option<bool>,
 ) {
     let mut content = format!(
-        "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \".scaffold/wallet\"\n",
+        "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \".scaffold/wallet\"\n",
         project_root.join("cache").display(),
         lez_path.display(),
         TEST_PIN,
-        wallet_binary
     );
 
     if let Some(port) = localnet_port {
@@ -1510,10 +1462,11 @@ fn unused_local_port() -> u16 {
         .port()
 }
 
-fn setup_wallet_project(project_root: &Path, wallet_binary: &str, sequencer_addr: Option<&str>) {
+fn setup_wallet_project(project_root: &Path, sequencer_addr: Option<&str>) {
     let lez_path = project_root.join("lez");
     fs::create_dir_all(&lez_path).expect("create lez path");
-    write_scaffold_toml(project_root, &lez_path, wallet_binary);
+    write_wallet_stub(&lez_path);
+    write_scaffold_toml(project_root, &lez_path);
     write_wallet_config(project_root, sequencer_addr);
 }
 
@@ -1535,8 +1488,9 @@ fn write_wallet_config(project_root: &Path, sequencer_addr: Option<&str>) {
     fs::write(path, text).expect("write wallet config");
 }
 
-fn write_wallet_stub(project_root: &Path) -> String {
-    let path = project_root.join("wallet-stub.sh");
+fn write_wallet_stub(lez_path: &Path) {
+    let path = lez_path.join("target/release/wallet");
+    fs::create_dir_all(path.parent().expect("parent")).expect("create wallet binary dir");
     let script = r#"#!/bin/sh
 set -eu
 
@@ -1642,8 +1596,6 @@ exit 2
         perms.set_mode(0o755);
         fs::set_permissions(&path, perms).expect("chmod");
     }
-
-    path.to_string_lossy().to_string()
 }
 
 fn write_guest_program(project_root: &Path, name: &str) {
