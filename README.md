@@ -26,6 +26,11 @@ Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
 cargo install --path .
 ```
 
+## DOGFOODING
+
+Canonical dogfooding scenarios live in [DOGFOODING.md](./DOGFOODING.md).
+Keep that runbook updated whenever first-class commands, templates, or supported workflows change.
+
 ## CLI
 
 ```bash

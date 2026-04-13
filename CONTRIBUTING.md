@@ -35,9 +35,15 @@ cargo fmt --check
 - Generated projects are separate workspaces created by `logos-scaffold new`.
 - Validate scaffold changes by creating a fresh project and running scaffold commands inside it.
 
-## Recommended Validation Flow
+## DOGFOODING Validation
 
-For CLI changes affecting onboarding:
+Use [DOGFOODING.md](./DOGFOODING.md) as the canonical validation guide for scaffold DX.
+
+At minimum:
+
+- Onboarding, project creation, setup, localnet, or build changes: rerun `D1` and `D2`.
+- Deploy, wallet, or diagnostics changes: rerun the affected `D3` to `D5` scenarios.
+- LEZ template or generated-artifact changes: rerun `L1` to `L4`.
 
 ```bash
 cargo build
