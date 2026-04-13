@@ -655,13 +655,8 @@ Check that no new directories were created by the `--help` invocations.
 
 - `--help` prints a usage summary listing all top-level commands.
 - `--version` prints the version string and exits.
-<<<<<<< HEAD
-- `help` prints the same top-level usage summary as `--help`.
-- `nonexistent-command` fails with an `unrecognized subcommand` error and points the user to `--help`.
-=======
-- `help` prints the top-level usage summary and exits successfully.
-- `nonexistent-command` fails with an error suggesting the closest known command.
->>>>>>> dec6343a3f1ff1b2a20542634ef7cdca6cba8ffa
+- `help` prints the same top-level usage summary as `--help` and exits successfully.
+- `nonexistent-command` fails with an error and directs the user to `--help` or an equivalent corrective hint.
 - `build`, `deploy`, `doctor`, `localnet status`, and `wallet list` run from outside a project fail with a message like `Not a logos-scaffold project ... Run logos-scaffold create <name>`.
 - `create --help` and `new --help` do not create directories or files in the current working directory.
 
