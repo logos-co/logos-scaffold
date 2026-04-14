@@ -13,8 +13,7 @@ use super::wallet_support::{
     sequencer_unreachable_hint, summarize_command_failure, wallet_password, RpcReachabilityError,
 };
 
-const GUEST_BIN_REL_PATH: &str =
-    "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
+use crate::constants::GUEST_BIN_REL_PATH;
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
 pub(crate) fn cmd_deploy(
@@ -274,8 +273,12 @@ fn deploy_single_program(
         let summary = summarize_command_failure(&output.stdout, &output.stderr);
         if json {
             eprintln!(
-                "{{\"status\":\"failed\",\"program\":\"{}\",\"error\":\"{}\"}}",
-                program_name, summary
+                "{}",
+                serde_json::json!({
+                    "status": "failed",
+                    "program": program_name,
+                    "error": summary,
+                })
             );
         } else {
             println!("FAIL {program_name} deployment failed");
@@ -285,13 +288,13 @@ fn deploy_single_program(
     }
 
     if json {
-        let tx_val = tx
-            .as_deref()
-            .map(|t| format!("\"{}\"", t))
-            .unwrap_or_else(|| "null".to_string());
         println!(
-            "{{\"status\":\"submitted\",\"program\":\"{}\",\"tx\":{}}}",
-            program_name, tx_val
+            "{}",
+            serde_json::json!({
+                "status": "submitted",
+                "program": program_name,
+                "tx": tx,
+            })
         );
     } else {
         println!("OK  {program_name} submitted");
