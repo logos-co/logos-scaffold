@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail};
 
+use crate::constants::{PROJECT_KIND_BASECAMP_QML, PROJECT_KIND_LEZ};
 use crate::config::{parse_config, serialize_config};
-use crate::model::Project;
+use crate::model::{Project, RepoRef};
 use crate::state::write_text;
 use crate::DynResult;
 
@@ -43,6 +44,50 @@ pub(crate) fn save_project_config(project: &Project) -> DynResult<()> {
         &serialize_config(&project.config),
     )
 }
+
+pub(crate) fn project_kind(project: &Project) -> &str {
+    &project.config.project.kind
+}
+
+pub(crate) fn is_lez_project(project: &Project) -> bool {
+    project_kind(project) == PROJECT_KIND_LEZ
+}
+
+pub(crate) fn is_basecamp_qml_project(project: &Project) -> bool {
+    project_kind(project) == PROJECT_KIND_BASECAMP_QML
+}
+
+pub(crate) fn ensure_lez_project(project: &Project, command: &str) -> DynResult<()> {
+    if is_lez_project(project) {
+        return Ok(());
+    }
+
+    bail!(
+        "`{command}` is only supported for LEZ projects. This project uses kind `{}`.\nNext step: use `logos-scaffold build` and `logos-scaffold install` for Basecamp QML projects.",
+        project_kind(project),
+    )
+}
+
+pub(crate) fn ensure_basecamp_qml_project(project: &Project, command: &str) -> DynResult<()> {
+    if is_basecamp_qml_project(project) {
+        return Ok(());
+    }
+
+    bail!(
+        "`{command}` is only supported for Basecamp QML projects. This project uses kind `{}`.",
+        project_kind(project),
+    )
+}
+
+pub(crate) fn require_lez_repo<'a>(project: &'a Project, command: &str) -> DynResult<&'a RepoRef> {
+    ensure_lez_project(project, command)?;
+    project
+        .config
+        .lez
+        .as_ref()
+        .ok_or_else(|| anyhow!("invalid scaffold.toml: missing [repos.lez] for LEZ project"))
+}
+
 
 pub(crate) fn find_project_root(mut dir: PathBuf) -> Option<PathBuf> {
     loop {

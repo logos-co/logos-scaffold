@@ -6,10 +6,15 @@ use anyhow::{bail, Context};
 
 use crate::config::serialize_config;
 use crate::constants::{
-    DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    DEFAULT_LEZ_PIN, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK, LEZ_URL, VERSION,
+    BASECAMP_RUNTIME_DEV, BASECAMP_RUNTIME_PORTABLE, DEFAULT_BASECAMP_DATA_ROOT, DEFAULT_FRAMEWORK_IDL_PATH,
+    DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION, DEFAULT_LEZ_PIN,
+    DEFAULT_LOGOS_MODULE_BUILDER_PIN, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK,
+    LEZ_URL, LOGOS_MODULE_BUILDER_URL, PROJECT_KIND_BASECAMP_QML, PROJECT_KIND_LEZ, VERSION,
 };
-use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
+use crate::model::{
+    BasecampConfig, Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, ProjectConfig,
+    RepoRef,
+};
 use crate::project::default_cache_root;
 use crate::repo::{sync_repo_to_pin_at_path_with_opts, RepoSyncOptions};
 use crate::state::write_text;
@@ -23,79 +28,63 @@ pub(crate) struct NewCommand {
     pub(crate) template: String,
     pub(crate) vendor_deps: bool,
     pub(crate) lez_path: Option<PathBuf>,
+    pub(crate) module_builder_path: Option<PathBuf>,
     pub(crate) cache_root: Option<PathBuf>,
+    pub(crate) basecamp_data_root: Option<PathBuf>,
+    pub(crate) basecamp_runtime: String,
 }
 
 pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
-    let template_variant = match cmd.template.as_str() {
-        FRAMEWORK_KIND_DEFAULT | FRAMEWORK_KIND_LEZ_FRAMEWORK => cmd.template.clone(),
-        other => {
-            bail!("unsupported template `{other}`. Expected `default` or `lez-framework`.")
-        }
-    };
+    match cmd.template.as_str() {
+        FRAMEWORK_KIND_DEFAULT | FRAMEWORK_KIND_LEZ_FRAMEWORK => create_lez_project(cmd),
+        PROJECT_KIND_BASECAMP_QML => create_basecamp_qml_project(cmd),
+        other => bail!(
+            "unsupported template `{other}`. Expected `default`, `lez-framework`, or `basecamp-qml`."
+        ),
+    }
+}
 
+fn create_lez_project(cmd: NewCommand) -> DynResult<()> {
+    let template_variant = cmd.template;
     let cwd = env::current_dir()?;
     let target = cwd.join(&cmd.name);
-    let crate_name = {
-        let fallback = "app";
-        let file_name = target
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(fallback);
-        to_cargo_crate_name(file_name)
-    };
+    let crate_name = to_cargo_crate_name(target_file_name_or(&target, "app"));
 
     if target.exists() {
         bail!("target exists: {}", target.display());
     }
 
-    fs::create_dir_all(target.join(".scaffold/state"))?;
-    fs::create_dir_all(target.join(".scaffold/logs"))?;
+    create_common_scaffold_dirs(&target)?;
 
-    let cache_root = cmd.cache_root.unwrap_or(default_cache_root()?);
-    fs::create_dir_all(cache_root.join("repos"))?;
-    fs::create_dir_all(cache_root.join("state"))?;
-    fs::create_dir_all(cache_root.join("logs"))?;
-    fs::create_dir_all(cache_root.join("builds"))?;
-
+    let cache_root = ensure_cache_root(cmd.cache_root)?;
     let lez_source = cmd
         .lez_path
-        .map(|p| p.display().to_string())
+        .map(|path| path.display().to_string())
         .unwrap_or_else(|| LEZ_URL.to_string());
 
-    let lez_repo_path = if cmd.vendor_deps {
-        let root = target.join(".scaffold/repos");
-        fs::create_dir_all(&root)?;
-        let lez_vendor = root.join("lez");
-        sync_repo_to_pin_at_path_with_opts(
-            &lez_vendor,
-            &lez_source,
-            DEFAULT_LEZ_PIN,
-            "lez",
-            RepoSyncOptions::fail_on_source_mismatch(),
-        )?;
-        lez_vendor
-    } else {
-        let lez_cached = cache_root.join("repos/lez").join(DEFAULT_LEZ_PIN);
-        sync_repo_to_pin_at_path_with_opts(
-            &lez_cached,
-            &lez_source,
-            DEFAULT_LEZ_PIN,
-            "lez",
-            RepoSyncOptions::auto_reclone_cache_repo(),
-        )?;
-        lez_cached
-    };
+    let lez_repo_path = prepare_repo_path(
+        &target,
+        &cache_root,
+        cmd.vendor_deps,
+        "lez",
+        DEFAULT_LEZ_PIN,
+        &lez_source,
+        RepoSyncOptions::auto_reclone_cache_repo(),
+    )?;
 
     let cfg = Config {
         version: VERSION.to_string(),
         cache_root: cache_root.display().to_string(),
-        lez: RepoRef {
+        project: ProjectConfig {
+            kind: PROJECT_KIND_LEZ.to_string(),
+        },
+        lez: Some(RepoRef {
             url: LEZ_URL.to_string(),
             source: lez_source,
             path: lez_repo_path.display().to_string(),
             pin: DEFAULT_LEZ_PIN.to_string(),
-        },
+        }),
+        logos_module_builder: None,
         wallet_home_dir: ".scaffold/wallet".to_string(),
         framework: FrameworkConfig {
             kind: template_variant.clone(),
@@ -106,6 +95,10 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
             },
         },
         localnet: LocalnetConfig::default(),
+        basecamp: BasecampConfig {
+            data_root: DEFAULT_BASECAMP_DATA_ROOT.to_string(),
+            runtime_variant: BASECAMP_RUNTIME_DEV.to_string(),
+        },
     };
 
     let template_root = lez_repo_path.join("examples/program_deployment");
@@ -117,10 +110,13 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     if template_variant == FRAMEWORK_KIND_DEFAULT {
         patch_simple_tail_call_program_id(&target)?;
     }
-    let overlay_ctx = OverlayRenderContext {
-        crate_name: &crate_name,
-        lez_pin: &cfg.lez.pin,
-    };
+
+    let overlay_ctx = build_overlay_context(
+        &cmd.name,
+        &cfg,
+        &crate_name,
+        "",
+    );
     apply_overlay(&target, &template_variant, &overlay_ctx)?;
     if template_variant == FRAMEWORK_KIND_LEZ_FRAMEWORK {
         cleanup_lez_hello_artifacts(&target)?;
@@ -138,10 +134,178 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         target.display()
     );
     println!("Cache root: {}", cfg.cache_root);
-    println!("Pinned lez: {}", cfg.lez.pin);
+    if let Some(lez) = &cfg.lez {
+        println!("Pinned lez: {}", lez.pin);
+    }
     println!("Template variant: {}", cfg.framework.kind);
 
     Ok(())
+}
+
+fn create_basecamp_qml_project(cmd: NewCommand) -> DynResult<()> {
+    validate_basecamp_runtime(&cmd.basecamp_runtime)?;
+    let cwd = env::current_dir()?;
+    let target = cwd.join(&cmd.name);
+    let crate_name = to_cargo_crate_name(target_file_name_or(&target, "app"));
+    let plugin_name = to_plugin_name(&cmd.name);
+
+    if target.exists() {
+        bail!("target exists: {}", target.display());
+    }
+
+    create_common_scaffold_dirs(&target)?;
+    fs::create_dir_all(target.join(".scaffold/build"))?;
+    fs::create_dir_all(target.join(".scaffold/runtime"))?;
+
+    let cache_root = ensure_cache_root(cmd.cache_root)?;
+    let module_builder_source = cmd
+        .module_builder_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| LOGOS_MODULE_BUILDER_URL.to_string());
+    let module_builder_repo_path = prepare_repo_path(
+        &target,
+        &cache_root,
+        cmd.vendor_deps,
+        "logos-module-builder",
+        DEFAULT_LOGOS_MODULE_BUILDER_PIN,
+        &module_builder_source,
+        RepoSyncOptions::auto_reclone_cache_repo(),
+    )?;
+
+    let basecamp_data_root = cmd
+        .basecamp_data_root
+        .unwrap_or_else(|| target.join(DEFAULT_BASECAMP_DATA_ROOT));
+
+    let cfg = Config {
+        version: VERSION.to_string(),
+        cache_root: cache_root.display().to_string(),
+        project: ProjectConfig {
+            kind: PROJECT_KIND_BASECAMP_QML.to_string(),
+        },
+        lez: None,
+        logos_module_builder: Some(RepoRef {
+            url: LOGOS_MODULE_BUILDER_URL.to_string(),
+            source: module_builder_source,
+            path: module_builder_repo_path.display().to_string(),
+            pin: DEFAULT_LOGOS_MODULE_BUILDER_PIN.to_string(),
+        }),
+        wallet_home_dir: ".scaffold/wallet".to_string(),
+        framework: FrameworkConfig {
+            kind: FRAMEWORK_KIND_DEFAULT.to_string(),
+            version: DEFAULT_FRAMEWORK_VERSION.to_string(),
+            idl: FrameworkIdlConfig {
+                spec: DEFAULT_FRAMEWORK_IDL_SPEC.to_string(),
+                path: DEFAULT_FRAMEWORK_IDL_PATH.to_string(),
+            },
+        },
+        localnet: LocalnetConfig::default(),
+        basecamp: BasecampConfig {
+            data_root: basecamp_data_root.display().to_string(),
+            runtime_variant: cmd.basecamp_runtime.clone(),
+        },
+    };
+
+    let module_builder_flake_url = format!("path:{}", module_builder_repo_path.display());
+    let overlay_ctx = build_overlay_context(
+        &cmd.name,
+        &cfg,
+        &crate_name,
+        &module_builder_flake_url,
+    );
+    apply_overlay(&target, PROJECT_KIND_BASECAMP_QML, &overlay_ctx)?;
+    write_text(&target.join("scaffold.toml"), &serialize_config(&cfg))?;
+
+    println!("Created Basecamp QML project at {}", target.display());
+    println!("Cache root: {}", cfg.cache_root);
+    if let Some(module_builder) = &cfg.logos_module_builder {
+        println!("Pinned logos-module-builder: {}", module_builder.pin);
+        println!("Module builder path: {}", module_builder.path);
+    }
+    println!("Plugin name: {plugin_name}");
+    println!("Basecamp data root: {}", cfg.basecamp.data_root);
+    println!("Basecamp runtime: {}", cfg.basecamp.runtime_variant);
+
+    Ok(())
+}
+
+fn validate_basecamp_runtime(value: &str) -> DynResult<()> {
+    match value {
+        BASECAMP_RUNTIME_DEV | BASECAMP_RUNTIME_PORTABLE => Ok(()),
+        other => bail!("unsupported Basecamp runtime `{other}`. Expected `dev` or `portable`."),
+    }
+}
+
+fn build_overlay_context(
+    raw_name: &str,
+    cfg: &Config,
+    crate_name: &str,
+    module_builder_flake_url: &str,
+) -> OverlayRenderContext {
+    let lez_pin = cfg
+        .lez
+        .as_ref()
+        .map(|repo| repo.pin.clone())
+        .unwrap_or_default();
+
+    OverlayRenderContext {
+        crate_name: crate_name.to_string(),
+        lez_pin,
+        plugin_name: to_plugin_name(raw_name),
+        project_title: to_project_title(raw_name),
+        module_builder_flake_url: module_builder_flake_url.to_string(),
+        basecamp_data_root: cfg.basecamp.data_root.clone(),
+        basecamp_runtime_variant: cfg.basecamp.runtime_variant.clone(),
+    }
+}
+
+fn prepare_repo_path(
+    project_root: &Path,
+    cache_root: &Path,
+    vendor_deps: bool,
+    repo_name: &str,
+    pin: &str,
+    source: &str,
+    cache_opts: RepoSyncOptions,
+) -> DynResult<PathBuf> {
+    if vendor_deps {
+        let root = project_root.join(".scaffold/repos");
+        fs::create_dir_all(&root)?;
+        let vendored = root.join(repo_name);
+        sync_repo_to_pin_at_path_with_opts(
+            &vendored,
+            source,
+            pin,
+            repo_name,
+            RepoSyncOptions::fail_on_source_mismatch(),
+        )?;
+        return Ok(vendored);
+    }
+
+    let cached = cache_root.join("repos").join(repo_name).join(pin);
+    sync_repo_to_pin_at_path_with_opts(&cached, source, pin, repo_name, cache_opts)?;
+    Ok(cached)
+}
+
+fn ensure_cache_root(cache_root: Option<PathBuf>) -> DynResult<PathBuf> {
+    let cache_root = cache_root.unwrap_or(default_cache_root()?);
+    fs::create_dir_all(cache_root.join("repos"))?;
+    fs::create_dir_all(cache_root.join("state"))?;
+    fs::create_dir_all(cache_root.join("logs"))?;
+    fs::create_dir_all(cache_root.join("builds"))?;
+    Ok(cache_root)
+}
+
+fn create_common_scaffold_dirs(target: &Path) -> DynResult<()> {
+    fs::create_dir_all(target.join(".scaffold/state"))?;
+    fs::create_dir_all(target.join(".scaffold/logs"))?;
+    Ok(())
+}
+
+fn target_file_name_or<'a>(target: &'a Path, fallback: &'a str) -> &'a str {
+    target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(fallback)
 }
 
 fn cleanup_lez_hello_artifacts(project_root: &Path) -> DynResult<()> {
@@ -201,9 +365,59 @@ pub(crate) fn to_cargo_crate_name(input: &str) -> String {
     }
 }
 
+pub(crate) fn to_plugin_name(input: &str) -> String {
+    let mut out = String::new();
+    let mut prev_sep = false;
+    for ch in input.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            '_'
+        };
+
+        if mapped == '_' {
+            if !prev_sep {
+                out.push('_');
+                prev_sep = true;
+            }
+        } else {
+            out.push(mapped);
+            prev_sep = false;
+        }
+    }
+
+    let out = out.trim_matches('_').to_string();
+    if out.is_empty() {
+        "basecamp_app".to_string()
+    } else {
+        out
+    }
+}
+
+fn to_project_title(input: &str) -> String {
+    let mut words = Vec::new();
+    for chunk in input.split(|ch: char| !ch.is_ascii_alphanumeric()) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut chars = chunk.chars();
+        if let Some(first) = chars.next() {
+            let mut word = first.to_ascii_uppercase().to_string();
+            word.push_str(&chars.as_str().to_ascii_lowercase());
+            words.push(word);
+        }
+    }
+
+    if words.is_empty() {
+        "Basecamp App".to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::to_cargo_crate_name;
+    use super::{to_cargo_crate_name, to_plugin_name};
 
     #[test]
     fn simple_name_is_lowercased() {
@@ -246,5 +460,10 @@ mod tests {
     #[test]
     fn unicode_becomes_dash() {
         assert_eq!(to_cargo_crate_name("héllo"), "h-llo");
+    }
+
+    #[test]
+    fn plugin_name_uses_underscores() {
+        assert_eq!(to_plugin_name("Hello World"), "hello_world");
     }
 }

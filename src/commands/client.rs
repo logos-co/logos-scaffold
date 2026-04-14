@@ -8,7 +8,7 @@ use crate::commands::idl::build_idl_for_current_project;
 use crate::constants::FRAMEWORK_KIND_LEZ_FRAMEWORK;
 use crate::model::Project;
 use crate::process::run_checked;
-use crate::project::{load_project, run_in_project_dir};
+use crate::project::{ensure_lez_project, load_project, run_in_project_dir};
 use crate::DynResult;
 
 pub(crate) fn cmd_client(args: &[String]) -> DynResult<()> {
@@ -48,6 +48,7 @@ pub(crate) fn generate_clients_from_current_idl() -> DynResult<()> {
 
 fn load_lez_framework_project_for_client_build() -> DynResult<Option<Project>> {
     let project = load_project()?;
+    ensure_lez_project(&project, "logos-scaffold build client")?;
     if project.config.framework.kind == FRAMEWORK_KIND_LEZ_FRAMEWORK {
         return Ok(Some(project));
     }

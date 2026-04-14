@@ -9,6 +9,7 @@ use crate::commands::client::cmd_client;
 use crate::commands::deploy::cmd_deploy;
 use crate::commands::doctor::cmd_doctor;
 use crate::commands::idl::cmd_idl;
+use crate::commands::install::cmd_install;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
@@ -55,6 +56,7 @@ enum Commands {
     Setup(SetupArgs),
     Build(BuildArgs),
     Deploy(DeployArgs),
+    Install(InstallArgs),
     Localnet(LocalnetArgs),
     Wallet(WalletArgs),
     Doctor(DoctorArgs),
@@ -72,7 +74,13 @@ struct NewArgs {
     #[arg(long, alias = "lssa-path")]
     lez_path: Option<PathBuf>,
     #[arg(long)]
+    module_builder_path: Option<PathBuf>,
+    #[arg(long)]
     cache_root: Option<PathBuf>,
+    #[arg(long)]
+    basecamp_data_root: Option<PathBuf>,
+    #[arg(long, default_value = "dev")]
+    basecamp_runtime: String,
     #[arg(long, default_value = "default", help = TEMPLATE_HELP.as_str())]
     template: String,
 }
@@ -85,6 +93,8 @@ struct BuildArgs {
     #[command(subcommand)]
     subcommand: Option<BuildSubcommand>,
     project_path: Option<PathBuf>,
+    #[arg(long, default_value = "raw")]
+    artifact: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -123,6 +133,11 @@ struct ReportArgs {
     out: Option<PathBuf>,
     #[arg(long, default_value_t = 500)]
     tail: usize,
+}
+
+#[derive(Debug, clap::Args)]
+struct InstallArgs {
+    project_path: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -229,7 +244,10 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             name: args.name,
             vendor_deps: args.vendor_deps,
             lez_path: args.lez_path,
+            module_builder_path: args.module_builder_path,
             cache_root: args.cache_root,
+            basecamp_data_root: args.basecamp_data_root,
+            basecamp_runtime: args.basecamp_runtime,
             template: args.template,
         }),
         Some(Commands::Setup(_)) => cmd_setup(),
@@ -244,9 +262,10 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                     .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
                     .unwrap_or_else(|| vec!["build".to_string()]),
             ),
-            None => cmd_build_shortcut(args.project_path),
+            None => cmd_build_shortcut(args.project_path, args.artifact),
         },
         Some(Commands::Deploy(args)) => cmd_deploy(args.program_name, args.program_path, args.json),
+        Some(Commands::Install(args)) => cmd_install(args.project_path),
         Some(Commands::Localnet(localnet)) => {
             let action = match localnet.command {
                 LocalnetSubcommand::Start(args) => LocalnetAction::Start {

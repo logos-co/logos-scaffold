@@ -1,7 +1,7 @@
 [package]
 name = "logos-scaffold"
 version = "0.1.0"
-description = "Rust CLI for bootstrapping LSSA program_deployment projects in standalone mode"
+description = "Rust CLI for bootstrapping LEZ and Basecamp projects in local development mode"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 readme = "README.md"

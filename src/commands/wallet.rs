@@ -3,7 +3,7 @@ use std::process::Command;
 use anyhow::{bail, Context};
 
 use crate::process::{render_command, run_forwarded, run_with_stdin};
-use crate::project::load_project;
+use crate::project::{ensure_lez_project, load_project};
 use crate::DynResult;
 
 use super::wallet_support::{
@@ -34,6 +34,7 @@ pub(crate) fn cmd_wallet(action: WalletAction) -> DynResult<()> {
     let project = load_project().context(
         "This command must be run inside a logos-scaffold project.\nNext step: cd into your scaffolded project directory and retry.",
     )?;
+    ensure_lez_project(&project, "logos-scaffold wallet")?;
 
     match action {
         WalletAction::List { long } => cmd_wallet_list(&project, long),

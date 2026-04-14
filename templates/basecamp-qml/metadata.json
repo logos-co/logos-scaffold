@@ -1,0 +1,10 @@
+{
+  "name": "{{plugin_name}}",
+  "version": "1.0.0",
+  "description": "{{project_title}} - pure QML plugin for Logos Basecamp",
+  "type": "ui_qml",
+  "view": "Main.qml",
+  "dependencies": [],
+  "category": "tools",
+  "icon": "icons/app.svg"
+}

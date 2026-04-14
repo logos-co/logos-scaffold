@@ -16,6 +16,7 @@ use tar::Archive;
 use tempfile::tempdir;
 
 const TEST_PIN: &str = "767b5afd388c7981bcdf6f5b5c80159607e07e5b";
+const MODULE_BUILDER_PIN: &str = "9b97f6b05987ea4145d7632ada644a2ee8357c26";
 const VALID_ACCOUNT_ID: &str = "6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
 const VALID_PUBLIC_ADDRESS: &str = "Public/6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV";
 const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
@@ -38,6 +39,195 @@ fn create_help_does_not_mutate_filesystem() {
         !temp.path().join("--help").exists(),
         "--help must not be treated as project name"
     );
+}
+
+#[test]
+fn create_help_lists_basecamp_qml_template() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("create")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("basecamp-qml"));
+}
+
+#[test]
+fn new_basecamp_qml_creates_expected_files() {
+    let temp = tempdir().expect("tempdir");
+    let module_builder = init_git_repo_with_commit(&temp.path().join("module-builder"), "README.md");
+    let bin_dir = prepare_basecamp_bin_dir(temp.path());
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("PATH", bin_dir.display().to_string())
+        .arg("new")
+        .arg("demo-app")
+        .arg("--template")
+        .arg("basecamp-qml")
+        .arg("--module-builder-path")
+        .arg(&module_builder)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created Basecamp QML project"));
+
+    let project = temp.path().join("demo-app");
+    for rel in [
+        "Main.qml",
+        "metadata.json",
+        "flake.nix",
+        "README.md",
+        ".scaffold/commands.md",
+        "icons/app.svg",
+        "scaffold.toml",
+    ] {
+        assert!(project.join(rel).exists(), "missing generated file: {rel}");
+    }
+
+    let scaffold = fs::read_to_string(project.join("scaffold.toml")).expect("read scaffold.toml");
+    assert!(scaffold.contains("[project]"));
+    assert!(scaffold.contains("kind = \"basecamp-qml\""));
+    assert!(scaffold.contains("[repos.logos_module_builder]"));
+}
+
+#[test]
+fn new_basecamp_qml_vendor_deps_vendors_module_builder_repo() {
+    let temp = tempdir().expect("tempdir");
+    let module_builder = init_git_repo_with_commit(&temp.path().join("module-builder"), "README.md");
+    let bin_dir = prepare_basecamp_bin_dir(temp.path());
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("PATH", bin_dir.display().to_string())
+        .arg("new")
+        .arg("vendored-app")
+        .arg("--template")
+        .arg("basecamp-qml")
+        .arg("--vendor-deps")
+        .arg("--module-builder-path")
+        .arg(&module_builder)
+        .assert()
+        .success();
+
+    let vendored_repo = temp
+        .path()
+        .join("vendored-app/.scaffold/repos/logos-module-builder/.git");
+    assert!(vendored_repo.exists(), "expected vendored module-builder repo");
+}
+
+#[test]
+fn basecamp_build_stages_raw_plugin_output() {
+    let temp = tempdir().expect("tempdir");
+    let project = create_basecamp_project(temp.path(), "demo-app");
+    let bin_dir = prepare_basecamp_bin_dir(temp.path());
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(&project)
+        .env("PATH", bin_dir.display().to_string())
+        .arg("build")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Raw plugin staged for"));
+
+    let staged = project.join(".scaffold/build/raw/plugins/demo_app");
+    assert!(staged.join("Main.qml").exists());
+    assert!(staged.join("metadata.json").exists());
+    assert!(staged.join("icons/app.svg").exists());
+}
+
+#[test]
+fn basecamp_install_syncs_plugin_and_replaces_stale_files() {
+    let temp = tempdir().expect("tempdir");
+    let project = create_basecamp_project(temp.path(), "demo-app");
+    let bin_dir = prepare_basecamp_bin_dir(temp.path());
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(&project)
+        .env("PATH", bin_dir.display().to_string())
+        .arg("build")
+        .assert()
+        .success();
+
+    let install_dir = project.join(".scaffold/runtime/LogosBasecampDev/plugins/demo_app");
+    fs::create_dir_all(&install_dir).expect("create install dir");
+    fs::write(install_dir.join("stale.txt"), "old").expect("write stale file");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(&project)
+        .env("PATH", bin_dir.display().to_string())
+        .arg("install")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Installed Basecamp plugin"));
+
+    assert!(install_dir.join("Main.qml").exists());
+    assert!(!install_dir.join("stale.txt").exists());
+}
+
+#[test]
+fn basecamp_build_all_fails_cleanly_without_nix() {
+    let temp = tempdir().expect("tempdir");
+    let project = create_basecamp_project(temp.path(), "demo-app");
+    let bin_dir = prepare_basecamp_bin_dir(temp.path());
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(&project)
+        .env("PATH", bin_dir.display().to_string())
+        .arg("build")
+        .arg("--artifact")
+        .arg("all")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Nix is required"));
+}
+
+#[test]
+fn basecamp_build_all_invokes_nix_targets_when_stubbed() {
+    let temp = tempdir().expect("tempdir");
+    let project = create_basecamp_project(temp.path(), "demo-app");
+    let bin_dir = prepare_basecamp_bin_dir(temp.path());
+    let log_path = temp.path().join("nix.log");
+    let nix_path = bin_dir.join("nix");
+    fs::write(
+        &nix_path,
+        format!(
+            "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"{}\"\n",
+            log_path.display()
+        ),
+    )
+    .expect("write nix stub");
+    make_executable(&nix_path);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(&project)
+        .env("PATH", bin_dir.display().to_string())
+        .arg("build")
+        .arg("--artifact")
+        .arg("all")
+        .assert()
+        .success();
+
+    let log = fs::read_to_string(log_path).expect("read nix log");
+    assert!(log.contains("build .#lgx"));
+    assert!(log.contains("build .#lgx-portable"));
+}
+
+#[test]
+fn basecamp_deploy_command_is_rejected_with_project_kind_hint() {
+    let temp = tempdir().expect("tempdir");
+    let project = create_basecamp_project(temp.path(), "demo-app");
+    let bin_dir = prepare_basecamp_bin_dir(temp.path());
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(&project)
+        .env("PATH", bin_dir.display().to_string())
+        .arg("deploy")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("only supported for LEZ projects")
+                .and(predicate::str::contains("logos-scaffold build"))
+                .and(predicate::str::contains("logos-scaffold install")),
+        );
 }
 
 #[test]
@@ -1452,6 +1642,99 @@ fn write_scaffold_toml_with_localnet(
     }
 
     fs::write(project_root.join("scaffold.toml"), content).expect("write scaffold.toml");
+}
+
+fn create_basecamp_project(root: &Path, name: &str) -> PathBuf {
+    let module_builder = init_git_repo_with_commit(&root.join("module-builder"), "README.md");
+    let project = root.join(name);
+    let bin_dir = prepare_basecamp_bin_dir(root);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(root)
+        .env("PATH", bin_dir.display().to_string())
+        .arg("new")
+        .arg(name)
+        .arg("--template")
+        .arg("basecamp-qml")
+        .arg("--module-builder-path")
+        .arg(&module_builder)
+        .assert()
+        .success();
+
+    project
+}
+
+fn init_git_repo_with_commit(path: &Path, file_name: &str) -> PathBuf {
+    fs::create_dir_all(path).expect("create repo dir");
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(path)
+        .output()
+        .expect("git init");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(path)
+        .output()
+        .expect("git config email");
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(path)
+        .output()
+        .expect("git config name");
+    fs::write(path.join(file_name), "stub\n").expect("write repo file");
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(path)
+        .output()
+        .expect("git add");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(path)
+        .output()
+        .expect("git commit");
+    path.to_path_buf()
+}
+
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).expect("chmod");
+    }
+}
+
+fn prepare_basecamp_bin_dir(root: &Path) -> PathBuf {
+    let bin_dir = root.join("test-bin");
+    fs::create_dir_all(&bin_dir).expect("create test bin dir");
+    write_git_pin_wrapper(&bin_dir.join("git"));
+    bin_dir
+}
+
+fn git_binary_path() -> String {
+    let path = std::env::var_os("PATH").expect("PATH");
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join("git");
+        if candidate.exists() {
+            return candidate.display().to_string();
+        }
+    }
+    panic!("git binary not found in PATH");
+}
+
+fn write_git_pin_wrapper(path: &Path) {
+    let target = git_binary_path();
+    fs::write(
+        path,
+        format!(
+            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"rev-parse\" ]; then\n  if [ \"${{2:-}}\" = \"--verify\" ]; then\n    echo \"{pin}\"\n    exit 0\n  fi\n  if [ \"${{2:-}}\" = \"HEAD\" ]; then\n    echo \"{pin}\"\n    exit 0\n  fi\nfi\nif [ \"${{1:-}}\" = \"checkout\" ] && [ \"${{2:-}}\" = \"{pin}\" ]; then\n  exit 0\nfi\nexec \"{target}\" \"$@\"\n",
+            pin = MODULE_BUILDER_PIN,
+            target = target,
+        ),
+    )
+    .expect("write git wrapper");
+    make_executable(path);
 }
 
 fn unused_local_port() -> u16 {

@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail};
 
 use crate::constants::FRAMEWORK_KIND_LEZ_FRAMEWORK;
 use crate::process::run_capture;
-use crate::project::{load_project, run_in_project_dir};
+use crate::project::{ensure_lez_project, load_project, run_in_project_dir};
 use crate::state::write_text;
 use crate::DynResult;
 
@@ -30,6 +30,7 @@ pub(crate) fn cmd_idl(args: &[String]) -> DynResult<()> {
 
 pub(crate) fn build_idl_for_current_project() -> DynResult<()> {
     let project = load_project()?;
+    ensure_lez_project(&project, "logos-scaffold build idl")?;
     if project.config.framework.kind != FRAMEWORK_KIND_LEZ_FRAMEWORK {
         println!(
             "Skipping IDL build for framework kind `{}`",

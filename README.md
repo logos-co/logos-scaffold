@@ -1,6 +1,9 @@
 # logos-scaffold
 
-`logos-scaffold` is a Rust CLI for bootstrapping LEZ (Logos Execution Zone) `program_deployment` projects in standalone mode.
+`logos-scaffold` is a Rust CLI for bootstrapping:
+
+- LEZ (Logos Execution Zone) `program_deployment` projects in standalone mode
+- Basecamp pure QML (`ui_qml`) plugins for local development
 
 ## Platform
 
@@ -37,7 +40,8 @@ Keep that runbook updated whenever first-class commands, templates, or supported
 logos-scaffold create <name> [--vendor-deps] [--lez-path PATH] [--cache-root PATH]
 logos-scaffold new <name> [--vendor-deps] [--lez-path PATH] [--cache-root PATH]
 logos-scaffold setup
-logos-scaffold build [project-path]
+logos-scaffold build [project-path] [--artifact raw|all]
+logos-scaffold install [project-path]
 logos-scaffold deploy [program-name]
 logos-scaffold localnet start [--timeout-sec N]
 logos-scaffold localnet stop
@@ -107,6 +111,28 @@ logos-scaffold new <name> --template lez-framework
 ```
 
 See [LEZ Framework Template](./templates/lez-framework/README.md) for details.
+
+## Basecamp QML
+
+To scaffold a pure QML Basecamp plugin:
+
+```bash
+logos-scaffold new <name> --template basecamp-qml
+cd <name>
+logos-scaffold setup
+logos-scaffold build
+logos-scaffold install
+```
+
+`build` stages a raw plugin bundle under `.scaffold/build/raw/plugins/<plugin-name>/`.
+`install` syncs that bundle into the scaffold-managed Basecamp data directory and prints the
+exact `LOGOS_DATA_DIR` value to use when launching Basecamp locally.
+
+If Nix is available and you also want packaging outputs:
+
+```bash
+logos-scaffold build --artifact all
+```
 
 ## Troubleshooting
 

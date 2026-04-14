@@ -18,7 +18,7 @@ use crate::model::{
     CollectedItem, RedactionSummary, ReportManifest, SkippedItem, ToolCommandResult,
 };
 use crate::process::{set_command_echo, which};
-use crate::project::load_project;
+use crate::project::{ensure_lez_project, load_project, require_lez_repo};
 use crate::state::write_text;
 use crate::DynResult;
 
@@ -29,6 +29,7 @@ pub(crate) fn cmd_report(out: Option<PathBuf>, tail: usize) -> DynResult<()> {
     let project = load_project().context(
         "This command must be run inside a logos-scaffold project.\nNext step: cd into your scaffolded project directory and retry.",
     )?;
+    ensure_lez_project(&project, "logos-scaffold report")?;
 
     let now = unix_timestamp_now()?;
     let output_path = resolve_output_path(&project.root, out, now)?;
@@ -752,7 +753,11 @@ fn collect_tool_versions(
         results.push(result);
     }
 
-    let lez = PathBuf::from(&project.config.lez.path);
+    let lez = PathBuf::from(
+        &require_lez_repo(project, "logos-scaffold report")
+            .expect("LEZ report should have repo")
+            .path,
+    );
     let wallet_binary = lez.join(crate::constants::WALLET_BIN_REL_PATH);
     let wallet_binary_str = wallet_binary.display().to_string();
     let (wallet_result, wallet_replacements) = collect_tool_command(
