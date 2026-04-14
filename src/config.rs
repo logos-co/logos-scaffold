@@ -4,7 +4,9 @@ use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
     FRAMEWORK_KIND_DEFAULT, LEZ_URL,
 };
-use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
+use crate::model::{
+    Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef, RunConfig,
+};
 use crate::DynResult;
 
 pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
@@ -27,6 +29,9 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     let mut framework_version = String::new();
     let mut framework_idl_spec = String::new();
     let mut framework_idl_path = String::new();
+
+    let mut run_restart_localnet: Option<bool> = None;
+    let mut run_post_deploy = String::new();
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -95,6 +100,13 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     localnet_risc0_dev_mode = value != "false" && value != "0";
                 }
             }
+            "run" => {
+                if key == "restart_localnet" {
+                    run_restart_localnet = Some(value != "false" && value != "0");
+                } else if key == "post_deploy" {
+                    run_post_deploy = value;
+                }
+            }
             _ => {}
         }
     }
@@ -150,11 +162,15 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                 path: framework_idl_path,
             },
         },
+        run: RunConfig {
+            restart_localnet: run_restart_localnet.unwrap_or(false),
+            post_deploy: run_post_deploy,
+        },
     })
 }
 
 pub(crate) fn serialize_config(cfg: &Config) -> String {
-    format!(
+    let mut out = format!(
         "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
         escape_toml_string(&cfg.version),
         escape_toml_string(&cfg.cache_root),
@@ -169,7 +185,17 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
         escape_toml_string(&cfg.framework.idl.path),
         cfg.localnet.port,
         cfg.localnet.risc0_dev_mode,
-    )
+    );
+
+    if cfg.run.restart_localnet || !cfg.run.post_deploy.is_empty() {
+        out.push_str(&format!(
+            "\n[run]\nrestart_localnet = {}\npost_deploy = \"{}\"\n",
+            cfg.run.restart_localnet,
+            escape_toml_string(&cfg.run.post_deploy),
+        ));
+    }
+
+    out
 }
 
 pub(crate) fn unquote(value: &str) -> String {
@@ -186,7 +212,7 @@ pub(crate) fn escape_toml_string(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_config;
+    use super::{parse_config, serialize_config};
 
     fn minimal_scaffold_toml() -> String {
         r#"[scaffold]
@@ -232,5 +258,53 @@ pin = "deadbeef"
     fn default_localnet_port_when_section_omitted() {
         let cfg = parse_config(&minimal_scaffold_toml()).unwrap();
         assert_eq!(cfg.localnet.port, 3040);
+    }
+
+    #[test]
+    fn parse_config_without_run_section_uses_defaults() {
+        let cfg = parse_config(&minimal_scaffold_toml()).expect("parse");
+        assert!(!cfg.run.restart_localnet);
+        assert!(cfg.run.post_deploy.is_empty());
+    }
+
+    #[test]
+    fn parse_config_with_run_section() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\nrestart_localnet = true\npost_deploy = \"echo hello\"\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert!(cfg.run.restart_localnet);
+        assert_eq!(cfg.run.post_deploy, "echo hello");
+    }
+
+    #[test]
+    fn serialize_config_omits_run_section_when_defaults() {
+        let cfg = parse_config(&minimal_scaffold_toml()).expect("parse");
+        let serialized = serialize_config(&cfg);
+        assert!(
+            !serialized.contains("[run]"),
+            "should not contain [run] section when defaults"
+        );
+    }
+
+    #[test]
+    fn serialize_config_includes_run_section_when_non_default() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\nrestart_localnet = true\npost_deploy = \"spel --idl foo.json\"\n";
+        let cfg = parse_config(&toml).expect("parse");
+        let serialized = serialize_config(&cfg);
+        assert!(serialized.contains("[run]"));
+        assert!(serialized.contains("restart_localnet = true"));
+        assert!(serialized.contains("spel --idl foo.json"));
+    }
+
+    #[test]
+    fn run_config_round_trips_through_parse_serialize() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\nrestart_localnet = true\npost_deploy = \"echo test\"\n";
+        let cfg1 = parse_config(&toml).expect("parse");
+        let serialized = serialize_config(&cfg1);
+        let cfg2 = parse_config(&serialized).expect("re-parse");
+        assert_eq!(cfg1.run.restart_localnet, cfg2.run.restart_localnet);
+        assert_eq!(cfg1.run.post_deploy, cfg2.run.post_deploy);
     }
 }

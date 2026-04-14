@@ -633,7 +633,7 @@ mod tests {
     use crate::commands::wallet_support::wallet_state_path;
     use crate::error::ResetError;
     use crate::model::{
-        Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, Project, RepoRef,
+        Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, Project, RepoRef, RunConfig,
     };
 
     fn make_test_project(temp: &tempfile::TempDir) -> (Project, PathBuf) {
@@ -666,6 +666,7 @@ mod tests {
                 port: 3040,
                 risc0_dev_mode: false,
             },
+            run: RunConfig::default(),
         };
 
         let project = Project {

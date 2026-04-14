@@ -14,6 +14,7 @@ use crate::commands::init::cmd_init;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
+use crate::commands::run::cmd_run;
 use crate::commands::setup::cmd_setup;
 use crate::commands::wallet::{cmd_wallet, WalletAction};
 use crate::constants::VERSION;
@@ -60,6 +61,8 @@ enum Commands {
     Localnet(LocalnetArgs),
     Wallet(WalletArgs),
     Doctor(DoctorArgs),
+    #[command(about = "Build, start localnet, top up wallet, deploy, and run post-deploy hook")]
+    Run(RunArgs),
     #[command(about = "Collect a sanitized diagnostics archive for issue reporting")]
     Report(ReportArgs),
     #[command(
@@ -168,6 +171,16 @@ struct ReportArgs {
     out: Option<PathBuf>,
     #[arg(long, default_value_t = 500)]
     tail: usize,
+}
+
+#[derive(Debug, clap::Args)]
+struct RunArgs {
+    /// Force localnet restart (overrides scaffold.toml)
+    #[arg(long)]
+    restart_localnet: bool,
+    /// Skip localnet restart even if scaffold.toml says true
+    #[arg(long, conflicts_with = "restart_localnet")]
+    no_restart_localnet: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -354,6 +367,16 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 },
             };
             cmd_wallet(action)
+        }
+        Some(Commands::Run(args)) => {
+            let restart = if args.restart_localnet {
+                Some(true)
+            } else if args.no_restart_localnet {
+                Some(false)
+            } else {
+                None
+            };
+            cmd_run(restart)
         }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),

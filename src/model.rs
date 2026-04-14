@@ -33,6 +33,7 @@ pub(crate) struct Config {
     pub(crate) wallet_home_dir: String,
     pub(crate) framework: FrameworkConfig,
     pub(crate) localnet: LocalnetConfig,
+    pub(crate) run: RunConfig,
 }
 
 #[derive(Clone, Debug)]
@@ -158,4 +159,10 @@ pub(crate) struct FrameworkConfig {
 pub(crate) struct FrameworkIdlConfig {
     pub(crate) spec: String,
     pub(crate) path: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RunConfig {
+    pub(crate) restart_localnet: bool,
+    pub(crate) post_deploy: String,
 }

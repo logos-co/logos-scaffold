@@ -13,3 +13,5 @@ pub(crate) const DEFAULT_FRAMEWORK_IDL_PATH: &str = "idl";
 pub(crate) const SEQUENCER_BIN_REL_PATH: &str = "target/release/sequencer_service";
 pub(crate) const SEQUENCER_CONFIG_REL_PATH: &str =
     "sequencer/service/configs/debug/sequencer_config.json";
+pub(crate) const GUEST_BIN_REL_PATH: &str =
+    "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";

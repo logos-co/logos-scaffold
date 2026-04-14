@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context};
 
+use crate::constants::GUEST_BIN_REL_PATH;
 use crate::process::run_with_stdin;
 use crate::project::load_project;
 use crate::DynResult;
@@ -13,8 +14,6 @@ use super::wallet_support::{
     sequencer_unreachable_hint, summarize_command_failure, wallet_password, RpcReachabilityError,
 };
 
-const GUEST_BIN_REL_PATH: &str =
-    "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
 pub(crate) fn cmd_deploy(
