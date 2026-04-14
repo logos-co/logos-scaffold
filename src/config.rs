@@ -2,7 +2,7 @@ use anyhow::bail;
 
 use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, LSSA_URL,
+    FRAMEWORK_KIND_DEFAULT, LEZ_URL,
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
 use crate::DynResult;
@@ -13,12 +13,11 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     let mut version = String::new();
     let mut cache_root = String::new();
 
-    let mut lssa_url = String::new();
-    let mut lssa_source = String::new();
-    let mut lssa_path = String::new();
-    let mut lssa_pin = String::new();
+    let mut lez_url = String::new();
+    let mut lez_source = String::new();
+    let mut lez_path = String::new();
+    let mut lez_pin = String::new();
 
-    let mut wallet_binary = String::new();
     let mut wallet_home_dir = String::new();
 
     let mut localnet_port: u16 = 3040;
@@ -52,15 +51,15 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     cache_root = value;
                 }
             }
-            "repos.lssa" => {
+            "repos.lez" | "repos.lssa" => {
                 if key == "url" {
-                    lssa_url = value;
+                    lez_url = value;
                 } else if key == "source" {
-                    lssa_source = value;
+                    lez_source = value;
                 } else if key == "path" {
-                    lssa_path = value;
+                    lez_path = value;
                 } else if key == "pin" {
-                    lssa_pin = value;
+                    lez_pin = value;
                 }
             }
             "framework" => {
@@ -78,9 +77,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                 }
             }
             "wallet" => {
-                if key == "binary" {
-                    wallet_binary = value;
-                } else if key == "home_dir" {
+                if key == "home_dir" {
                     wallet_home_dir = value;
                 }
             }
@@ -101,17 +98,14 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         bail!("invalid scaffold.toml: missing [scaffold] keys");
     }
 
-    if lssa_url.is_empty() {
-        lssa_url = LSSA_URL.to_string();
+    if lez_url.is_empty() {
+        lez_url = LEZ_URL.to_string();
     }
 
-    if lssa_source.is_empty() || lssa_path.is_empty() || lssa_pin.is_empty() {
-        bail!("invalid scaffold.toml: missing required repos.lssa keys");
+    if lez_source.is_empty() || lez_path.is_empty() || lez_pin.is_empty() {
+        bail!("invalid scaffold.toml: missing required repos.lez keys (also accepts legacy repos.lssa)");
     }
 
-    if wallet_binary.is_empty() {
-        wallet_binary = DEFAULT_WALLET_BINARY.to_string();
-    }
     if wallet_home_dir.is_empty() {
         wallet_home_dir = ".scaffold/wallet".to_string();
     }
@@ -132,13 +126,12 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     Ok(Config {
         version,
         cache_root,
-        lssa: RepoRef {
-            url: lssa_url,
-            source: lssa_source,
-            path: lssa_path,
-            pin: lssa_pin,
+        lez: RepoRef {
+            url: lez_url,
+            source: lez_source,
+            path: lez_path,
+            pin: lez_pin,
         },
-        wallet_binary,
         wallet_home_dir,
         localnet: LocalnetConfig {
             port: localnet_port,
@@ -157,14 +150,13 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 
 pub(crate) fn serialize_config(cfg: &Config) -> String {
     format!(
-        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lssa]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nbinary = \"{}\"\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
+        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
         escape_toml_string(&cfg.version),
         escape_toml_string(&cfg.cache_root),
-        escape_toml_string(&cfg.lssa.url),
-        escape_toml_string(&cfg.lssa.source),
-        escape_toml_string(&cfg.lssa.path),
-        escape_toml_string(&cfg.lssa.pin),
-        escape_toml_string(&cfg.wallet_binary),
+        escape_toml_string(&cfg.lez.url),
+        escape_toml_string(&cfg.lez.source),
+        escape_toml_string(&cfg.lez.path),
+        escape_toml_string(&cfg.lez.pin),
         escape_toml_string(&cfg.wallet_home_dir),
         escape_toml_string(&cfg.framework.kind),
         escape_toml_string(&cfg.framework.version),

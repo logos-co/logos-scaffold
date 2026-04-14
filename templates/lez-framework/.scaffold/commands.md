@@ -10,4 +10,4 @@
 - run counter increment: `cargo run --bin run_lez_counter -- increment --counter <id> --authority <id> --amount <n>`
 - health diagnostics: `logos-scaffold doctor`
 - diagnostics bundle for issue reports: `logos-scaffold report --tail 500`
-- wallet home env: `export NSSA_WALLET_HOME_DIR=$(pwd)/.scaffold/wallet`
+- wallet commands: `logos-scaffold wallet -- <args>`

@@ -29,8 +29,7 @@ impl Default for LocalnetConfig {
 pub(crate) struct Config {
     pub(crate) version: String,
     pub(crate) cache_root: String,
-    pub(crate) lssa: RepoRef,
-    pub(crate) wallet_binary: String,
+    pub(crate) lez: RepoRef,
     pub(crate) wallet_home_dir: String,
     pub(crate) framework: FrameworkConfig,
     pub(crate) localnet: LocalnetConfig,

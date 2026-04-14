@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use serde_json::Value;
 
-use crate::constants::DEFAULT_WALLET_PASSWORD;
+use crate::constants::{DEFAULT_WALLET_PASSWORD, WALLET_BIN_REL_PATH};
 use crate::model::Project;
 use crate::state::write_text;
 use crate::DynResult;
@@ -16,11 +16,20 @@ pub(crate) const WALLET_CONFIG_FALLBACK: &str = "config.json";
 
 pub(crate) struct WalletRuntimeContext {
     pub(crate) wallet_home: PathBuf,
-    pub(crate) wallet_binary: String,
+    pub(crate) wallet_binary: PathBuf,
     pub(crate) sequencer_addr: Option<String>,
 }
 
 pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeContext> {
+    let lez = PathBuf::from(&project.config.lez.path);
+    let wallet_binary = lez.join(WALLET_BIN_REL_PATH);
+    if !wallet_binary.exists() {
+        bail!(
+            "missing wallet binary at {}. Run `logos-scaffold setup`.",
+            wallet_binary.display()
+        );
+    }
+
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     if !wallet_home.exists() {
         bail!(
@@ -37,7 +46,7 @@ pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeC
 
     Ok(WalletRuntimeContext {
         wallet_home,
-        wallet_binary: project.config.wallet_binary.clone(),
+        wallet_binary,
         sequencer_addr,
     })
 }
@@ -653,6 +662,80 @@ details: [1, 2, 3]
 
         let tx = extract_tx_identifier(stdout, "");
         assert_eq!(tx.as_deref(), Some("tx_hash: plain-id-789"));
+    }
+
+    #[test]
+    fn rpc_get_last_block_parses_valid_response() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://{addr}");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+
+            let body = r#"{"jsonrpc":"2.0","result":{"last_block":42},"id":1}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+            stream.flush().expect("flush");
+        });
+
+        let block = super::rpc_get_last_block(&url).expect("rpc_get_last_block should succeed");
+        assert_eq!(block, 42);
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn rpc_get_last_block_returns_connectivity_error_when_unreachable() {
+        let result = super::rpc_get_last_block("http://127.0.0.1:1");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            super::RpcReachabilityError::Connectivity(_) => {}
+            other => panic!("expected Connectivity error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn rpc_get_last_block_returns_error_on_malformed_response() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://{addr}");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+
+            // Response missing `result.last_block`
+            let body = r#"{"jsonrpc":"2.0","result":{},"id":1}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+            stream.flush().expect("flush");
+        });
+
+        let result = super::rpc_get_last_block(&url);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("missing `result.last_block`"),
+            "expected missing last_block error, got: {err_msg}"
+        );
+        handle.join().expect("server thread");
     }
 
     #[test]

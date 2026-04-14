@@ -12,7 +12,7 @@ use crate::commands::idl::cmd_idl;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
-use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
+use crate::commands::setup::cmd_setup;
 use crate::commands::wallet::{cmd_wallet, WalletAction};
 use crate::constants::VERSION;
 use crate::template::project::available_templates;
@@ -69,8 +69,8 @@ struct NewArgs {
     name: String,
     #[arg(long)]
     vendor_deps: bool,
-    #[arg(long)]
-    lssa_path: Option<PathBuf>,
+    #[arg(long, alias = "lssa-path")]
+    lez_path: Option<PathBuf>,
     #[arg(long)]
     cache_root: Option<PathBuf>,
     #[arg(long, default_value = "default", help = TEMPLATE_HELP.as_str())]
@@ -78,10 +78,7 @@ struct NewArgs {
 }
 
 #[derive(Debug, clap::Args)]
-struct SetupArgs {
-    #[arg(long, value_enum, default_value_t = WalletInstallMode::Auto)]
-    wallet_install: WalletInstallMode,
-}
+struct SetupArgs {}
 
 #[derive(Debug, clap::Args)]
 struct BuildArgs {
@@ -231,13 +228,11 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         Some(Commands::Create(args)) | Some(Commands::New(args)) => cmd_new(NewCommand {
             name: args.name,
             vendor_deps: args.vendor_deps,
-            lssa_path: args.lssa_path,
+            lez_path: args.lez_path,
             cache_root: args.cache_root,
             template: args.template,
         }),
-        Some(Commands::Setup(args)) => cmd_setup(SetupCommand {
-            wallet_install: args.wallet_install,
-        }),
+        Some(Commands::Setup(_)) => cmd_setup(),
         Some(Commands::Build(args)) => match args.subcommand {
             Some(BuildSubcommand::Idl(sub)) => cmd_idl(
                 &sub.project_path

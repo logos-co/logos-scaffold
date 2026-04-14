@@ -752,14 +752,19 @@ fn collect_tool_versions(
         results.push(result);
     }
 
-    let wallet_binary = project.config.wallet_binary.clone();
-    let (wallet_result, wallet_replacements) =
-        collect_tool_command("wallet", &wallet_binary, &["--version"], None, sanitize_ctx);
+    let lez = PathBuf::from(&project.config.lez.path);
+    let wallet_binary = lez.join(crate::constants::WALLET_BIN_REL_PATH);
+    let wallet_binary_str = wallet_binary.display().to_string();
+    let (wallet_result, wallet_replacements) = collect_tool_command(
+        "wallet",
+        &wallet_binary_str,
+        &["--version"],
+        None,
+        sanitize_ctx,
+    );
     redaction_replacements += wallet_replacements;
     if wallet_result.error.is_some() || wallet_result.status.unwrap_or(1) != 0 {
-        warnings.push(format!(
-            "tool probe `wallet` (binary `{wallet_binary}`) did not succeed"
-        ));
+        warnings.push("tool probe `wallet` did not succeed".to_string());
     }
     results.push(wallet_result);
 

@@ -1,12 +1,6 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub(crate) enum SetupError {
-    #[error("wallet binary `{binary}` is not on PATH and `--wallet-install never` was requested")]
-    WalletMissing { binary: String },
-}
-
-#[derive(Debug, Error)]
 pub(crate) enum LocalnetError {
     #[error("missing sequencer binary at {path}; run `logos-scaffold setup`")]
     MissingSequencerBinary { path: String },
