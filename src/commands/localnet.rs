@@ -12,7 +12,7 @@ use crate::constants::{SEQUENCER_BIN_REL_PATH, SEQUENCER_CONFIG_REL_PATH};
 use crate::error::LocalnetError;
 use crate::model::{LocalnetOwnership, LocalnetState, LocalnetStatusReport, Project};
 use crate::process::{listener_pid, pid_alive, pid_command, pid_running, port_open, spawn_to_log};
-use crate::project::{ensure_dir_exists, find_project_root, load_project};
+use crate::project::{ensure_dir_exists, ensure_lez_project, find_project_root, load_project};
 use crate::state::{read_localnet_state, write_localnet_state};
 use crate::DynResult;
 
@@ -56,10 +56,18 @@ pub(crate) fn build_localnet_status_for_project(project: &Project) -> LocalnetSt
 }
 
 fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResult<()> {
+    ensure_lez_project(project, "logos-scaffold localnet")?;
     let localnet_port = project.config.localnet.port;
     let risc0_dev_mode = project.config.localnet.risc0_dev_mode;
     let localnet_addr = format!("127.0.0.1:{localnet_port}");
-    let lez = PathBuf::from(&project.config.lez.path);
+    let lez = PathBuf::from(
+        &project
+            .config
+            .lez
+            .as_ref()
+            .expect("LEZ project should have repo")
+            .path,
+    );
     let state_path = project.root.join(".scaffold/state/localnet.state");
     let logs_dir = project.root.join(".scaffold/logs");
     let log_path = logs_dir.join("sequencer.log");

@@ -9,15 +9,20 @@ use crate::DynResult;
 
 static TEMPLATES_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
-pub(crate) struct OverlayRenderContext<'a> {
-    pub(crate) crate_name: &'a str,
-    pub(crate) lez_pin: &'a str,
+pub(crate) struct OverlayRenderContext {
+    pub(crate) crate_name: String,
+    pub(crate) lez_pin: String,
+    pub(crate) plugin_name: String,
+    pub(crate) project_title: String,
+    pub(crate) module_builder_flake_url: String,
+    pub(crate) basecamp_data_root: String,
+    pub(crate) basecamp_runtime_variant: String,
 }
 
 pub(crate) fn apply_overlay(
     target: &Path,
     variant: &str,
-    ctx: &OverlayRenderContext<'_>,
+    ctx: &OverlayRenderContext,
 ) -> DynResult<()> {
     apply_overlay_variant(target, variant, ctx)?;
     ensure_scaffold_in_gitignore(target)
@@ -45,7 +50,7 @@ fn ensure_scaffold_in_gitignore(target: &Path) -> DynResult<()> {
 fn apply_overlay_variant(
     target: &Path,
     variant: &str,
-    ctx: &OverlayRenderContext<'_>,
+    ctx: &OverlayRenderContext,
 ) -> DynResult<()> {
     let variant_dir = TEMPLATES_DIR
         .get_dir(variant)
@@ -58,7 +63,7 @@ fn apply_dir_recursive(
     dir: &Dir<'_>,
     target_root: &Path,
     relative: &Path,
-    ctx: &OverlayRenderContext<'_>,
+    ctx: &OverlayRenderContext,
 ) -> DynResult<()> {
     for file in dir.files() {
         let file_name = file
@@ -102,10 +107,18 @@ fn normalize_template_file_name(file_name: &std::ffi::OsStr) -> std::ffi::OsStri
     }
 }
 
-fn render_template_text(raw: &str, ctx: &OverlayRenderContext<'_>) -> DynResult<String> {
+fn render_template_text(raw: &str, ctx: &OverlayRenderContext) -> DynResult<String> {
     let rendered = raw
-        .replace("{{crate_name}}", ctx.crate_name)
-        .replace("{{lez_pin}}", ctx.lez_pin);
+        .replace("{{crate_name}}", &ctx.crate_name)
+        .replace("{{lez_pin}}", &ctx.lez_pin)
+        .replace("{{plugin_name}}", &ctx.plugin_name)
+        .replace("{{project_title}}", &ctx.project_title)
+        .replace("{{module_builder_flake_url}}", &ctx.module_builder_flake_url)
+        .replace("{{basecamp_data_root}}", &ctx.basecamp_data_root)
+        .replace(
+            "{{basecamp_runtime_variant}}",
+            &ctx.basecamp_runtime_variant,
+        );
 
     if let Some(token) = find_unresolved_placeholder(&rendered) {
         bail!("unresolved template token `{token}`");
@@ -166,8 +179,13 @@ mod tests {
     fn overlay_writes_expected_files() {
         let target = mk_temp_dir("files");
         let ctx = OverlayRenderContext {
-            crate_name: "my-app",
-            lez_pin: "abc123",
+            crate_name: "my-app".to_string(),
+            lez_pin: "abc123".to_string(),
+            plugin_name: "my_app".to_string(),
+            project_title: "My App".to_string(),
+            module_builder_flake_url: "path:/tmp/logos-module-builder".to_string(),
+            basecamp_data_root: ".scaffold/runtime/LogosBasecamp".to_string(),
+            basecamp_runtime_variant: "dev".to_string(),
         };
 
         apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
@@ -203,8 +221,13 @@ mod tests {
     fn lez_framework_overlay_converts_template_manifests_to_cargo_toml() {
         let target = mk_temp_dir("lez-manifests");
         let ctx = OverlayRenderContext {
-            crate_name: "my-app",
-            lez_pin: "abc123",
+            crate_name: "my-app".to_string(),
+            lez_pin: "abc123".to_string(),
+            plugin_name: "my_app".to_string(),
+            project_title: "My App".to_string(),
+            module_builder_flake_url: "path:/tmp/logos-module-builder".to_string(),
+            basecamp_data_root: ".scaffold/runtime/LogosBasecamp".to_string(),
+            basecamp_runtime_variant: "dev".to_string(),
         };
 
         apply_overlay(&target, "lez-framework", &ctx).expect("failed to apply lez-framework");
@@ -238,8 +261,13 @@ mod tests {
     fn overlay_renders_tokens_and_leaves_no_unresolved_placeholders() {
         let target = mk_temp_dir("tokens");
         let ctx = OverlayRenderContext {
-            crate_name: "example-name",
-            lez_pin: "deadbeef",
+            crate_name: "example-name".to_string(),
+            lez_pin: "deadbeef".to_string(),
+            plugin_name: "example_name".to_string(),
+            project_title: "Example Name".to_string(),
+            module_builder_flake_url: "path:/tmp/logos-module-builder".to_string(),
+            basecamp_data_root: ".scaffold/runtime/LogosBasecamp".to_string(),
+            basecamp_runtime_variant: "dev".to_string(),
         };
 
         apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
@@ -257,8 +285,13 @@ mod tests {
     fn static_files_match_template_content_after_overlay() {
         let target = mk_temp_dir("parity");
         let ctx = OverlayRenderContext {
-            crate_name: "my-app",
-            lez_pin: "abc123",
+            crate_name: "my-app".to_string(),
+            lez_pin: "abc123".to_string(),
+            plugin_name: "my_app".to_string(),
+            project_title: "My App".to_string(),
+            module_builder_flake_url: "path:/tmp/logos-module-builder".to_string(),
+            basecamp_data_root: ".scaffold/runtime/LogosBasecamp".to_string(),
+            basecamp_runtime_variant: "dev".to_string(),
         };
 
         apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
@@ -288,8 +321,13 @@ mod tests {
     fn gitignore_includes_scaffold_and_is_idempotent() {
         let target = mk_temp_dir("gitignore");
         let ctx = OverlayRenderContext {
-            crate_name: "my-app",
-            lez_pin: "abc123",
+            crate_name: "my-app".to_string(),
+            lez_pin: "abc123".to_string(),
+            plugin_name: "my_app".to_string(),
+            project_title: "My App".to_string(),
+            module_builder_flake_url: "path:/tmp/logos-module-builder".to_string(),
+            basecamp_data_root: ".scaffold/runtime/LogosBasecamp".to_string(),
+            basecamp_runtime_variant: "dev".to_string(),
         };
 
         apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
@@ -331,8 +369,13 @@ mod tests {
     #[test]
     fn render_fails_on_unresolved_placeholder() {
         let ctx = OverlayRenderContext {
-            crate_name: "my-app",
-            lez_pin: "abc123",
+            crate_name: "my-app".to_string(),
+            lez_pin: "abc123".to_string(),
+            plugin_name: "my_app".to_string(),
+            project_title: "My App".to_string(),
+            module_builder_flake_url: "path:/tmp/logos-module-builder".to_string(),
+            basecamp_data_root: ".scaffold/runtime/LogosBasecamp".to_string(),
+            basecamp_runtime_variant: "dev".to_string(),
         };
 
         let err = render_template_text("name = \"{{unknown_token}}\"", &ctx)

@@ -11,6 +11,11 @@ pub(crate) struct RepoRef {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ProjectConfig {
+    pub(crate) kind: String,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct LocalnetConfig {
     pub(crate) port: u16,
     pub(crate) risc0_dev_mode: bool,
@@ -26,13 +31,22 @@ impl Default for LocalnetConfig {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct BasecampConfig {
+    pub(crate) data_root: String,
+    pub(crate) runtime_variant: String,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct Config {
     pub(crate) version: String,
     pub(crate) cache_root: String,
-    pub(crate) lez: RepoRef,
+    pub(crate) project: ProjectConfig,
+    pub(crate) lez: Option<RepoRef>,
+    pub(crate) logos_module_builder: Option<RepoRef>,
     pub(crate) wallet_home_dir: String,
     pub(crate) framework: FrameworkConfig,
     pub(crate) localnet: LocalnetConfig,
+    pub(crate) basecamp: BasecampConfig,
 }
 
 #[derive(Clone, Debug)]

@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::constants::{DEFAULT_WALLET_PASSWORD, WALLET_BIN_REL_PATH};
 use crate::model::Project;
+use crate::project::require_lez_repo;
 use crate::state::write_text;
 use crate::DynResult;
 
@@ -21,7 +22,8 @@ pub(crate) struct WalletRuntimeContext {
 }
 
 pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeContext> {
-    let lez = PathBuf::from(&project.config.lez.path);
+    let lez_repo = require_lez_repo(project, "logos-scaffold wallet")?;
+    let lez = PathBuf::from(&lez_repo.path);
     let wallet_binary = lez.join(WALLET_BIN_REL_PATH);
     if !wallet_binary.exists() {
         bail!(
@@ -455,7 +457,7 @@ fn one_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WALLET_CONFIG_FALLBACK, WALLET_CONFIG_PRIMARY};
+    use super::WALLET_CONFIG_PRIMARY;
     use std::fs;
 
     use tempfile::tempdir;

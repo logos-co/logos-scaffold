@@ -13,7 +13,7 @@ use crate::doctor_checks::{
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
 use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo};
-use crate::project::load_project;
+use crate::project::{ensure_lez_project, load_project, require_lez_repo};
 use crate::state::read_localnet_state;
 use crate::DynResult;
 
@@ -70,7 +70,9 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
 
 pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     let project = load_project()?;
-    let lez = PathBuf::from(&project.config.lez.path);
+    ensure_lez_project(&project, "logos-scaffold doctor")?;
+    let lez_repo = require_lez_repo(&project, "logos-scaffold doctor")?;
+    let lez = PathBuf::from(&lez_repo.path);
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     let localnet_state_path = project.root.join(".scaffold/state/localnet.state");
 
@@ -84,10 +86,10 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     rows.push(check_binary("kill", true));
     rows.push(check_container_runtime());
 
-    rows.push(check_repo("lez", &lez, &project.config.lez.pin));
+    rows.push(check_repo("lez", &lez, &lez_repo.pin));
 
     rows.push(CheckRow {
-        status: if project.config.lez.pin == DEFAULT_LEZ_PIN {
+        status: if lez_repo.pin == DEFAULT_LEZ_PIN {
             CheckStatus::Pass
         } else {
             CheckStatus::Warn
@@ -95,9 +97,9 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         name: "lez standalone pin".to_string(),
         detail: format!(
             "configured pin={} expected={}",
-            project.config.lez.pin, DEFAULT_LEZ_PIN
+            lez_repo.pin, DEFAULT_LEZ_PIN
         ),
-        remediation: if project.config.lez.pin == DEFAULT_LEZ_PIN {
+        remediation: if lez_repo.pin == DEFAULT_LEZ_PIN {
             None
         } else {
             Some(format!(

@@ -3,11 +3,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::process::run_checked;
-use crate::project::{ensure_dir_exists, load_project, save_project_config};
+use crate::constants::PROJECT_KIND_BASECAMP_QML;
+use crate::project::{ensure_dir_exists, load_project, require_lez_repo, save_project_config};
 use crate::repo::{sync_repo_to_pin, RepoSyncOptions};
 use crate::state::prepare_wallet_home;
 use crate::DynResult;
 
+use super::basecamp::cmd_setup_basecamp;
 use super::wallet_support::{
     first_public_wallet_address, read_default_wallet_address, wallet_state_path,
     write_default_wallet_address,
@@ -15,7 +17,14 @@ use super::wallet_support::{
 
 pub(crate) fn cmd_setup() -> DynResult<()> {
     let mut project = load_project()?;
-    let lez = PathBuf::from(&project.config.lez.path);
+    if project.config.project.kind == PROJECT_KIND_BASECAMP_QML {
+        let result = cmd_setup_basecamp(&mut project);
+        save_project_config(&project)?;
+        return result;
+    }
+
+    let lez_repo = require_lez_repo(&project, "logos-scaffold setup")?.clone();
+    let lez = PathBuf::from(&lez_repo.path);
     let cache_root = PathBuf::from(&project.config.cache_root);
     let sync_opts = if is_cache_managed_repo_path(&cache_root, &lez) {
         RepoSyncOptions::auto_reclone_cache_repo()
@@ -23,7 +32,9 @@ pub(crate) fn cmd_setup() -> DynResult<()> {
         RepoSyncOptions::fail_on_source_mismatch()
     };
 
-    sync_repo_to_pin(&mut project.config.lez, "lez", sync_opts)?;
+    if let Some(lez_repo) = project.config.lez.as_mut() {
+        sync_repo_to_pin(lez_repo, "lez", sync_opts)?;
+    }
 
     ensure_dir_exists(&lez, "lez")?;
 
