@@ -71,6 +71,7 @@ logos-scaffold wallet topup [<address> | --address <address-ref>] [--dry-run]
 logos-scaffold wallet default set <address-ref>
 logos-scaffold wallet default set --address <address-ref>
 logos-scaffold wallet -- <wallet-command...>
+logos-scaffold run [--restart-localnet | --no-restart-localnet]
 logos-scaffold doctor [--json]
 logos-scaffold report [--out PATH] [--tail N]
 logos-scaffold completions <bash|zsh>
@@ -90,6 +91,7 @@ logos-scaffold help
 - `wallet topup` checks account state first (`wallet account get --account-id ...`), runs `wallet auth-transfer init --account-id ...` only when the destination is uninitialized, then performs Piñata faucet claim (`wallet pinata claim --to ...`). If address is omitted, scaffold uses project default wallet from `.scaffold/state/wallet.state`.
 - `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.
 - `wallet -- ...` forwards raw wallet CLI arguments to the project-local wallet binary while preserving project wallet environment.
+- `run` combines build, localnet start, wallet topup, and deploy into a single command. If a `[run]` section with `post_deploy` is present in `scaffold.toml`, the hook is executed after deploy via `sh -c` with `SEQUENCER_URL`, `NSSA_WALLET_HOME_DIR`, `SCAFFOLD_PROJECT_ROOT`, and `SCAFFOLD_IDL_DIR` environment variables. `--restart-localnet` forces a localnet restart; `--no-restart-localnet` skips it. Without flags, the value from `scaffold.toml` (`restart_localnet`, default `false`) is used. If the localnet is already running, it is reused.
 - `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
 - `report` creates a `.tar.gz` diagnostics bundle for GitHub issues using strict allowlist collection with redaction and explicit skip reporting.
 - `completions <shell>` prints a shell completion script to stdout. Supported shells: `bash`, `zsh`. The generated script covers both `lgs` and `logos-scaffold`.
@@ -127,6 +129,35 @@ lgs setup
 `init` only writes `scaffold.toml` and creates `.scaffold/` directories.
 It does not touch your `Cargo.toml` or `src/`. Edit `scaffold.toml` if you
 need non-default framework settings (e.g. `lez-framework`).
+
+### One-step build + deploy with `run`
+
+Or use `run` to do build → localnet → topup → deploy in one step:
+
+```bash
+lgs new my-app
+cd my-app
+lgs run
+```
+
+To run a post-deploy hook automatically (e.g. submit a transaction with
+[spel](https://github.com/logos-co/spel)), add a `[run]` section to
+`scaffold.toml`:
+
+```toml
+[run]
+restart_localnet = false
+post_deploy = "spel --idl $SCAFFOLD_IDL_DIR/my_program.json -p target/riscv-guest/*/riscv32im-risc0-zkvm-elf/release/my_program.bin my_instruction --arg1 value1"
+```
+
+The hook runs via `sh -c` with these environment variables pre-set:
+
+| Variable | Value |
+|---|---|
+| `SEQUENCER_URL` | `http://127.0.0.1:<port>` (from `scaffold.toml`) |
+| `NSSA_WALLET_HOME_DIR` | Absolute path to project wallet directory |
+| `SCAFFOLD_PROJECT_ROOT` | Absolute path to project root |
+| `SCAFFOLD_IDL_DIR` | Absolute path to IDL output directory |
 
 `setup` automatically seeds `.scaffold/state/wallet.state` with the first preconfigured public account when no default is present.
 
