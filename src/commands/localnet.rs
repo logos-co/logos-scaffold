@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context};
 use serde_json::Value;
 
+use crate::commands::setup::cmd_setup;
+use crate::commands::wallet_support::{rpc_get_last_block, wallet_state_path};
 use crate::constants::{SEQUENCER_BIN_REL_PATH, SEQUENCER_CONFIG_REL_PATH};
 use crate::error::LocalnetError;
 use crate::model::{LocalnetOwnership, LocalnetState, LocalnetStatusReport, Project};
@@ -24,6 +26,7 @@ pub(crate) enum LocalnetAction {
     Stop,
     Status { json: bool },
     Logs { tail: usize },
+    Reset { keep_wallet: bool },
 }
 
 pub(crate) fn cmd_localnet(action: LocalnetAction) -> DynResult<()> {
@@ -36,6 +39,10 @@ pub(crate) fn cmd_localnet(action: LocalnetAction) -> DynResult<()> {
             } else {
                 cmd_localnet_stop_outside_project()
             }
+        }
+        LocalnetAction::Reset { keep_wallet } => {
+            let project = load_project()?;
+            cmd_localnet_reset(&project, keep_wallet)
         }
         _ => {
             let project = load_project()?;
@@ -80,6 +87,7 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
             cmd_localnet_status(&state_path, &log_path, json, &localnet_addr, localnet_port)
         }
         LocalnetAction::Logs { tail } => cmd_localnet_logs(&log_path, tail),
+        LocalnetAction::Reset { .. } => unreachable!("reset is handled in cmd_localnet"),
     }
 }
 
@@ -198,6 +206,117 @@ fn cmd_localnet_start(
 
     println!("localnet ready (sequencer pid={sequencer_pid})");
     Ok(())
+}
+
+fn cmd_localnet_reset(project: &Project, keep_wallet: bool) -> DynResult<()> {
+    let localnet_port = project.config.localnet.port;
+    let state_path = project.root.join(".scaffold/state/localnet.state");
+    let lez = PathBuf::from(&project.config.lez.path);
+
+    // Step 1: Stop sequencer if running
+    println!("step 1/8: stopping sequencer");
+    let state = read_localnet_state(&state_path).unwrap_or_default();
+    if let Some(pid) = state.sequencer_pid {
+        if pid_running(pid) {
+            println!("$ kill {pid} # sequencer");
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+            // Wait briefly for process to exit
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while pid_alive(pid) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(200));
+            }
+            if pid_alive(pid) {
+                bail!("sequencer pid={pid} did not exit after kill");
+            }
+        } else {
+            println!("sequencer pid={pid} not running (stale state)");
+        }
+    } else {
+        println!("no tracked sequencer process");
+    }
+
+    // Step 2: Delete sequencer RocksDB
+    println!("step 2/8: deleting sequencer RocksDB");
+    let rocksdb_path = lez.join("rocksdb");
+    if rocksdb_path.exists() {
+        fs::remove_dir_all(&rocksdb_path)
+            .with_context(|| format!("failed to remove {}", rocksdb_path.display()))?;
+        println!("  removed {}", rocksdb_path.display());
+    } else {
+        println!("  not found, skipping");
+    }
+
+    // Step 3: Delete wallet dir (unless --keep-wallet)
+    let wallet_home = project.root.join(&project.config.wallet_home_dir);
+    if keep_wallet {
+        println!("step 3/8: keeping wallet dir (--keep-wallet)");
+    } else {
+        println!("step 3/8: deleting wallet dir");
+        if wallet_home.exists() {
+            fs::remove_dir_all(&wallet_home)
+                .with_context(|| format!("failed to remove {}", wallet_home.display()))?;
+            println!("  removed {}", wallet_home.display());
+        } else {
+            println!("  not found, skipping");
+        }
+    }
+
+    // Step 4: Delete wallet.state (unless --keep-wallet)
+    let wallet_state = wallet_state_path(&project.root);
+    if keep_wallet {
+        println!("step 4/8: keeping wallet.state (--keep-wallet)");
+    } else {
+        println!("step 4/8: deleting wallet.state");
+        if wallet_state.exists() {
+            fs::remove_file(&wallet_state)
+                .with_context(|| format!("failed to remove {}", wallet_state.display()))?;
+            println!("  removed {}", wallet_state.display());
+        } else {
+            println!("  not found, skipping");
+        }
+    }
+
+    // Step 5: Delete localnet.state
+    println!("step 5/8: deleting localnet.state");
+    if state_path.exists() {
+        fs::remove_file(&state_path)
+            .with_context(|| format!("failed to remove {}", state_path.display()))?;
+        println!("  removed {}", state_path.display());
+    } else {
+        println!("  not found, skipping");
+    }
+
+    // Step 6: Run setup
+    println!("step 6/8: running setup");
+    cmd_setup()?;
+
+    // Step 7: Start sequencer
+    println!("step 7/8: starting sequencer");
+    cmd_localnet(LocalnetAction::Start { timeout_sec: 30 })?;
+
+    // Step 8: Poll get_last_block RPC until block height > 0
+    println!("step 8/8: waiting for first block");
+    let sequencer_addr = format!("http://127.0.0.1:{localnet_port}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match rpc_get_last_block(&sequencer_addr) {
+            Ok(block) if block > 0 => {
+                println!("localnet reset complete (block height = {block})");
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        if Instant::now() >= deadline {
+            bail!(
+                "localnet reset: timed out waiting for block height > 0 after 30s.\n\
+                 The sequencer is running but has not produced a block yet.\n\
+                 Check logs: `logos-scaffold localnet logs`"
+            );
+        }
+
+        thread::sleep(Duration::from_millis(500));
+    }
 }
 
 fn wait_for_readiness(

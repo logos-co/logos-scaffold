@@ -135,6 +135,8 @@ struct LocalnetArgs {
 enum LocalnetSubcommand {
     Start(LocalnetStartArgs),
     Stop,
+    #[command(about = "Reset localnet to a clean state")]
+    Reset(LocalnetResetArgs),
     Status(LocalnetStatusArgs),
     Logs(LocalnetLogsArgs),
 }
@@ -143,6 +145,13 @@ enum LocalnetSubcommand {
 struct LocalnetStartArgs {
     #[arg(long, default_value_t = 20)]
     timeout_sec: u64,
+}
+
+#[derive(Debug, clap::Args)]
+struct LocalnetResetArgs {
+    /// Keep wallet directory and wallet.state intact during reset
+    #[arg(long)]
+    keep_wallet: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -253,6 +262,9 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                     timeout_sec: args.timeout_sec,
                 },
                 LocalnetSubcommand::Stop => LocalnetAction::Stop,
+                LocalnetSubcommand::Reset(args) => LocalnetAction::Reset {
+                    keep_wallet: args.keep_wallet,
+                },
                 LocalnetSubcommand::Status(args) => LocalnetAction::Status { json: args.json },
                 LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
             };
