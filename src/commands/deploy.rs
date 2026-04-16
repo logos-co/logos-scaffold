@@ -10,7 +10,8 @@ use crate::DynResult;
 
 use super::wallet_support::{
     extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block,
-    sequencer_unreachable_hint, summarize_command_failure, wallet_password, RpcReachabilityError,
+    rpc_get_program_ids, sequencer_unreachable_hint, summarize_command_failure, wallet_password,
+    RpcReachabilityError,
 };
 
 const GUEST_BIN_REL_PATH: &str =
@@ -157,6 +158,12 @@ pub(crate) fn cmd_deploy(
         println!("OK  {program} submitted");
         if let Some(tx) = tx.clone() {
             println!("  Tx: {tx}");
+        }
+        // Try to show the program ID from sequencer
+        let program_id = rpc_get_program_ids(&sequencer_addr)
+            .and_then(|ids| ids.get(&program).cloned());
+        if let Some(id) = &program_id {
+            println!("  Program ID: {id}");
         }
         results.push(DeployResult {
             program,

@@ -453,6 +453,46 @@ fn one_line(text: &str) -> String {
     text.replace(['\n', '\r'], " ")
 }
 
+
+/// Query the sequencer for all deployed program IDs, returning a map of name -> hex ID.
+pub(crate) fn rpc_get_program_ids(sequencer_addr: &str) -> Option<std::collections::HashMap<String, String>> {
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1_u64,
+        "method": "getProgramIds",
+        "params": {}
+    });
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(2))
+        .timeout_read(Duration::from_secs(3))
+        .timeout_write(Duration::from_secs(2))
+        .build();
+
+    let response = agent
+        .post(sequencer_addr)
+        .set("content-type", "application/json")
+        .send_json(payload)
+        .ok()?;
+
+    let body: Value = response.into_json().ok()?;
+    let program_ids = body.get("result")?.get("program_ids")?.as_object()?;
+
+    let mut result = std::collections::HashMap::new();
+    for (name, id_val) in program_ids {
+        if let Some(arr) = id_val.as_array() {
+            // Convert [u32; 8] to hex string
+            let bytes: Vec<u8> = arr
+                .iter()
+                .filter_map(|v| v.as_u64())
+                .flat_map(|n| (n as u32).to_be_bytes())
+                .collect();
+            result.insert(name.clone(), hex::encode(&bytes));
+        }
+    }
+    Some(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{WALLET_CONFIG_FALLBACK, WALLET_CONFIG_PRIMARY};
