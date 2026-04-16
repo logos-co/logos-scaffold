@@ -15,6 +15,32 @@ use super::wallet_support::{
 
 const GUEST_BIN_REL_PATH: &str =
     "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
+
+/// Dynamically discover the binary path for a program by searching methods/target/
+/// for .bin files matching the program name. Falls back to GUEST_BIN_REL_PATH.
+fn find_binary_path(project_root: &Path, program: &str) -> Option<PathBuf> {
+    let methods_target = project_root.join("methods/target");
+    if !methods_target.exists() {
+        return None;
+    }
+
+    // Walk methods/target/ looking for <program>.bin in riscv32im paths
+    let pattern = format!("{}.bin", program);
+    let walker = walkdir::WalkDir::new(&methods_target)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file());
+
+    for entry in walker {
+        let path = entry.path();
+        if path.file_name().and_then(|f| f.to_str()) == Some(pattern.as_str()) {
+            if path.to_string_lossy().contains("riscv32im") {
+                return Some(path.to_path_buf());
+            }
+        }
+    }
+    None
+}
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
 pub(crate) fn cmd_deploy(
@@ -60,7 +86,10 @@ pub(crate) fn cmd_deploy(
 
     let mut results = Vec::new();
     for program in selected_programs {
-        let binary_path = binaries_root.join(format!("{program}.bin"));
+        // Try dynamic discovery first, fall back to hardcoded path
+        let binary_path = find_binary_path(&project.root, &program)
+            .unwrap_or_else(|| binaries_root.join(format!("{program}.bin")));
+
         if !binary_path.exists() {
             println!("FAIL {program} deployment failed");
             println!("  Error: missing binary at {}", binary_path.display());
