@@ -1,3 +1,4 @@
+pub(crate) mod basecamp;
 pub(crate) mod build;
 pub(crate) mod client;
 pub(crate) mod completions;

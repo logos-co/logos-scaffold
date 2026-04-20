@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 use anyhow::anyhow;
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::commands::basecamp::{cmd_basecamp, BasecampAction};
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::client::cmd_client;
 use crate::commands::completions::cmd_completions;
@@ -59,6 +60,8 @@ enum Commands {
     Deploy(DeployArgs),
     Localnet(LocalnetArgs),
     Wallet(WalletArgs),
+    #[command(about = "Manage pre-seeded basecamp profiles for p2p dogfooding")]
+    Basecamp(BasecampArgs),
     Doctor(DoctorArgs),
     #[command(about = "Collect a sanitized diagnostics archive for issue reporting")]
     Report(ReportArgs),
@@ -271,6 +274,64 @@ struct WalletDefaultSetArgs {
     address_flag: Option<String>,
 }
 
+#[derive(Debug, clap::Args)]
+struct BasecampArgs {
+    #[command(subcommand)]
+    command: BasecampSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum BasecampSubcommand {
+    #[command(about = "Fetch, build, and seed pinned basecamp + lgpm + alice/bob profiles")]
+    Setup,
+    #[command(about = "Build the project's .lgx and install it into basecamp profile(s)")]
+    Install(BasecampInstallArgs),
+    #[command(about = "Launch basecamp for a named profile with clean-slate semantics")]
+    Launch(BasecampLaunchArgs),
+    #[command(about = "Manage basecamp profiles")]
+    Profile(BasecampProfileArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampInstallArgs {
+    /// Path to a pre-built .lgx file or directory
+    #[arg(long, value_name = "PATH")]
+    path: Option<PathBuf>,
+    /// Flake reference (e.g. `./sub#lgx` or `github:foo/bar#lgx`)
+    #[arg(long, value_name = "REF")]
+    flake: Option<String>,
+    /// Install into a specific profile (default: all seeded profiles)
+    #[arg(long, value_name = "PROFILE")]
+    profile: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampLaunchArgs {
+    #[arg(value_name = "PROFILE")]
+    profile: String,
+    /// Skip the clean-slate scrub and reinstall step
+    #[arg(long)]
+    no_clean: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampProfileArgs {
+    #[command(subcommand)]
+    command: BasecampProfileSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum BasecampProfileSubcommand {
+    #[command(about = "List basecamp profiles and their installed modules")]
+    List(BasecampProfileListArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampProfileListArgs {
+    #[arg(long)]
+    json: bool,
+}
+
 pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
     if let Some(action) = wallet_passthrough_action(&args)? {
         return cmd_wallet(action);
@@ -354,6 +415,26 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 },
             };
             cmd_wallet(action)
+        }
+        Some(Commands::Basecamp(args)) => {
+            let action = match args.command {
+                BasecampSubcommand::Setup => BasecampAction::Setup,
+                BasecampSubcommand::Install(args) => BasecampAction::Install {
+                    path: args.path,
+                    flake: args.flake,
+                    profile: args.profile,
+                },
+                BasecampSubcommand::Launch(args) => BasecampAction::Launch {
+                    profile: args.profile,
+                    no_clean: args.no_clean,
+                },
+                BasecampSubcommand::Profile(args) => match args.command {
+                    BasecampProfileSubcommand::List(args) => {
+                        BasecampAction::ProfileList { json: args.json }
+                    }
+                },
+            };
+            cmd_basecamp(action)
         }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),

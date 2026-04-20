@@ -1361,6 +1361,128 @@ fn deploy_shows_hint_when_sequencer_is_unreachable_with_fallback_addr() {
         .stderr(predicate::str::contains("sequencer appears unavailable"));
 }
 
+#[test]
+fn basecamp_help_lists_setup_install_launch_and_profile() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("basecamp")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("setup")
+                .and(predicate::str::contains("install"))
+                .and(predicate::str::contains("launch"))
+                .and(predicate::str::contains("profile")),
+        );
+}
+
+#[test]
+fn basecamp_install_help_lists_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("basecamp")
+        .arg("install")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--path")
+                .and(predicate::str::contains("--flake"))
+                .and(predicate::str::contains("--profile")),
+        );
+}
+
+#[test]
+fn basecamp_launch_help_requires_profile_argument() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("basecamp")
+        .arg("launch")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PROFILE"));
+}
+
+#[test]
+fn basecamp_launch_without_profile_errors() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("launch")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn basecamp_profile_list_help_lists_json_flag() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("basecamp")
+        .arg("profile")
+        .arg("list")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn basecamp_setup_outside_project_errors() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("setup")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
+fn basecamp_install_outside_project_errors() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("install")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
+fn basecamp_launch_outside_project_errors() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("launch")
+        .arg("alice")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
+fn basecamp_profile_list_outside_project_errors() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("profile")
+        .arg("list")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
 fn find_single_report_archive(reports_dir: &Path) -> PathBuf {
     let mut archives = list_report_archives(reports_dir);
     assert_eq!(
