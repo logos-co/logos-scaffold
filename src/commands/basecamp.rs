@@ -170,6 +170,10 @@ fn resolve_basecamp_binary(app_link: &Path) -> DynResult<PathBuf> {
     )
 }
 
+// Concurrent `launch <same-profile>` is undefined per spec §2.3 ("v1 does not
+// lock; document as 'don't do that'"). The code below assumes a single launcher
+// per profile at a time — scrub, re-seed, replay install, and PID write are all
+// non-atomic. If two invocations race, expect partial state.
 fn cmd_basecamp_launch(
     project: Project,
     profile: String,
@@ -202,34 +206,32 @@ fn cmd_basecamp_launch(
     }
 
     let launch_state_path = profile_dir.join("launch.state");
+    let expected_comm = basecamp_comm_name(&state.basecamp_bin);
     if let Some(pid) = read_launch_pid(&launch_state_path) {
-        kill_process_tree(pid);
+        // PID reuse means we can't be sure the recorded PID still maps to basecamp.
+        // Only issue signals if the PID's current comm matches; otherwise skip and
+        // clear the stale record so the next launch doesn't keep checking.
+        if pid_comm_matches(pid, &expected_comm) {
+            kill_process_tree(pid);
+        }
+        let _ = fs::remove_file(&launch_state_path);
     }
 
+    // seed_profiles is idempotent (tested) and cheap — always run it so a prior
+    // crash mid-scrub doesn't leave the profile without its xdg subdirs.
+    seed_profiles(&profiles_root, &[profile.as_str()])?;
     if !no_clean {
         scrub_profile_data_and_cache(&project.root, &profile_dir)?;
+        // Re-seed after scrub: scrub removed xdg-data + xdg-cache; put their
+        // module/plugin subtrees back before lgpm writes into them.
         seed_profiles(&profiles_root, &[profile.as_str()])?;
-
-        for src in &state.sources {
-            let lgx_files = materialize_lgx_files(
-                src,
-                &project.root.join(&project.config.cache_root).join("basecamp/lgx-links"),
-            )?;
-            let xdg_app = profile_dir.join("xdg-data").join(BASECAMP_XDG_APP_SUBPATH);
-            let modules_dir = xdg_app.join("modules");
-            let plugins_dir = xdg_app.join("plugins");
-            fs::create_dir_all(&modules_dir)
-                .with_context(|| format!("create {}", modules_dir.display()))?;
-            fs::create_dir_all(&plugins_dir)
-                .with_context(|| format!("create {}", plugins_dir.display()))?;
-            for lgx in &lgx_files {
-                let args = lgpm_install_args(&modules_dir, &plugins_dir, lgx);
-                run_checked(
-                    Command::new(&state.lgpm_bin).args(&args),
-                    &format!("lgpm install {} into {}", lgx.display(), profile),
-                )?;
-            }
-        }
+        install_sources_into_profiles(
+            &state,
+            &project.root,
+            &project.config.cache_root,
+            &profiles_root,
+            &[profile.clone()],
+        )?;
     }
 
     let env = launch_env(&profile_dir, &profile);
@@ -245,6 +247,11 @@ fn cmd_basecamp_launch(
     // Concurrent alice/bob on the same host may collide on module-level ports
     // until upstreams adopt overrides; see basecamp-profiles §3.4.
     let err = cmd.exec();
+    // exec() only returns on failure. On Linux/Unix exec preserves the PID, so
+    // launch.state is valid once exec succeeds — but on failure the PID we wrote
+    // belongs to the scaffold process that's about to exit. Remove the file so a
+    // later launch doesn't kill whatever reuses the PID.
+    let _ = fs::remove_file(&launch_state_path);
     bail!("failed to exec basecamp at {}: {err}", state.basecamp_bin);
 }
 
@@ -273,8 +280,16 @@ fn launch_env(profile_dir: &Path, profile_name: &str) -> BTreeMap<String, OsStri
 /// caller that constructs an absolute profile_dir pointing elsewhere.
 fn scrub_profile_data_and_cache(project_root: &Path, profile_dir: &Path) -> DynResult<()> {
     let safe_root = project_root.join(".scaffold/basecamp/profiles");
-    let canon_profile = canonicalize_best_effort(profile_dir);
-    let canon_safe = canonicalize_best_effort(&safe_root);
+    // canonicalize() requires every path component to exist. Create safe_root up
+    // front so the canonical form is well-defined before the prefix check. For
+    // profile_dir we canonicalize the parent (which must exist — we just made it)
+    // and append the final component, matching how the path would resolve.
+    fs::create_dir_all(&safe_root)
+        .with_context(|| format!("create {}", safe_root.display()))?;
+    let canon_safe = safe_root
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", safe_root.display()))?;
+    let canon_profile = canonicalize_under(profile_dir)?;
     if !canon_profile.starts_with(&canon_safe) {
         bail!(
             "refusing to scrub {} — outside the profiles root {}",
@@ -292,8 +307,23 @@ fn scrub_profile_data_and_cache(project_root: &Path, profile_dir: &Path) -> DynR
     Ok(())
 }
 
-fn canonicalize_best_effort(p: &Path) -> PathBuf {
-    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+/// Canonicalize `p`, allowing the final component not to exist yet (canonicalize
+/// the parent and re-append). Returns an error if the parent is missing or a
+/// symlink to somewhere that doesn't resolve — never silently falls back.
+fn canonicalize_under(p: &Path) -> DynResult<PathBuf> {
+    if let Ok(c) = p.canonicalize() {
+        return Ok(c);
+    }
+    let parent = p
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("path has no parent: {}", p.display()))?;
+    let file = p
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("path has no final component: {}", p.display()))?;
+    let canon_parent = parent
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", parent.display()))?;
+    Ok(canon_parent.join(file))
 }
 
 fn read_launch_pid(path: &Path) -> Option<u32> {
@@ -308,17 +338,60 @@ fn read_launch_pid(path: &Path) -> Option<u32> {
     None
 }
 
+/// Atomic PID write via tmp-file + rename. A crash mid-write would otherwise
+/// leave a truncated `launch.state` that reads back as malformed garbage.
 fn write_launch_pid(path: &Path, pid: u32) -> DynResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("create {}", parent.display()))?;
     }
-    fs::write(path, format!("pid={pid}\n")).with_context(|| format!("write {}", path.display()))
+    let tmp = path.with_extension("state.tmp");
+    fs::write(&tmp, format!("pid={pid}\n"))
+        .with_context(|| format!("write {}", tmp.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
 }
 
-/// Send SIGTERM to any descendants of `pid`, then to `pid` itself. Waits briefly
-/// for the process to exit; escalates to SIGKILL if still alive. Silent on
-/// missing/stale PIDs — PID reuse means we can't be certain the target is ours.
+/// `basename(basecamp_bin)` truncated to 15 bytes — matches `/proc/<pid>/comm`
+/// semantics on Linux so [`pid_comm_matches`] can compare directly.
+fn basecamp_comm_name(basecamp_bin: &str) -> String {
+    let base = Path::new(basecamp_bin)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("basecamp");
+    base.chars().take(15).collect()
+}
+
+/// True if the running process at `pid` has a comm matching `expected`. Uses
+/// portable `ps -p` so this works on Linux and macOS. Returns false if `ps`
+/// fails (process gone, PID reused by a process we can't inspect, etc.) — fail
+/// closed: the caller skips the kill on a mismatch.
+fn pid_comm_matches(pid: u32, expected: &str) -> bool {
+    let out = Command::new("ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("comm=")
+        .output();
+    let Ok(out) = out else { return false };
+    if !out.status.success() {
+        return false;
+    }
+    let comm = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // ps may print a leading path (BSD) or just the comm (Linux). Compare
+    // basenames and tolerate the 15-byte comm truncation either side.
+    let comm_base = Path::new(&comm)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&comm);
+    let len = expected.len().min(comm_base.len()).min(15);
+    len > 0 && comm_base[..len] == expected[..len]
+}
+
+/// Kill the process tree rooted at `pid`. Sends SIGTERM to descendants and the
+/// process itself, waits briefly, then escalates with SIGKILL. Always KILLs
+/// descendants on the second pass — the parent may exit before its children,
+/// leaving them orphaned to init while still bound to profile ports.
 fn kill_process_tree(pid: u32) {
     let _ = Command::new("pkill")
         .arg("-TERM")
@@ -329,19 +402,19 @@ fn kill_process_tree(pid: u32) {
         .arg("-TERM")
         .arg(pid.to_string())
         .status();
-    if wait_for_exit(pid, Duration::from_millis(1500)) {
-        return;
-    }
+    let parent_exited = wait_for_exit(pid, Duration::from_millis(1500));
     let _ = Command::new("pkill")
         .arg("-KILL")
         .arg("-P")
         .arg(pid.to_string())
         .status();
-    let _ = Command::new("kill")
-        .arg("-KILL")
-        .arg(pid.to_string())
-        .status();
-    let _ = wait_for_exit(pid, Duration::from_millis(500));
+    if !parent_exited {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .status();
+        let _ = wait_for_exit(pid, Duration::from_millis(500));
+    }
 }
 
 fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
@@ -422,37 +495,88 @@ fn cmd_basecamp_install(
     };
     write_basecamp_state(&state_path, &new_state)?;
 
-    let mut lgx_files: Vec<PathBuf> = Vec::new();
-    for src in &sources {
-        lgx_files.extend(materialize_lgx_files(src, &lgx_cache)?);
-    }
+    let lgx_files = collect_lgx_files(&sources, &lgx_cache)?;
     if lgx_files.is_empty() {
         bail!("no .lgx files produced by the resolved sources");
     }
 
-    for name in &target_profiles {
-        let xdg_app = profiles_root
-            .join(name)
-            .join("xdg-data")
-            .join(BASECAMP_XDG_APP_SUBPATH);
-        let modules_dir = xdg_app.join("modules");
-        let plugins_dir = xdg_app.join("plugins");
+    run_lgpm_install(
+        &state.lgpm_bin,
+        &profiles_root,
+        &target_profiles,
+        &lgx_files,
+        true,
+    )?;
+
+    println!("install complete");
+    Ok(())
+}
+
+/// Materialize every source into its `.lgx` files in the given cache dir.
+fn collect_lgx_files(sources: &[BasecampSource], lgx_cache: &Path) -> DynResult<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for src in sources {
+        out.extend(materialize_lgx_files(src, lgx_cache)?);
+    }
+    Ok(out)
+}
+
+/// `(modules_dir, plugins_dir)` under a profile's `XDG_DATA_HOME`. Pinning this
+/// to one place keeps the layout knowledge from drifting between install/launch.
+fn profile_modules_and_plugins(profiles_root: &Path, name: &str) -> (PathBuf, PathBuf) {
+    let xdg_app = profiles_root
+        .join(name)
+        .join("xdg-data")
+        .join(BASECAMP_XDG_APP_SUBPATH);
+    (xdg_app.join("modules"), xdg_app.join("plugins"))
+}
+
+/// Install every lgx file into every target profile via lgpm. `announce = true`
+/// prints per-file progress (install path); `false` is silent (launch replay).
+fn run_lgpm_install(
+    lgpm_bin: &str,
+    profiles_root: &Path,
+    profiles: &[String],
+    lgx_files: &[PathBuf],
+    announce: bool,
+) -> DynResult<()> {
+    for name in profiles {
+        let (modules_dir, plugins_dir) = profile_modules_and_plugins(profiles_root, name);
         fs::create_dir_all(&modules_dir)
             .with_context(|| format!("create {}", modules_dir.display()))?;
         fs::create_dir_all(&plugins_dir)
             .with_context(|| format!("create {}", plugins_dir.display()))?;
-        for lgx in &lgx_files {
-            println!("installing {} into {}", lgx.display(), name);
+        for lgx in lgx_files {
+            if announce {
+                println!("installing {} into {}", lgx.display(), name);
+            }
             let args = lgpm_install_args(&modules_dir, &plugins_dir, lgx);
             run_checked(
-                Command::new(&state.lgpm_bin).args(&args),
+                Command::new(lgpm_bin).args(&args),
                 &format!("lgpm install {} into {}", lgx.display(), name),
             )?;
         }
     }
-
-    println!("install complete");
     Ok(())
+}
+
+/// Used by launch replay: build lgx files from state-recorded sources and hand
+/// them to lgpm for the given profile(s). No-op if `state.sources` is empty.
+fn install_sources_into_profiles(
+    state: &BasecampState,
+    project_root: &Path,
+    cache_root: &str,
+    profiles_root: &Path,
+    profiles: &[String],
+) -> DynResult<()> {
+    if state.sources.is_empty() {
+        return Ok(());
+    }
+    let lgx_cache = project_root.join(cache_root).join("basecamp/lgx-links");
+    fs::create_dir_all(&lgx_cache)
+        .with_context(|| format!("create {}", lgx_cache.display()))?;
+    let lgx_files = collect_lgx_files(&state.sources, &lgx_cache)?;
+    run_lgpm_install(&state.lgpm_bin, profiles_root, profiles, &lgx_files, false)
 }
 
 /// Build the argv (after the binary) for `lgpm install --file <lgx>` with the given
@@ -979,6 +1103,52 @@ mod tests {
 
         fs::write(&path, "garbage\n").unwrap();
         assert!(read_launch_pid(&path).is_none(), "malformed file → None");
+    }
+
+    #[test]
+    fn write_launch_pid_leaves_no_tmp_file_on_success() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("launch.state");
+        write_launch_pid(&path, 99).expect("write");
+        // The atomic-write helper uses `<path>.state.tmp` as its staging file.
+        assert!(!path.with_extension("state.tmp").exists(), "tmp file must be renamed, not left behind");
+    }
+
+    #[test]
+    fn scrub_succeeds_on_first_run_when_safe_root_doesnt_exist_yet() {
+        // Regression: canonicalize() requires every component to exist. Before the
+        // fix, a first-run scrub against a fresh project errored out because
+        // `.scaffold/basecamp/profiles` hadn't been created yet.
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let profile_dir = root.join(".scaffold/basecamp/profiles/alice");
+        fs::create_dir_all(profile_dir.join("xdg-data")).unwrap();
+        fs::create_dir_all(profile_dir.join("xdg-cache")).unwrap();
+        scrub_profile_data_and_cache(root, &profile_dir).expect("scrub");
+        assert!(!profile_dir.join("xdg-data").exists());
+    }
+
+    #[test]
+    fn canonicalize_under_errors_when_parent_is_missing() {
+        // Silent fallback would be a safety-check bypass — verify we fail loudly.
+        let tmp = tempdir().expect("tempdir");
+        let err = canonicalize_under(&tmp.path().join("no/such/parent/alice")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("canonicalize"), "got: {msg}");
+    }
+
+    #[test]
+    fn basecamp_comm_name_truncates_to_15_bytes_like_proc_comm() {
+        assert_eq!(basecamp_comm_name("/nix/store/xyz/bin/basecamp"), "basecamp");
+        assert_eq!(basecamp_comm_name("/x/extremely-long-binary-name"), "extremely-long-");
+    }
+
+    #[test]
+    fn pid_comm_matches_returns_false_for_reserved_pid_0() {
+        // PID 0 is reserved and `ps -p 0` reliably fails, standing in for any PID
+        // where we can't recover a comm — the helper must fail closed so the kill
+        // path is skipped rather than firing at a wrong target.
+        assert!(!pid_comm_matches(0, "basecamp"));
     }
 
     #[test]

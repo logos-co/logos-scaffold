@@ -1543,6 +1543,54 @@ risc0_dev_mode = true
 }
 
 #[test]
+fn basecamp_launch_setup_hint_takes_precedence_over_profile_validation() {
+    // Pins the order of the two early gates: when the state is missing AND the
+    // profile name is invalid, the user must see the setup hint — not a
+    // confusing "unknown profile" error for a profile that doesn't exist yet
+    // anyway. A future refactor that reorders the checks should fail this test.
+    let temp = tempdir().expect("tempdir");
+    fs::write(
+        temp.path().join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#,
+    )
+    .expect("write scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("launch")
+        .arg("charlie")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("basecamp not set up yet"))
+        .stderr(predicate::str::contains("unknown profile").not());
+}
+
+#[test]
 fn basecamp_launch_rejects_unknown_profile() {
     let temp = tempdir().expect("tempdir");
     let project = temp.path();
