@@ -20,3 +20,8 @@ pub(crate) const DEFAULT_BASECAMP_PIN: &str = "a746cdbc521f72ee22c5a4856fd17a980
 pub(crate) const BASECAMP_PROFILE_ALICE: &str = "alice";
 pub(crate) const BASECAMP_PROFILE_BOB: &str = "bob";
 pub(crate) const BASECAMP_XDG_APP_SUBPATH: &str = "Logos/LogosBasecamp";
+/// Default flake ref for the `lgpm` CLI. The basecamp flake does not expose `lgpm`;
+/// it lives in a separate repo (`logos-package-manager`). Pin alongside basecamp
+/// so dogfooding is reproducible. Override via `[basecamp].lgpm_flake` in scaffold.toml.
+pub(crate) const DEFAULT_LGPM_FLAKE: &str =
+    "github:logos-co/logos-package-manager/9101875bc103214855bc6217834e22e66802ed86#cli";

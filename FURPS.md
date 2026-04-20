@@ -58,3 +58,68 @@
 
 - Wallet available for signing transactions initiated by CLI interaction commands.
 - Network-aware wallet configuration to prevent cross-network key misuse.
+
+## FURPS+ (v0.2 — Basecamp Profiles)
+
+Spec: [`docs/specs/basecamp-profiles.md`](./docs/specs/basecamp-profiles.md).
+
+### Functionality
+
+1. Fetch and build a pinned basecamp (`nix build '.#app'`) and pinned `lgpm` as project-local artifacts, in the same pin-isolated cache layout used for LEZ.
+2. Pre-seed two isolated basecamp profiles (`alice`, `bob`) per project for p2p dogfooding.
+3. Build and install the project's `.lgx` module(s) into one or both profiles via `lgpm`, with source resolution that follows the `.#lgx` flake-output convention used by existing modules.
+4. Launch basecamp for a named profile with clean-slate semantics: kill any prior process tree for that profile, scrub the profile directory, reinstall recorded `.lgx` sources, and `exec` basecamp with profile-scoped `XDG_*` environment.
+5. Set per-profile values for each module's documented port-override env vars on `launch` (names owned by each module), so multiple profiles can coexist without port collisions on the same machine.
+
+### Usability
+
+1. `basecamp setup` is opt-in — it is never triggered implicitly by `new`, the top-level `setup`, or `build`.
+2. When `install` or `launch` run without prior `basecamp setup`, the CLI prints a single one-line hint pointing at the required command instead of erroring with a raw subprocess trace.
+3. When only `.#lgx-portable` is found on a project, the CLI fails explicitly, names the missing `.#lgx` output, and suggests `--flake <ref>#lgx-portable` for explicit opt-in.
+4. `basecamp profile list` exposes per-profile state in both human and `--json` forms.
+5. Commands follow the existing `logos-scaffold` CLI idioms (subcommand groups, `--help` output, project-context errors).
+
+### Reliability
+
+1. Two `basecamp launch` invocations for different profiles on the same machine run concurrently without colliding on XDG paths, p2p identity keys, or module ports (subject to modules honoring the external port-override contract).
+2. `basecamp setup` is idempotent when the pinned commit is unchanged: no rebuild, no reseeding, no state mutation.
+3. `basecamp launch <profile>` produces a reproducible profile state — clean-slate on every invocation.
+4. `rm -rf` during scrub targets only paths under `<project>/.scaffold/basecamp/profiles/<name>/`.
+
+### Performance
+
+1. `basecamp install` completes in the low-seconds range with a warm Nix cache; cold first-run wall-clock is bounded by upstream `nix build '.#lgx'` time.
+2. `basecamp setup` first-run wall-clock is bounded by upstream basecamp + `lgpm` build time; re-runs on unchanged pin are effectively instant.
+
+### Supportability
+
+1. `logos-scaffold doctor` gains a basecamp section when `.scaffold/basecamp/` exists, covering binary presence, profile integrity, and installed-module state.
+2. Basecamp and `lgpm` pinned commits are explicit in `scaffold.toml`.
+3. `.scaffold/state/basecamp.state` is plain-text and line-oriented, matching existing scaffold state conventions.
+4. Spec (`docs/specs/basecamp-profiles.md`) documents the full command surface, directory layout, env contract, and boundaries.
+5. Dogfooding scenarios (`B1`–`B4` in `DOGFOODING.md`) cover setup, single-instance, multi-instance p2p, and clean-slate behaviors.
+
+### + (Privacy, Anonymity, Censorship-Resistance)
+
+- Per-profile isolation of p2p identity keys: fresh profile directory produces a fresh libp2p / Waku identity with no cross-profile leakage.
+- No state mutation outside the project's `.scaffold/` directory — the user's global Logos state is never touched.
+- No telemetry, no upload of module artifacts, identities, or profile state to third-party services.
+
+### Dependencies
+
+#### Internal Dependencies
+
+- Logos Basecamp (dev variant only in v0.2).
+- Logos Package Manager (`lgpm`).
+- Module repositories (delivery, storage, etc.) exposing env-var overrides for every listening port, with env var names chosen and documented by each module; tracked via upstream issues (e.g., [logos-delivery-module#18](https://github.com/logos-co/logos-delivery-module/issues/18)).
+
+#### Runtime Dependencies
+
+- Nix with flakes enabled on the developer machine.
+- Qt build toolchain (supplied via the basecamp flake dev shell).
+- Unix-like OS (Linux, macOS). Windows is out of scope.
+
+#### Module Dependencies
+
+- `.#lgx` flake output on the project (or sub-flakes) — `.#lgx-portable`-only projects fail explicitly until they expose `.#lgx`.
+- Modules that bind sockets must honor external port override via env var (names chosen by each module) for multi-instance launch to be fully useful.

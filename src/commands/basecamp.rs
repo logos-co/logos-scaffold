@@ -6,7 +6,7 @@ use anyhow::{bail, Context};
 
 use crate::constants::{
     BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB, BASECAMP_URL, BASECAMP_XDG_APP_SUBPATH,
-    DEFAULT_BASECAMP_PIN,
+    DEFAULT_BASECAMP_PIN, DEFAULT_LGPM_FLAKE,
 };
 use crate::model::{BasecampState, Project, RepoRef};
 use crate::process::run_checked;
@@ -62,7 +62,7 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
         );
     }
 
-    let cache_root = PathBuf::from(&project.config.cache_root);
+    let cache_root = project.root.join(&project.config.cache_root);
     let basecamp_repo_path = cache_root.join("repos/basecamp").join(&bc.pin);
 
     println!("cloning basecamp at {}", &bc.pin);
@@ -84,7 +84,7 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
         .with_context(|| format!("create {}", pin_artifacts.display()))?;
 
     let basecamp_bin = build_basecamp_app(&basecamp_repo_path, &pin_artifacts)?;
-    let lgpm_bin = build_lgpm(&basecamp_repo_path, &pin_artifacts, bc.lgpm_flake.as_str())?;
+    let lgpm_bin = build_lgpm(&pin_artifacts, bc.lgpm_flake.as_str())?;
 
     let profiles_root = project.root.join(".scaffold/basecamp/profiles");
     let seeded = seed_profiles(
@@ -125,17 +125,16 @@ fn build_basecamp_app(repo: &Path, out_dir: &Path) -> DynResult<PathBuf> {
     Ok(resolve_basecamp_binary(&link)?)
 }
 
-fn build_lgpm(repo: &Path, out_dir: &Path, override_flake: &str) -> DynResult<PathBuf> {
+fn build_lgpm(out_dir: &Path, override_flake: &str) -> DynResult<PathBuf> {
     println!("building lgpm");
     let link = out_dir.join("lgpm-result");
     let flake_ref = if override_flake.is_empty() {
-        ".#lgpm".to_string()
+        DEFAULT_LGPM_FLAKE.to_string()
     } else {
         override_flake.to_string()
     };
     run_checked(
         Command::new("nix")
-            .current_dir(repo)
             .arg("build")
             .arg(&flake_ref)
             .arg("--out-link")
@@ -146,7 +145,8 @@ fn build_lgpm(repo: &Path, out_dir: &Path, override_flake: &str) -> DynResult<Pa
 }
 
 fn resolve_basecamp_binary(app_link: &Path) -> DynResult<PathBuf> {
-    for rel in ["bin/basecamp", "bin/logos-basecamp", "Applications"] {
+    // v0.1.1 layout: bin/logos-basecamp (Linux); macOS app bundle ships under Applications/.
+    for rel in ["bin/logos-basecamp", "bin/LogosBasecamp", "bin/basecamp"] {
         let candidate = app_link.join(rel);
         if candidate.exists() {
             return Ok(candidate);
