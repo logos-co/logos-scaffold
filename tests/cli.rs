@@ -1498,6 +1498,106 @@ risc0_dev_mode = true
 }
 
 #[test]
+fn basecamp_launch_before_setup_emits_hint() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(
+        temp.path().join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#,
+    )
+    .expect("write scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("launch")
+        .arg("alice")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "basecamp not set up yet; run: logos-scaffold basecamp setup",
+        ));
+}
+
+#[test]
+fn basecamp_launch_rejects_unknown_profile() {
+    let temp = tempdir().expect("tempdir");
+    let project = temp.path();
+    fs::write(
+        project.join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#,
+    )
+    .expect("write scaffold.toml");
+
+    // Fake a completed setup so we get past the first gate and reach profile validation.
+    // Paths are /bin/true / /bin/echo — they exist on Linux, and launch never actually
+    // reaches `exec` because the profile check fails first.
+    let state_dir = project.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).expect("mkdir state");
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/bin/true\nlgpm_bin=/bin/echo\n",
+    )
+    .expect("write state");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(project)
+        .arg("basecamp")
+        .arg("launch")
+        .arg("charlie")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown profile `charlie`"));
+}
+
+#[test]
 fn basecamp_launch_outside_project_errors() {
     let temp = tempdir().expect("tempdir");
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))

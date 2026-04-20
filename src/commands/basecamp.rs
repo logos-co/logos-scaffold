@@ -1,6 +1,11 @@
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 
@@ -45,9 +50,11 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
             flakes,
             profile,
         } => cmd_basecamp_install(project, paths, flakes, profile, &NixLgxProbe),
-        // Phase 4/5 stubs: load_project() above is intentional so "outside project"
-        // errors precede "not implemented" — future implementers must preserve that order.
-        BasecampAction::Launch { .. } => bail!("basecamp launch is not yet implemented"),
+        BasecampAction::Launch { profile, no_clean } => {
+            cmd_basecamp_launch(project, profile, no_clean)
+        }
+        // Phase 5 stub: load_project() above is intentional so "outside project"
+        // errors precede "not implemented" — future implementer must preserve that order.
         BasecampAction::ProfileList { .. } => bail!("basecamp profile list is not yet implemented"),
     }
 }
@@ -161,6 +168,196 @@ fn resolve_basecamp_binary(app_link: &Path) -> DynResult<PathBuf> {
         "could not locate basecamp binary inside nix build result {}{platform_hint}",
         app_link.display()
     )
+}
+
+fn cmd_basecamp_launch(
+    project: Project,
+    profile: String,
+    no_clean: bool,
+) -> DynResult<()> {
+    let state_path = project.root.join(".scaffold/state/basecamp.state");
+    let state = match read_basecamp_state(&state_path).ok() {
+        Some(s) if !s.basecamp_bin.is_empty() && !s.lgpm_bin.is_empty() => s,
+        _ => bail!("basecamp not set up yet; run: logos-scaffold basecamp setup"),
+    };
+    if !Path::new(&state.basecamp_bin).exists() || !Path::new(&state.lgpm_bin).exists() {
+        bail!("basecamp not set up yet; run: logos-scaffold basecamp setup");
+    }
+
+    if profile != BASECAMP_PROFILE_ALICE && profile != BASECAMP_PROFILE_BOB {
+        bail!(
+            "unknown profile `{profile}`; v1 only supports `{}` and `{}`",
+            BASECAMP_PROFILE_ALICE,
+            BASECAMP_PROFILE_BOB
+        );
+    }
+
+    let profiles_root = project.root.join(".scaffold/basecamp/profiles");
+    let profile_dir = profiles_root.join(&profile);
+    if !profile_dir.is_dir() {
+        bail!(
+            "profile `{profile}` missing under {}; re-run `logos-scaffold basecamp setup`",
+            profiles_root.display()
+        );
+    }
+
+    let launch_state_path = profile_dir.join("launch.state");
+    if let Some(pid) = read_launch_pid(&launch_state_path) {
+        kill_process_tree(pid);
+    }
+
+    if !no_clean {
+        scrub_profile_data_and_cache(&project.root, &profile_dir)?;
+        seed_profiles(&profiles_root, &[profile.as_str()])?;
+
+        for src in &state.sources {
+            let lgx_files = materialize_lgx_files(
+                src,
+                &project.root.join(&project.config.cache_root).join("basecamp/lgx-links"),
+            )?;
+            let xdg_app = profile_dir.join("xdg-data").join(BASECAMP_XDG_APP_SUBPATH);
+            let modules_dir = xdg_app.join("modules");
+            let plugins_dir = xdg_app.join("plugins");
+            fs::create_dir_all(&modules_dir)
+                .with_context(|| format!("create {}", modules_dir.display()))?;
+            fs::create_dir_all(&plugins_dir)
+                .with_context(|| format!("create {}", plugins_dir.display()))?;
+            for lgx in &lgx_files {
+                let args = lgpm_install_args(&modules_dir, &plugins_dir, lgx);
+                run_checked(
+                    Command::new(&state.lgpm_bin).args(&args),
+                    &format!("lgpm install {} into {}", lgx.display(), profile),
+                )?;
+            }
+        }
+    }
+
+    let env = launch_env(&profile_dir, &profile);
+    write_launch_pid(&launch_state_path, std::process::id())?;
+
+    println!("launching basecamp for profile {profile}");
+    let mut cmd = Command::new(&state.basecamp_bin);
+    for (k, v) in &env {
+        cmd.env(k, v);
+    }
+    // Per-module port-override env vars (spec §3.4) are owned by each module and
+    // flow in via a registry — empty in v1 since no modules have published names.
+    // Concurrent alice/bob on the same host may collide on module-level ports
+    // until upstreams adopt overrides; see basecamp-profiles §3.4.
+    let err = cmd.exec();
+    bail!("failed to exec basecamp at {}: {err}", state.basecamp_bin);
+}
+
+/// Env map exported to the basecamp child on launch. Scaffold-owned names only
+/// (spec §3.4); module port-override vars are not yet registered.
+fn launch_env(profile_dir: &Path, profile_name: &str) -> BTreeMap<String, OsString> {
+    let mut env = BTreeMap::new();
+    env.insert(
+        "XDG_CONFIG_HOME".into(),
+        profile_dir.join("xdg-config").into_os_string(),
+    );
+    env.insert(
+        "XDG_DATA_HOME".into(),
+        profile_dir.join("xdg-data").into_os_string(),
+    );
+    env.insert(
+        "XDG_CACHE_HOME".into(),
+        profile_dir.join("xdg-cache").into_os_string(),
+    );
+    env.insert("LOGOS_PROFILE".into(), profile_name.into());
+    env
+}
+
+/// Remove a profile's `xdg-data` and `xdg-cache` trees. Refuses to operate on any
+/// path outside `<project>/.scaffold/basecamp/profiles/` — guards against a
+/// caller that constructs an absolute profile_dir pointing elsewhere.
+fn scrub_profile_data_and_cache(project_root: &Path, profile_dir: &Path) -> DynResult<()> {
+    let safe_root = project_root.join(".scaffold/basecamp/profiles");
+    let canon_profile = canonicalize_best_effort(profile_dir);
+    let canon_safe = canonicalize_best_effort(&safe_root);
+    if !canon_profile.starts_with(&canon_safe) {
+        bail!(
+            "refusing to scrub {} — outside the profiles root {}",
+            canon_profile.display(),
+            canon_safe.display()
+        );
+    }
+    for xdg in ["xdg-data", "xdg-cache"] {
+        let dir = profile_dir.join(xdg);
+        if dir.exists() {
+            fs::remove_dir_all(&dir)
+                .with_context(|| format!("scrub {}", dir.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn canonicalize_best_effort(p: &Path) -> PathBuf {
+    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+}
+
+fn read_launch_pid(path: &Path) -> Option<u32> {
+    let text = fs::read_to_string(path).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("pid=") {
+            if let Ok(pid) = rest.parse::<u32>() {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
+fn write_launch_pid(path: &Path, pid: u32) -> DynResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create {}", parent.display()))?;
+    }
+    fs::write(path, format!("pid={pid}\n")).with_context(|| format!("write {}", path.display()))
+}
+
+/// Send SIGTERM to any descendants of `pid`, then to `pid` itself. Waits briefly
+/// for the process to exit; escalates to SIGKILL if still alive. Silent on
+/// missing/stale PIDs — PID reuse means we can't be certain the target is ours.
+fn kill_process_tree(pid: u32) {
+    let _ = Command::new("pkill")
+        .arg("-TERM")
+        .arg("-P")
+        .arg(pid.to_string())
+        .status();
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+    if wait_for_exit(pid, Duration::from_millis(1500)) {
+        return;
+    }
+    let _ = Command::new("pkill")
+        .arg("-KILL")
+        .arg("-P")
+        .arg(pid.to_string())
+        .status();
+    let _ = Command::new("kill")
+        .arg("-KILL")
+        .arg(pid.to_string())
+        .status();
+    let _ = wait_for_exit(pid, Duration::from_millis(500));
+}
+
+fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        // `kill -0` returns non-zero when the PID no longer exists (or we lack perms).
+        let status = Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status();
+        if matches!(status, Ok(s) if !s.success()) || status.is_err() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
 }
 
 fn cmd_basecamp_install(
@@ -719,6 +916,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn launch_env_exports_xdg_under_profile_dir_and_profile_name() {
+        let profile_dir = Path::new("/p/alice");
+        let env = launch_env(profile_dir, "alice");
+        assert_eq!(env.get("XDG_CONFIG_HOME").unwrap(), &OsString::from("/p/alice/xdg-config"));
+        assert_eq!(env.get("XDG_DATA_HOME").unwrap(), &OsString::from("/p/alice/xdg-data"));
+        assert_eq!(env.get("XDG_CACHE_HOME").unwrap(), &OsString::from("/p/alice/xdg-cache"));
+        assert_eq!(env.get("LOGOS_PROFILE").unwrap(), &OsString::from("alice"));
+    }
+
+    #[test]
+    fn scrub_removes_xdg_data_and_cache_but_keeps_config() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let profile_dir = root.join(".scaffold/basecamp/profiles/alice");
+        for xdg in ["xdg-data", "xdg-cache", "xdg-config"] {
+            let d = profile_dir.join(xdg);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("sentinel"), b"x").unwrap();
+        }
+
+        scrub_profile_data_and_cache(root, &profile_dir).expect("scrub");
+
+        assert!(!profile_dir.join("xdg-data").exists());
+        assert!(!profile_dir.join("xdg-cache").exists());
+        assert!(
+            profile_dir.join("xdg-config/sentinel").exists(),
+            "xdg-config must be preserved (profile state the user may have edited)"
+        );
+    }
+
+    #[test]
+    fn scrub_refuses_paths_outside_profiles_root() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".scaffold/basecamp/profiles")).unwrap();
+        // Adversarial: profile_dir points somewhere else entirely.
+        let outside = tmp.path().join("not-a-profile");
+        fs::create_dir_all(outside.join("xdg-data")).unwrap();
+        fs::write(outside.join("xdg-data/precious"), b"keep").unwrap();
+
+        let err = scrub_profile_data_and_cache(root, &outside).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("refusing to scrub"), "got: {msg}");
+        assert!(
+            outside.join("xdg-data/precious").exists(),
+            "scrub must not touch anything when the safety check fails"
+        );
+    }
+
+    #[test]
+    fn launch_pid_roundtrips_and_missing_returns_none() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("nested/launch.state");
+        assert!(read_launch_pid(&path).is_none(), "missing file → None");
+
+        write_launch_pid(&path, 42).expect("write");
+        assert_eq!(read_launch_pid(&path), Some(42));
+
+        fs::write(&path, "garbage\n").unwrap();
+        assert!(read_launch_pid(&path).is_none(), "malformed file → None");
     }
 
     #[test]
