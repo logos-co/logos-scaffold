@@ -18,8 +18,19 @@ pub(crate) enum LocalnetError {
 
 #[derive(Debug, Error)]
 pub(crate) enum ResetError {
-    #[error("sequencer started but is not producing blocks after 30s.\nCheck 'logos-scaffold localnet logs --tail 200' for errors.\nRun 'logos-scaffold localnet status' for diagnostics.")]
-    BlocksNotProduced,
+    #[error(
+        "cannot reset: foreign listener on {addr}{}\n\
+         Stop the external process before running `logos-scaffold localnet reset`.",
+        pid.map(|p| format!(" (pid={p})")).unwrap_or_default()
+    )]
+    ForeignListener { addr: String, pid: Option<u32> },
+
+    #[error(
+        "sequencer started but is not producing blocks after {timeout_sec}s.\n\
+         Check `logos-scaffold localnet logs --tail 200` for errors.\n\
+         Run `logos-scaffold localnet status` for diagnostics."
+    )]
+    BlocksNotProduced { timeout_sec: u64 },
 
     #[error("verification poll failed: {0}")]
     VerificationPollFailed(String),

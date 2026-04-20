@@ -137,7 +137,7 @@ enum LocalnetSubcommand {
     Stop,
     Status(LocalnetStatusArgs),
     Logs(LocalnetLogsArgs),
-    Reset(#[command(long_about = "Reset localnet to a clean state: stop the sequencer, delete the sequencer\ndatabase, delete wallet state, re-run setup, restart the sequencer, and\nverify block production.\n\nUse --keep-wallet to preserve the existing wallet (useful when you want to\nreset the sequencer DB without losing your wallet keypairs).")] LocalnetResetArgs),
+    Reset(LocalnetResetArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -158,10 +158,21 @@ struct LocalnetLogsArgs {
     tail: usize,
 }
 
+/// Reset localnet to a clean state: stop the sequencer, delete the sequencer
+/// database, restart the sequencer, and verify block production.
+///
+/// The wallet is preserved by default. Pass `--reset-wallet` to additionally
+/// delete wallet keypairs and wallet state.
 #[derive(Debug, clap::Args)]
 struct LocalnetResetArgs {
+    /// Also delete the wallet home directory and wallet state. Destructive:
+    /// keypairs are not recoverable after this.
     #[arg(long)]
-    keep_wallet: bool,
+    reset_wallet: bool,
+
+    /// Seconds to wait for the restarted sequencer to produce a block.
+    #[arg(long, default_value_t = 30)]
+    verify_timeout_sec: u64,
 }
 
 #[derive(Debug, clap::Args)]
@@ -262,7 +273,10 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 LocalnetSubcommand::Stop => LocalnetAction::Stop,
                 LocalnetSubcommand::Status(args) => LocalnetAction::Status { json: args.json },
                 LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
-                LocalnetSubcommand::Reset(args) => LocalnetAction::Reset { keep_wallet: args.keep_wallet },
+                LocalnetSubcommand::Reset(args) => LocalnetAction::Reset {
+                    reset_wallet: args.reset_wallet,
+                    verify_timeout_sec: args.verify_timeout_sec,
+                },
             };
             cmd_localnet(action)
         }

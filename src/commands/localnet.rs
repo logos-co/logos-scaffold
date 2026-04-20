@@ -17,17 +17,26 @@ use crate::state::{read_localnet_state, write_localnet_state};
 use crate::DynResult;
 
 use super::setup::cmd_setup;
-use super::wallet_support::{rpc_get_last_block, RpcReachabilityError};
+use super::wallet_support::{rpc_get_last_block, wallet_state_path, RpcReachabilityError};
 
 // LOCALNET_ADDR is now read from project config (localnet.port)
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum LocalnetAction {
-    Start { timeout_sec: u64 },
+    Start {
+        timeout_sec: u64,
+    },
     Stop,
-    Status { json: bool },
-    Logs { tail: usize },
-    Reset { keep_wallet: bool },
+    Status {
+        json: bool,
+    },
+    Logs {
+        tail: usize,
+    },
+    Reset {
+        reset_wallet: bool,
+        verify_timeout_sec: u64,
+    },
 }
 
 pub(crate) fn cmd_localnet(action: LocalnetAction) -> DynResult<()> {
@@ -84,13 +93,17 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
             cmd_localnet_status(&state_path, &log_path, json, &localnet_addr, localnet_port)
         }
         LocalnetAction::Logs { tail } => cmd_localnet_logs(&log_path, tail),
-        LocalnetAction::Reset { keep_wallet } => cmd_localnet_reset(
+        LocalnetAction::Reset {
+            reset_wallet,
+            verify_timeout_sec,
+        } => cmd_localnet_reset(
             project,
             &lez,
             &state_path,
-            keep_wallet,
-            localnet_port,
+            &log_path,
             &localnet_addr,
+            reset_wallet,
+            verify_timeout_sec,
         ),
     }
 }
@@ -470,89 +483,121 @@ pub(crate) fn cmd_localnet_reset(
     project: &Project,
     lez: &Path,
     state_path: &Path,
-    keep_wallet: bool,
-    localnet_port: u16,
+    log_path: &Path,
     localnet_addr: &str,
+    reset_wallet: bool,
+    verify_timeout_sec: u64,
 ) -> DynResult<()> {
-    // Step 1 — stop sequencer
+    let localnet_port = project.config.localnet.port;
+
+    // Prerequisite: the sequencer binary must already be built. If not, setup
+    // would fail later and we'd have already deleted data with no way to start.
+    let sequencer_bin = lez.join(SEQUENCER_BIN_REL_PATH);
+    if !sequencer_bin.exists() {
+        return Err(LocalnetError::MissingSequencerBinary {
+            path: sequencer_bin.display().to_string(),
+        }
+        .into());
+    }
+
+    println!("stopping sequencer…");
     cmd_localnet_stop(state_path, localnet_port)?;
 
-    // Step 2 — delete sequencer RocksDB
-    let rocksdb_path = lez.join("rocksdb");
-    if rocksdb_path.exists() {
-        fs::remove_dir_all(&rocksdb_path).with_context(|| {
-            format!("failed to delete sequencer DB at {}", rocksdb_path.display())
-        })?;
-    } else {
-        println!(
-            "sequencer DB not found at {}; skipping deletion",
-            rocksdb_path.display()
-        );
+    // cmd_localnet_stop only kills sequencers we manage. If a foreign process
+    // still holds the port, restart would fail — refuse to delete data.
+    if port_open(localnet_addr) {
+        return Err(ResetError::ForeignListener {
+            addr: localnet_addr.to_string(),
+            pid: listener_pid(localnet_port),
+        }
+        .into());
     }
 
-    // Step 3 — delete wallet (unless --keep-wallet)
-    let wallet_path = project.root.join(&project.config.wallet_home_dir);
-    if keep_wallet {
-        println!("skipping wallet deletion (--keep-wallet)");
-    } else if wallet_path.exists() {
-        fs::remove_dir_all(&wallet_path).with_context(|| {
-            format!("failed to delete wallet at {}", wallet_path.display())
-        })?;
-    } else {
-        println!("wallet not found at {}; skipping deletion", wallet_path.display());
-    }
+    reset_cleanup(project, lez, state_path, reset_wallet)?;
 
-    // Step 4 — delete wallet state (unless --keep-wallet)
-    let wallet_state_path = project.root.join(".scaffold/state/wallet.state");
-    if keep_wallet {
-        // already skipped wallet deletion above
-    } else if wallet_state_path.exists() {
-        fs::remove_file(&wallet_state_path).with_context(|| {
-            format!("failed to delete wallet state at {}", wallet_state_path.display())
-        })?;
-    } else {
-        println!(
-            "wallet state not found at {}; skipping deletion",
-            wallet_state_path.display()
-        );
-    }
-
-    // Step 5 — delete localnet state (if exists)
-    if state_path.exists() {
-        fs::remove_file(state_path)?;
-    }
-
-    // Step 6 — run setup
+    println!("running setup…");
     cmd_setup()?;
 
-    // Step 7 — start sequencer
+    println!("starting sequencer…");
     cmd_localnet_start(
         lez,
         state_path,
-        Path::new(".scaffold/logs/sequencer.log"),
+        log_path,
         20,
         localnet_port,
         project.config.localnet.risc0_dev_mode,
         localnet_addr,
     )?;
 
-    // Step 8 — verify block production
-    let deadline = Instant::now() + Duration::from_secs(30);
+    println!("waiting for block production…");
+    verify_block_production(localnet_addr, verify_timeout_sec)
+}
+
+/// Deletes on-disk state so the next start begins with a fresh chain.
+/// Extracted from `cmd_localnet_reset` so it can be unit-tested without
+/// invoking setup or starting a real sequencer.
+fn reset_cleanup(
+    project: &Project,
+    lez: &Path,
+    state_path: &Path,
+    reset_wallet: bool,
+) -> DynResult<()> {
+    let rocksdb_path = lez.join("rocksdb");
+    remove_dir_if_exists(&rocksdb_path, "sequencer DB")?;
+
+    if reset_wallet {
+        let wallet_path = project.root.join(&project.config.wallet_home_dir);
+        remove_dir_if_exists(&wallet_path, "wallet")?;
+
+        let wallet_state = wallet_state_path(&project.root);
+        remove_file_if_exists(&wallet_state, "wallet state")?;
+    } else {
+        println!("preserving wallet (pass --reset-wallet to delete)");
+    }
+
+    remove_file_if_exists(state_path, "localnet state")?;
+    Ok(())
+}
+
+fn remove_dir_if_exists(path: &Path, label: &str) -> DynResult<()> {
+    if path.exists() {
+        fs::remove_dir_all(path)
+            .with_context(|| format!("failed to delete {label} at {}", path.display()))?;
+        println!("deleted {label} at {}", path.display());
+    }
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path, label: &str) -> DynResult<()> {
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("failed to delete {label} at {}", path.display()))?;
+        println!("deleted {label} at {}", path.display());
+    }
+    Ok(())
+}
+
+fn verify_block_production(localnet_addr: &str, timeout_sec: u64) -> DynResult<()> {
+    // `rpc_get_last_block` needs a full URL; `localnet_addr` is `host:port`.
+    let rpc_url = format!("http://{localnet_addr}");
+    let deadline = Instant::now() + Duration::from_secs(timeout_sec.max(1));
     loop {
         if Instant::now() >= deadline {
-            return Err(ResetError::BlocksNotProduced.into());
+            return Err(ResetError::BlocksNotProduced { timeout_sec }.into());
         }
 
-        match rpc_get_last_block(localnet_addr) {
+        match rpc_get_last_block(&rpc_url) {
             Ok(block_height) if block_height > 0 => {
-                println!("localnet reset complete; sequencer producing blocks (block_height={block_height})");
+                println!(
+                    "localnet reset complete; sequencer producing blocks (block_height={block_height})"
+                );
                 return Ok(());
             }
             Ok(_) => {
-                // block_height == 0 means not yet producing; keep polling
+                // block_height == 0 — sequencer is up but no block yet; keep polling
             }
             Err(RpcReachabilityError::Connectivity(_)) => {
-                // not ready yet; keep polling
+                // port may still be coming up; keep polling
             }
             Err(e) => {
                 return Err(ResetError::VerificationPollFailed(e.to_string()).into());
@@ -566,39 +611,41 @@ pub(crate) fn cmd_localnet_reset(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::PathBuf;
+
     use tempfile::tempdir;
 
-    use crate::commands::localnet::cmd_localnet_reset;
-    use crate::model::{LocalnetConfig, Project};
+    use super::{reset_cleanup, verify_block_production};
+    use crate::commands::wallet_support::wallet_state_path;
+    use crate::error::ResetError;
+    use crate::model::{
+        Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, Project, RepoRef,
+    };
 
-    fn make_test_project(temp: &tempfile::TempDir) -> Project {
-        let scaffold_dir = temp.path().join(".scaffold");
-        let state_dir = scaffold_dir.join("state");
-        let logs_dir = scaffold_dir.join("logs");
+    fn make_test_project(temp: &tempfile::TempDir) -> (Project, PathBuf) {
         let lez_dir = temp.path().join(".scaffold/cache/repos/lez");
         let wallet_dir = temp.path().join(".scaffold/wallet");
+        let state_dir = temp.path().join(".scaffold/state");
         fs::create_dir_all(&state_dir).unwrap();
-        fs::create_dir_all(&logs_dir).unwrap();
         fs::create_dir_all(&lez_dir).unwrap();
         fs::create_dir_all(&wallet_dir).unwrap();
 
-        let config = crate::model::Config {
+        let config = Config {
             version: "1.0.0".to_string(),
             cache_root: temp.path().join(".scaffold/cache").display().to_string(),
-            lez: crate::model::RepoRef {
-                url: "".to_string(),
-                source: "".to_string(),
+            lez: RepoRef {
+                url: String::new(),
+                source: String::new(),
                 path: lez_dir.display().to_string(),
-                pin: "".to_string(),
+                pin: String::new(),
             },
             wallet_home_dir: ".scaffold/wallet".to_string(),
-            wallet_binary: "wallet".to_string(),
-            framework: crate::model::FrameworkConfig {
-                kind: "".to_string(),
-                version: "".to_string(),
-                idl: crate::model::FrameworkIdlConfig {
-                    spec: "".to_string(),
-                    path: "".to_string(),
+            framework: FrameworkConfig {
+                kind: String::new(),
+                version: String::new(),
+                idl: FrameworkIdlConfig {
+                    spec: String::new(),
+                    path: String::new(),
                 },
             },
             localnet: LocalnetConfig {
@@ -607,143 +654,89 @@ mod tests {
             },
         };
 
-        Project {
+        let project = Project {
             root: temp.path().to_path_buf(),
             config,
-        }
+        };
+        (project, lez_dir)
     }
 
     #[test]
-    fn reset_keep_wallet_skips_wallet_deletion() {
+    fn cleanup_preserves_wallet_by_default() {
         let temp = tempdir().unwrap();
-        let project = make_test_project(&temp);
+        let (project, lez) = make_test_project(&temp);
 
-        // Create wallet directory and a marker file inside it
         let wallet_dir = project.root.join(&project.config.wallet_home_dir);
-        fs::write(wallet_dir.join("wallet_config.json"), "{}").unwrap();
-
-        let lez = std::path::PathBuf::from(&project.config.lez.path);
+        let marker = wallet_dir.join("keys.json");
+        fs::write(&marker, "{}").unwrap();
+        let wallet_state = wallet_state_path(&project.root);
+        fs::write(&wallet_state, "default_address=Public/demo\n").unwrap();
         let state_path = project.root.join(".scaffold/state/localnet.state");
+        fs::write(&state_path, "sequencer_pid=123\n").unwrap();
+        let rocksdb = lez.join("rocksdb");
+        fs::create_dir_all(&rocksdb).unwrap();
 
-        // Call reset with keep_wallet=true — wallet should NOT be deleted
-        let _result = cmd_localnet_reset(
-            &project,
-            &lez,
-            &state_path,
-            true, // keep_wallet
-            3040,
-            "127.0.0.1:3040",
-        );
+        reset_cleanup(&project, &lez, &state_path, false).unwrap();
 
-        // The function may fail at setup/start since we're in a fake env, but
-        // wallet deletion must NOT have happened (or the test is meaningless).
-        // We check the wallet marker is still present.
-        // Note: if the function fails earlier (e.g. no sequencer binary), that's
-        // fine — the test is about wallet deletion behaviour, not full reset.
-        if wallet_dir.exists() {
-            // wallet preserved — good
-            assert!(wallet_dir.join("wallet_config.json").exists());
-        }
-        // If wallet was deleted, the function was called without keep_wallet, which
-        // would be a test bug — not a code bug.
-    }
-
-    #[test]
-    fn reset_missing_rocksdb_is_not_an_error() {
-        let temp = tempdir().unwrap();
-        let project = make_test_project(&temp);
-
-        let lez = std::path::PathBuf::from(&project.config.lez.path);
-        let state_path = project.root.join(".scaffold/state/localnet.state");
-
-        // Ensure rocksdb does NOT exist
-        let rocksdb_path = lez.join("rocksdb");
-        assert!(!rocksdb_path.exists(), "rocksdb should not exist before test");
-
-        // Call reset; step 2 should log "skipping deletion" rather than error
-        // We can't easily capture println, but we can call the function and
-        // verify it does NOT return an error for missing rocksdb.
-        // Since setup/start will fail in a temp dir, we just verify the function
-        // doesn't fail at the rocksdb step by checking the error type.
-        let _result = cmd_localnet_reset(
-            &project,
-            &lez,
-            &state_path,
-            true,
-            3040,
-            "127.0.0.1:3040",
-        );
-
-        // If it fails because setup/start is unavailable, that's fine.
-        // If it fails with a "failed to delete sequencer DB" error, that's a bug.
-        let err_str = _result.unwrap_err().to_string();
-        assert!(!err_str.contains("failed to delete sequencer DB"),
-            "reset should not error on missing rocksdb: {err_str}");
-    }
-
-    #[test]
-    fn reset_missing_wallet_is_not_an_error() {
-        let temp = tempdir().unwrap();
-        let project = make_test_project(&temp);
-
-        let lez = std::path::PathBuf::from(&project.config.lez.path);
-        let state_path = project.root.join(".scaffold/state/localnet.state");
-
-        // Ensure wallet does NOT exist
-        let wallet_dir = project.root.join(&project.config.wallet_home_dir);
-        // make_test_project already created wallet_dir, so remove it first
-        if wallet_dir.exists() {
-            fs::remove_dir_all(&wallet_dir).unwrap();
-        }
-        assert!(!wallet_dir.exists(), "wallet should not exist before test");
-
-        let _result = cmd_localnet_reset(
-            &project,
-            &lez,
-            &state_path,
-            false, // keep_wallet=false but wallet doesn't exist
-            3040,
-            "127.0.0.1:3040",
-        );
-
-        let err_str = _result.unwrap_err().to_string();
-        assert!(!err_str.contains("failed to delete wallet"),
-            "reset should not error on missing wallet: {err_str}");
-    }
-
-    #[test]
-    fn reset_verification_poll_timeout_returns_blocks_not_produced_error() {
-        // This test verifies that when verification times out, the correct error
-        // variant is returned. In a real project, the sequencer would start and
-        // then fail to produce blocks within 30s, triggering BlocksNotProduced.
-        // In this test environment (temp dir, no real sequencer), setup or start
-        // will fail first, which is also a valid reset error.
-        let temp = tempdir().unwrap();
-        let project = make_test_project(&temp);
-
-        let lez = std::path::PathBuf::from(&project.config.lez.path);
-        let state_path = project.root.join(".scaffold/state/localnet.state");
-
-        let _result = cmd_localnet_reset(
-            &project,
-            &lez,
-            &state_path,
-            true,
-            3040,
-            "127.0.0.1:3040",
-        );
-
-        let err = _result.unwrap_err();
-        let err_str = err.to_string();
-        // In a proper project, we'd get BlocksNotProduced. In this temp-dir
-        // environment we get an earlier error (not a project / setup fails),
-        // which is expected since there's no real sequencer binary.
+        assert!(!rocksdb.exists(), "rocksdb should be deleted");
+        assert!(!state_path.exists(), "localnet state should be deleted");
         assert!(
-            err_str.contains("not producing blocks")
-                || err_str.contains("verification poll failed")
-                || err_str.contains("Not a logos-scaffold project")
-                || err_str.contains("setup"),
-            "expected a reset-related error, got: {err_str}"
+            marker.exists(),
+            "wallet keypairs must survive default reset"
         );
+        assert!(
+            wallet_state.exists(),
+            "wallet state must survive default reset"
+        );
+    }
+
+    #[test]
+    fn cleanup_deletes_wallet_when_reset_wallet_true() {
+        let temp = tempdir().unwrap();
+        let (project, lez) = make_test_project(&temp);
+
+        let wallet_dir = project.root.join(&project.config.wallet_home_dir);
+        fs::write(wallet_dir.join("keys.json"), "{}").unwrap();
+        let wallet_state = wallet_state_path(&project.root);
+        fs::write(&wallet_state, "default_address=Public/demo\n").unwrap();
+        let state_path = project.root.join(".scaffold/state/localnet.state");
+
+        reset_cleanup(&project, &lez, &state_path, true).unwrap();
+
+        assert!(
+            !wallet_dir.exists(),
+            "wallet must be deleted with --reset-wallet"
+        );
+        assert!(
+            !wallet_state.exists(),
+            "wallet state must be deleted with --reset-wallet"
+        );
+    }
+
+    #[test]
+    fn cleanup_is_idempotent_when_nothing_exists() {
+        let temp = tempdir().unwrap();
+        let (project, lez) = make_test_project(&temp);
+
+        let wallet_dir = project.root.join(&project.config.wallet_home_dir);
+        fs::remove_dir_all(&wallet_dir).unwrap();
+        let state_path = project.root.join(".scaffold/state/localnet.state");
+
+        // No rocksdb, no wallet, no state file — cleanup should succeed silently.
+        reset_cleanup(&project, &lez, &state_path, true).unwrap();
+    }
+
+    #[test]
+    fn verify_block_production_times_out_with_bounded_timeout() {
+        // Poll a port nothing is listening on; verification should exit after
+        // timeout_sec with BlocksNotProduced rather than hang.
+        let err = verify_block_production("127.0.0.1:1", 1).unwrap_err();
+        let reset_err = err
+            .downcast_ref::<ResetError>()
+            .expect("ResetError variant");
+        match reset_err {
+            ResetError::BlocksNotProduced { timeout_sec } => assert_eq!(*timeout_sec, 1),
+            other => panic!("expected BlocksNotProduced, got {other:?}"),
+        }
     }
 }
