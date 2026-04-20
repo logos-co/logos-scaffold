@@ -14,10 +14,9 @@ pub(crate) const SEQUENCER_BIN_REL_PATH: &str = "target/release/sequencer_servic
 pub(crate) const SEQUENCER_CONFIG_REL_PATH: &str =
     "sequencer/service/configs/debug/sequencer_config.json";
 pub(crate) const BASECAMP_URL: &str = "https://github.com/logos-co/logos-basecamp.git";
-/// Basecamp commit pin. Empty string signals that no default is shipped;
-/// the user must set `[basecamp].pin` in `scaffold.toml` before running
-/// `basecamp setup`. Projects can override locally.
-pub(crate) const DEFAULT_BASECAMP_PIN: &str = "";
+/// Basecamp commit pin — latest basecamp official release at the time of writing.
+/// Projects can override via `[basecamp].pin` in `scaffold.toml`.
+pub(crate) const DEFAULT_BASECAMP_PIN: &str = "a746cdbc521f72ee22c5a4856fd17a9802bb9d69";
 pub(crate) const BASECAMP_PROFILE_ALICE: &str = "alice";
 pub(crate) const BASECAMP_PROFILE_BOB: &str = "bob";
 pub(crate) const BASECAMP_XDG_APP_SUBPATH: &str = "Logos/LogosBasecamp";
