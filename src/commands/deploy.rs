@@ -42,6 +42,7 @@ fn find_binary_path(project_root: &Path, program: &str) -> Option<PathBuf> {
     }
     None
 }
+
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
 pub(crate) fn cmd_deploy(
@@ -84,6 +85,9 @@ pub(crate) fn cmd_deploy(
     let binaries_root = project.root.join(GUEST_BIN_REL_PATH);
 
     preflight_sequencer_reachability(&sequencer_addr)?;
+
+    // Fetch all program IDs once before the loop to avoid N RPC calls
+    let program_ids = rpc_get_program_ids(&sequencer_addr).unwrap_or_default();
 
     let mut results = Vec::new();
     for program in selected_programs {
@@ -159,10 +163,8 @@ pub(crate) fn cmd_deploy(
         if let Some(tx) = tx.clone() {
             println!("  Tx: {tx}");
         }
-        // Try to show the program ID from sequencer
-        let program_id = rpc_get_program_ids(&sequencer_addr)
-            .and_then(|ids| ids.get(&program).cloned());
-        if let Some(id) = &program_id {
+        // Show program ID from pre-fetched map
+        if let Some(id) = program_ids.get(&program) {
             println!("  Program ID: {id}");
         }
         results.push(DeployResult {
@@ -320,20 +322,30 @@ fn deploy_single_program(
         bail!("deploy failed: {summary}");
     }
 
+    let program_id = rpc_get_program_ids(sequencer_addr)
+        .and_then(|ids| ids.get(program_name).cloned());
+
     if json {
         let tx_val = tx
             .as_deref()
             .map(|t| format!("\"{}\"", t))
             .unwrap_or_else(|| "null".to_string());
+        let id_val = program_id
+            .as_deref()
+            .map(|id| format!("\"{}\"", id))
+            .unwrap_or_else(|| "null".to_string());
         println!(
-            "{{\"status\":\"submitted\",\"program\":\"{}\",\"tx\":{}}}",
-            program_name, tx_val
+            "{{\"status\":\"submitted\",\"program\":\"{}\",\"tx\":{},\"program_id\":{}}}",
+            program_name, tx_val, id_val
         );
     } else {
         println!("OK  {program_name} submitted");
         println!("  Binary: {}", binary_path.display());
         if let Some(tx) = &tx {
             println!("  Tx: {tx}");
+        }
+        if let Some(id) = &program_id {
+            println!("  Program ID: {id}");
         }
     }
 
@@ -360,5 +372,56 @@ impl DeployStatus {
             DeployStatus::Submitted => "submitted",
             DeployStatus::Failed => "failed",
         }
+    }
+}
+
+#[cfg(test)]
+mod deploy_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn find_binary_path_finds_bin_in_riscv32im_path() {
+        let temp = tempdir().unwrap();
+        let bin_dir = temp.path()
+            .join("methods/target/riscv-guest/my_methods/my_programs/riscv32im-risc0-zkvm-elf/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("my_program.bin"), b"fake elf").unwrap();
+
+        let result = find_binary_path(temp.path(), "my_program");
+        assert!(result.is_some(), "should find binary in riscv32im path");
+        assert!(result.unwrap().ends_with("my_program.bin"));
+    }
+
+    #[test]
+    fn find_binary_path_returns_none_when_methods_target_missing() {
+        let temp = tempdir().unwrap();
+        let result = find_binary_path(temp.path(), "my_program");
+        assert!(result.is_none(), "should return None when methods/target missing");
+    }
+
+    #[test]
+    fn find_binary_path_returns_none_when_no_matching_bin() {
+        let temp = tempdir().unwrap();
+        let bin_dir = temp.path()
+            .join("methods/target/riscv-guest/my_methods/riscv32im-risc0-zkvm-elf/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("other_program.bin"), b"fake elf").unwrap();
+
+        let result = find_binary_path(temp.path(), "my_program");
+        assert!(result.is_none(), "should return None when no matching bin");
+    }
+
+    #[test]
+    fn find_binary_path_ignores_non_riscv32im_paths() {
+        let temp = tempdir().unwrap();
+        // Put binary in non-riscv32im path
+        let bin_dir = temp.path().join("methods/target/debug");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("my_program.bin"), b"fake elf").unwrap();
+
+        let result = find_binary_path(temp.path(), "my_program");
+        assert!(result.is_none(), "should ignore non-riscv32im paths");
     }
 }

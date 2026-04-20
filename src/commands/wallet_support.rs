@@ -453,7 +453,6 @@ fn one_line(text: &str) -> String {
     text.replace(['\n', '\r'], " ")
 }
 
-
 /// Query the sequencer for all deployed program IDs, returning a map of name -> hex ID.
 pub(crate) fn rpc_get_program_ids(sequencer_addr: &str) -> Option<std::collections::HashMap<String, String>> {
     let payload = serde_json::json!({
@@ -481,13 +480,24 @@ pub(crate) fn rpc_get_program_ids(sequencer_addr: &str) -> Option<std::collectio
     let mut result = std::collections::HashMap::new();
     for (name, id_val) in program_ids {
         if let Some(arr) = id_val.as_array() {
-            // Convert [u32; 8] to hex string
-            let bytes: Vec<u8> = arr
-                .iter()
-                .filter_map(|v| v.as_u64())
-                .flat_map(|n| (n as u32).to_be_bytes())
-                .collect();
-            result.insert(name.clone(), hex::encode(&bytes));
+            // Validate: must be exactly 8 elements (ProgramId = [u32; 8])
+            if arr.len() != 8 {
+                continue;
+            }
+            // Convert [u32; 8] to hex string — fail if any element is not a valid u32
+            let mut bytes = Vec::with_capacity(32);
+            let mut valid = true;
+            for v in arr {
+                if let Some(n) = v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+                    bytes.extend_from_slice(&n.to_be_bytes());
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+            if valid {
+                result.insert(name.clone(), hex::encode(&bytes));
+            }
         }
     }
     Some(result)
@@ -789,4 +799,72 @@ details: [1, 2, 3]
         let combined = "Error: Account must be uninitialized";
         assert!(is_already_initialized_failure(combined));
     }
+    #[test]
+    fn rpc_get_program_ids_parses_valid_response() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://{addr}");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).expect("read");
+            let _ = n;
+            let body = r#"{"jsonrpc":"2.0","id":1,"result":{"program_ids":{"my_program":[1,2,3,4,5,6,7,8]}}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(), body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+        });
+
+        let result = super::rpc_get_program_ids(&url);
+        handle.join().expect("thread");
+
+        assert!(result.is_some(), "should return Some");
+        let ids = result.unwrap();
+        assert!(ids.contains_key("my_program"), "should contain my_program");
+        let hex_id = &ids["my_program"];
+        assert_eq!(hex_id.len(), 64, "program ID should be 32 bytes = 64 hex chars");
+    }
+
+    #[test]
+    fn rpc_get_program_ids_returns_none_when_unreachable() {
+        let result = super::rpc_get_program_ids("http://127.0.0.1:1");
+        assert!(result.is_none(), "should return None when server unreachable");
+    }
+
+    #[test]
+    fn rpc_get_program_ids_rejects_wrong_array_length() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://{addr}");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).expect("read");
+            // Only 7 elements instead of 8 - malformed
+            let body = r#"{"jsonrpc":"2.0","id":1,"result":{"program_ids":{"bad_program":[1,2,3,4,5,6,7]}}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(), body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+        });
+
+        let result = super::rpc_get_program_ids(&url);
+        handle.join().expect("thread");
+
+        assert!(result.is_some());
+        let ids = result.unwrap();
+        assert!(!ids.contains_key("bad_program"), "should reject 7-element array");
+    }
+
 }
