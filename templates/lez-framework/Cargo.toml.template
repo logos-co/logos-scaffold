@@ -16,6 +16,9 @@ members = [
   "crates/lez-client-gen",
 ]
 
+[workspace.lints.rust]
+unsafe_code = "warn"
+
 [workspace.dependencies]
 nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "{{lez_pin}}" }
 nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "{{lez_pin}}" }
