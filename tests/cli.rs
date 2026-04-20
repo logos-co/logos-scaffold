@@ -1454,6 +1454,50 @@ fn basecamp_install_outside_project_errors() {
 }
 
 #[test]
+fn basecamp_install_before_setup_emits_hint() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(
+        temp.path().join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#,
+    )
+    .expect("write scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("install")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "basecamp not set up yet; run: logos-scaffold basecamp setup",
+        ));
+}
+
+#[test]
 fn basecamp_launch_outside_project_errors() {
     let temp = tempdir().expect("tempdir");
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))

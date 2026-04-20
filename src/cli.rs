@@ -294,12 +294,12 @@ enum BasecampSubcommand {
 
 #[derive(Debug, clap::Args)]
 struct BasecampInstallArgs {
-    /// Path to a pre-built .lgx file or directory
+    /// Path to a pre-built .lgx file (repeatable)
     #[arg(long, value_name = "PATH")]
-    path: Option<PathBuf>,
-    /// Flake reference (e.g. `./sub#lgx` or `github:foo/bar#lgx`)
+    path: Vec<PathBuf>,
+    /// Flake reference producing .lgx, e.g. `./sub#lgx` (repeatable)
     #[arg(long, value_name = "REF")]
-    flake: Option<String>,
+    flake: Vec<String>,
     /// Install into a specific profile (default: all seeded profiles)
     #[arg(long, value_name = "PROFILE")]
     profile: Option<String>,
@@ -420,8 +420,8 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             let action = match args.command {
                 BasecampSubcommand::Setup => BasecampAction::Setup,
                 BasecampSubcommand::Install(args) => BasecampAction::Install {
-                    path: args.path,
-                    flake: args.flake,
+                    paths: args.path,
+                    flakes: args.flake,
                     profile: args.profile,
                 },
                 BasecampSubcommand::Launch(args) => BasecampAction::Launch {
