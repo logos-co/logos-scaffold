@@ -6,6 +6,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::client::cmd_client;
+use crate::commands::completions::cmd_completions;
 use crate::commands::deploy::cmd_deploy;
 use crate::commands::doctor::cmd_doctor;
 use crate::commands::idl::cmd_idl;
@@ -60,8 +61,16 @@ enum Commands {
     Doctor(DoctorArgs),
     #[command(about = "Collect a sanitized diagnostics archive for issue reporting")]
     Report(ReportArgs),
+    #[command(about = "Print a shell completion script to stdout (bash or zsh)")]
+    Completions(CompletionsArgs),
     #[command(hide = true)]
     Help,
+}
+
+#[derive(Debug, clap::Args)]
+struct CompletionsArgs {
+    #[arg(value_name = "SHELL")]
+    shell: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -305,9 +314,14 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
+        Some(Commands::Completions(args)) => cmd_completions(&args.shell),
         Some(Commands::Help) => print_help(),
         None => print_help(),
     }
+}
+
+pub(crate) fn cli_command() -> clap::Command {
+    Cli::command()
 }
 
 pub(crate) fn print_help() -> DynResult<()> {

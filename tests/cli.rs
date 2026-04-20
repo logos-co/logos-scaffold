@@ -1756,3 +1756,66 @@ fn lgs_and_logos_scaffold_version_match() {
     );
     assert!(!lgs_version_number.is_empty(), "version number is empty");
 }
+
+#[test]
+fn completions_bash_prints_script_covering_both_bin_names() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("complete -F")
+                .and(predicate::str::contains("lgs"))
+                .and(predicate::str::contains("logos-scaffold")),
+        );
+}
+
+#[test]
+fn completions_zsh_prints_script_covering_both_bin_names() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("#compdef")
+                .and(predicate::str::contains("_lgs"))
+                .and(predicate::str::contains("_logos-scaffold")),
+        );
+}
+
+#[test]
+fn completions_unsupported_shell_errors() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "fish"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsupported shell"));
+}
+
+#[test]
+fn completions_missing_shell_arg_errors() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("completions")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn completions_does_not_write_filesystem() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(["completions", "bash"])
+        .assert()
+        .success();
+
+    let entries: Vec<_> = fs::read_dir(temp.path())
+        .expect("read tempdir")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "completions must not write to cwd, found: {:?}",
+        entries.iter().map(|e| e.path()).collect::<Vec<_>>()
+    );
+}

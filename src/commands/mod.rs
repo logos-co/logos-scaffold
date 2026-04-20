@@ -1,5 +1,6 @@
 pub(crate) mod build;
 pub(crate) mod client;
+pub(crate) mod completions;
 pub(crate) mod deploy;
 pub(crate) mod doctor;
 pub(crate) mod idl;
