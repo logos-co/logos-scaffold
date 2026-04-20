@@ -45,6 +45,8 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
             flakes,
             profile,
         } => cmd_basecamp_install(project, paths, flakes, profile, &NixLgxProbe),
+        // Phase 4/5 stubs: load_project() above is intentional so "outside project"
+        // errors precede "not implemented" — future implementers must preserve that order.
         BasecampAction::Launch { .. } => bail!("basecamp launch is not yet implemented"),
         BasecampAction::ProfileList { .. } => bail!("basecamp profile list is not yet implemented"),
     }
@@ -57,13 +59,6 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
     }
     if bc.pin.is_empty() {
         bc.pin = DEFAULT_BASECAMP_PIN.to_string();
-    }
-    if bc.pin.is_empty() {
-        bail!(
-            "basecamp pin is not set.\n\
-             Next step: add `pin = \"<commit-sha>\"` under `[basecamp]` in scaffold.toml \
-             (see docs/specs/basecamp-profiles.md §3.3) and retry."
-        );
     }
 
     let cache_root = project.root.join(&project.config.cache_root);
@@ -126,7 +121,7 @@ fn build_basecamp_app(repo: &Path, out_dir: &Path) -> DynResult<PathBuf> {
             .arg(&link),
         "nix build .#app (basecamp)",
     )?;
-    Ok(resolve_basecamp_binary(&link)?)
+    resolve_basecamp_binary(&link)
 }
 
 fn build_lgpm(out_dir: &Path, override_flake: &str) -> DynResult<PathBuf> {
@@ -156,8 +151,14 @@ fn resolve_basecamp_binary(app_link: &Path) -> DynResult<PathBuf> {
             return Ok(candidate);
         }
     }
+    let platform_hint = if cfg!(target_os = "macos") {
+        "\nNote: on macOS, `nix build .#app` produces an app bundle under Applications/. \
+         v0.1.x does not yet expose a CLI-invocable binary on macOS; track basecamp-profiles spec §6."
+    } else {
+        ""
+    };
     bail!(
-        "could not locate basecamp binary inside nix build result {}",
+        "could not locate basecamp binary inside nix build result {}{platform_hint}",
         app_link.display()
     )
 }
@@ -183,20 +184,13 @@ fn cmd_basecamp_install(
         bail!("basecamp not set up yet; run: logos-scaffold basecamp setup");
     }
 
-    let sources = resolve_install_sources(&project.root, &paths, &flakes, probe)?;
-
     let cache_root = project.root.join(&project.config.cache_root);
     let lgx_cache = cache_root.join("basecamp/lgx-links");
+    let skip_subdirs: Vec<&str> = vec![project.config.cache_root.as_str(), "target", "node_modules"];
+    let sources = resolve_install_sources(&project.root, &paths, &flakes, probe, &skip_subdirs)?;
+
     fs::create_dir_all(&lgx_cache)
         .with_context(|| format!("create {}", lgx_cache.display()))?;
-
-    let mut lgx_files: Vec<PathBuf> = Vec::new();
-    for src in &sources {
-        lgx_files.extend(materialize_lgx_files(src, &lgx_cache)?);
-    }
-    if lgx_files.is_empty() {
-        bail!("no .lgx files produced by the resolved sources");
-    }
 
     let profiles_root = project.root.join(".scaffold/basecamp/profiles");
     let target_profiles: Vec<String> = match profile.as_deref() {
@@ -216,6 +210,29 @@ fn cmd_basecamp_install(
         ],
     };
 
+    // Commit resolved sources to state *before* invoking lgpm. If an install later
+    // fails mid-loop, the sources list still reflects what the user asked for, so
+    // `launch` (which scrubs + reinstalls) can reproduce the intended state.
+    let mut merged = state.sources.clone();
+    for src in &sources {
+        if !merged.iter().any(|e| e == src) {
+            merged.push(src.clone());
+        }
+    }
+    let new_state = BasecampState {
+        sources: merged,
+        ..state.clone()
+    };
+    write_basecamp_state(&state_path, &new_state)?;
+
+    let mut lgx_files: Vec<PathBuf> = Vec::new();
+    for src in &sources {
+        lgx_files.extend(materialize_lgx_files(src, &lgx_cache)?);
+    }
+    if lgx_files.is_empty() {
+        bail!("no .lgx files produced by the resolved sources");
+    }
+
     for name in &target_profiles {
         let xdg_app = profiles_root
             .join(name)
@@ -229,34 +246,34 @@ fn cmd_basecamp_install(
             .with_context(|| format!("create {}", plugins_dir.display()))?;
         for lgx in &lgx_files {
             println!("installing {} into {}", lgx.display(), name);
+            let args = lgpm_install_args(&modules_dir, &plugins_dir, lgx);
             run_checked(
-                Command::new(&state.lgpm_bin)
-                    .arg("--modules-dir")
-                    .arg(&modules_dir)
-                    .arg("--ui-plugins-dir")
-                    .arg(&plugins_dir)
-                    .arg("install")
-                    .arg("--file")
-                    .arg(lgx),
+                Command::new(&state.lgpm_bin).args(&args),
                 &format!("lgpm install {} into {}", lgx.display(), name),
             )?;
         }
     }
 
-    let mut merged = state.sources.clone();
-    for src in sources {
-        if !merged.iter().any(|e| e == &src) {
-            merged.push(src);
-        }
-    }
-    let new_state = BasecampState {
-        sources: merged,
-        ..state
-    };
-    write_basecamp_state(&state_path, &new_state)?;
-
     println!("install complete");
     Ok(())
+}
+
+/// Build the argv (after the binary) for `lgpm install --file <lgx>` with the given
+/// modules/plugins dirs. Lifted to a pure function so tests can pin the shape.
+fn lgpm_install_args(
+    modules_dir: &Path,
+    plugins_dir: &Path,
+    lgx: &Path,
+) -> Vec<std::ffi::OsString> {
+    vec![
+        "--modules-dir".into(),
+        modules_dir.as_os_str().to_owned(),
+        "--ui-plugins-dir".into(),
+        plugins_dir.as_os_str().to_owned(),
+        "install".into(),
+        "--file".into(),
+        lgx.as_os_str().to_owned(),
+    ]
 }
 
 /// Produce the list of `.lgx` files referenced by a given source.
@@ -269,17 +286,10 @@ fn materialize_lgx_files(src: &BasecampSource, cache: &Path) -> DynResult<Vec<Pa
             if pb.is_file() && pb.extension().is_some_and(|e| e == "lgx") {
                 return Ok(vec![pb]);
             }
-            if pb.is_dir() {
-                return Ok(list_lgx(&pb)?);
-            }
-            bail!(
-                "path `{}` is not a .lgx file or directory",
-                pb.display()
-            );
+            bail!("path `{}` is not a .lgx file", pb.display());
         }
         BasecampSource::Flake(flake_ref) => {
-            let slug = slugify(flake_ref);
-            let link = cache.join(format!("{slug}-result"));
+            let link = cache.join(flake_out_link_name(flake_ref));
             println!("building {flake_ref}");
             run_checked(
                 Command::new("nix")
@@ -289,9 +299,22 @@ fn materialize_lgx_files(src: &BasecampSource, cache: &Path) -> DynResult<Vec<Pa
                     .arg(&link),
                 &format!("nix build {flake_ref}"),
             )?;
-            Ok(list_lgx(&link)?)
+            list_lgx(&link)
         }
     }
+}
+
+/// Out-link filename for a user-supplied flake ref. Slugified for readability, with a
+/// short hash suffix so two refs that slugify the same don't clobber each other's build.
+fn flake_out_link_name(flake_ref: &str) -> String {
+    let slug: String = flake_ref
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&flake_ref, &mut hasher);
+    let hash = std::hash::Hasher::finish(&hasher);
+    format!("{slug}-{hash:016x}-result")
 }
 
 fn list_lgx(dir: &Path) -> DynResult<Vec<PathBuf>> {
@@ -305,12 +328,6 @@ fn list_lgx(dir: &Path) -> DynResult<Vec<PathBuf>> {
     }
     out.sort();
     Ok(out)
-}
-
-fn slugify(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
 }
 
 struct NixLgxProbe;
@@ -327,8 +344,22 @@ impl LgxFlakeProbe for NixLgxProbe {
             .output()
             .with_context(|| format!("spawn nix eval {target}"))?;
         if !out.status.success() {
-            // Flake may not expose packages.<system>; treat as empty.
-            return Ok(Vec::new());
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // A flake with no `packages.<system>` attribute is a normal resolver case
+            // (e.g., a project whose flake only exposes devShells). Treat as empty.
+            // Anything else — lockfile errors, syntax errors, network failures —
+            // must propagate so the user sees the real reason instead of the generic
+            // "no .lgx sources found" fallback.
+            if stderr.contains("does not provide attribute")
+                || stderr.contains("missing attribute")
+            {
+                return Ok(Vec::new());
+            }
+            bail!(
+                "nix eval {target} failed ({}): {}",
+                out.status,
+                stderr.trim()
+            );
         }
         let text = String::from_utf8(out.stdout).context("nix eval output not utf-8")?;
         let names: Vec<String> =
@@ -370,6 +401,7 @@ fn resolve_install_sources(
     explicit_paths: &[PathBuf],
     explicit_flakes: &[String],
     probe: &dyn LgxFlakeProbe,
+    skip_subdirs: &[&str],
 ) -> DynResult<Vec<BasecampSource>> {
     if !explicit_paths.is_empty() || !explicit_flakes.is_empty() {
         let mut out = Vec::new();
@@ -398,7 +430,11 @@ fn resolve_install_sources(
             if !path.is_dir() {
                 continue;
             }
-            if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if name.starts_with('.') || skip_subdirs.iter().any(|s| *s == name) {
                 continue;
             }
             if path.join("flake.nix").is_file() {
@@ -408,7 +444,7 @@ fn resolve_install_sources(
     }
 
     if !found.is_empty() {
-        found.sort_by(|a, b| flake_ref(a).cmp(&flake_ref(b)));
+        found.sort_by_key(flake_ref);
         return Ok(found);
     }
 
@@ -513,8 +549,8 @@ mod tests {
         let probe = FakeProbe::new(&[]);
         let paths = vec![PathBuf::from("/a/mod.lgx")];
         let flakes = vec!["./sub#lgx".to_string()];
-        let got =
-            resolve_install_sources(tmp.path(), &paths, &flakes, &probe).expect("resolve");
+        let got = resolve_install_sources(tmp.path(), &paths, &flakes, &probe, &[])
+            .expect("resolve");
         assert_eq!(
             got,
             vec![
@@ -531,7 +567,7 @@ mod tests {
         fs::write(root.join("flake.nix"), b"{}").unwrap();
         let root_ref = format!("path:{}", root.display());
         let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx", "default"])]);
-        let got = resolve_install_sources(root, &[], &[], &probe).expect("resolve");
+        let got = resolve_install_sources(root, &[], &[], &probe, &[]).expect("resolve");
         assert_eq!(got, vec![BasecampSource::Flake(format!("{root_ref}#lgx"))]);
     }
 
@@ -556,7 +592,7 @@ mod tests {
             .map(|(k, v)| (k.as_str(), v.as_slice()))
             .collect();
         let probe = FakeProbe::new(&answers);
-        let got = resolve_install_sources(root, &[], &[], &probe).expect("resolve");
+        let got = resolve_install_sources(root, &[], &[], &probe, &[]).expect("resolve");
         assert_eq!(
             got,
             vec![
@@ -574,7 +610,7 @@ mod tests {
         fs::write(root.join("flake.nix"), b"{}").unwrap();
         let root_ref = format!("path:{}", root.display());
         let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx-portable"])]);
-        let err = resolve_install_sources(root, &[], &[], &probe).unwrap_err();
+        let err = resolve_install_sources(root, &[], &[], &probe, &[]).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("lgx-portable") && msg.contains("--flake"),
@@ -583,15 +619,82 @@ mod tests {
     }
 
     #[test]
+    fn resolve_install_sources_skips_named_subdirs() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        for name in ["target", "cache"] {
+            let d = root.join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("flake.nix"), b"{}").unwrap();
+        }
+        let real = root.join("real-mod");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("flake.nix"), b"{}").unwrap();
+        let answers_owned = vec![
+            (format!("path:{}", root.join("target").display()), vec!["lgx"]),
+            (format!("path:{}", root.join("cache").display()), vec!["lgx"]),
+            (format!("path:{}", real.display()), vec!["lgx"]),
+        ];
+        let answers: Vec<(&str, &[&str])> = answers_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_slice()))
+            .collect();
+        let probe = FakeProbe::new(&answers);
+        let got = resolve_install_sources(root, &[], &[], &probe, &["target", "cache"])
+            .expect("resolve");
+        assert_eq!(
+            got,
+            vec![BasecampSource::Flake(format!("path:{}#lgx", real.display()))],
+            "skip_subdirs must prune target/cache even if they contain flake.nix"
+        );
+    }
+
+    #[test]
     fn resolve_install_sources_no_lgx_anywhere_fails_with_generic_hint() {
         let tmp = tempdir().expect("tempdir");
         let probe = FakeProbe::new(&[]);
-        let err = resolve_install_sources(tmp.path(), &[], &[], &probe).unwrap_err();
+        let err = resolve_install_sources(tmp.path(), &[], &[], &probe, &[]).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("--path") && msg.contains("--flake"),
             "expected generic hint, got: {msg}"
         );
+    }
+
+    #[test]
+    fn lgpm_install_args_pins_global_flags_before_subcommand() {
+        let args = lgpm_install_args(
+            Path::new("/p/modules"),
+            Path::new("/p/plugins"),
+            Path::new("/p/mod.lgx"),
+        );
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|o| o.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                "--modules-dir",
+                "/p/modules",
+                "--ui-plugins-dir",
+                "/p/plugins",
+                "install",
+                "--file",
+                "/p/mod.lgx",
+            ],
+            "lgpm expects global --modules-dir / --ui-plugins-dir BEFORE the `install` subcommand"
+        );
+    }
+
+    #[test]
+    fn flake_out_link_name_avoids_slug_collisions() {
+        // Two refs that would slugify to the same base name must not produce the same
+        // out-link file, or one `nix build` will silently clobber the other.
+        let a = flake_out_link_name("github:logos-co/x#lgx");
+        let b = flake_out_link_name("github_logos_co_x_lgx");
+        assert_ne!(a, b);
+        assert!(a.ends_with("-result") && b.ends_with("-result"));
     }
 
     #[test]

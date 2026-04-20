@@ -45,6 +45,19 @@ pub(crate) fn read_localnet_state(path: &Path) -> DynResult<LocalnetState> {
 }
 
 pub(crate) fn write_basecamp_state(path: &Path, state: &BasecampState) -> DynResult<()> {
+    // The state file is a line-oriented key=value format. A newline or CR embedded
+    // in a value would split the record and silently corrupt state on the next read.
+    check_state_value("pin", &state.pin)?;
+    check_state_value("basecamp_bin", &state.basecamp_bin)?;
+    check_state_value("lgpm_bin", &state.lgpm_bin)?;
+    for source in &state.sources {
+        let (key, value) = match source {
+            BasecampSource::Path(p) => ("source:path", p.as_str()),
+            BasecampSource::Flake(f) => ("source:flake", f.as_str()),
+        };
+        check_state_value(key, value)?;
+    }
+
     let mut content = String::new();
     if !state.pin.is_empty() {
         content.push_str(&format!("pin={}\n", state.pin));
@@ -64,6 +77,16 @@ pub(crate) fn write_basecamp_state(path: &Path, state: &BasecampState) -> DynRes
     write_text(path, &content)
 }
 
+fn check_state_value(key: &str, value: &str) -> DynResult<()> {
+    if value.contains(['\n', '\r']) {
+        bail!(
+            "basecamp state value for `{key}` contains a newline/CR which would corrupt \
+             the line-oriented state file: {value:?}"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn read_basecamp_state(path: &Path) -> DynResult<BasecampState> {
     let mut text = String::new();
     File::open(path)?.read_to_string(&mut text)?;
@@ -71,7 +94,7 @@ pub(crate) fn read_basecamp_state(path: &Path) -> DynResult<BasecampState> {
     let mut state = BasecampState::default();
     for raw in text.lines() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
             continue;
         }
 
@@ -154,5 +177,24 @@ mod tests {
         let loaded = read_basecamp_state(&path).expect("read");
         assert_eq!(loaded.pin, "sha1");
         assert!(loaded.sources.is_empty());
+    }
+
+    #[test]
+    fn basecamp_state_rejects_newline_in_source_value() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("basecamp.state");
+        let state = BasecampState {
+            pin: "sha1".to_string(),
+            basecamp_bin: "/bin/bc".to_string(),
+            lgpm_bin: "/bin/lgpm".to_string(),
+            sources: vec![BasecampSource::Flake("a\nb#lgx".to_string())],
+        };
+        let err = write_basecamp_state(&path, &state).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("newline") && msg.contains("source:flake"),
+            "expected newline-rejection error, got: {msg}"
+        );
+        assert!(!path.exists(), "state file must not be written on validation failure");
     }
 }

@@ -294,7 +294,7 @@ enum BasecampSubcommand {
 
 #[derive(Debug, clap::Args)]
 struct BasecampInstallArgs {
-    /// Path to a pre-built .lgx file (repeatable)
+    /// Path to a pre-built .lgx file (repeatable; must be a file, not a directory)
     #[arg(long, value_name = "PATH")]
     path: Vec<PathBuf>,
     /// Flake reference producing .lgx, e.g. `./sub#lgx` (repeatable)
