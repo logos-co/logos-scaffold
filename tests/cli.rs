@@ -1469,6 +1469,26 @@ fn basecamp_launch_outside_project_errors() {
 }
 
 #[test]
+fn basecamp_setup_without_pin_emits_actionable_hint() {
+    let temp = tempdir().expect("tempdir");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lez path");
+    write_scaffold_toml(temp.path(), &lez_path);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("setup")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("basecamp pin is not set")
+                .and(predicate::str::contains("[basecamp]"))
+                .and(predicate::str::contains("scaffold.toml")),
+        );
+}
+
+#[test]
 fn basecamp_profile_list_outside_project_errors() {
     let temp = tempdir().expect("tempdir");
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
