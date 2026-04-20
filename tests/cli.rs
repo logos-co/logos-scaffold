@@ -1819,3 +1819,102 @@ fn completions_does_not_write_filesystem() {
         entries.iter().map(|e| e.path()).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn init_creates_scaffold_toml_and_dirs() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    assert!(
+        temp.path().join("scaffold.toml").exists(),
+        "scaffold.toml missing"
+    );
+    assert!(
+        temp.path().join(".scaffold/state").is_dir(),
+        ".scaffold/state missing"
+    );
+    assert!(
+        temp.path().join(".scaffold/logs").is_dir(),
+        ".scaffold/logs missing"
+    );
+
+    let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read .gitignore");
+    assert!(
+        gitignore.lines().any(|l| l.trim() == ".scaffold"),
+        ".gitignore must contain .scaffold, got: {gitignore:?}"
+    );
+}
+
+#[test]
+fn init_refuses_existing_scaffold_toml() {
+    let temp = tempdir().expect("tempdir");
+    let scaffold_path = temp.path().join("scaffold.toml");
+    let original = "# pre-existing\n";
+    fs::write(&scaffold_path, original).expect("seed scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("scaffold.toml already exists"));
+
+    let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
+    assert_eq!(
+        after, original,
+        "init must not overwrite existing scaffold.toml"
+    );
+}
+
+#[test]
+fn init_appends_gitignore_once() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join(".gitignore"), "target\n.scaffold\nother\n")
+        .expect("seed .gitignore");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read .gitignore");
+    let scaffold_count = gitignore
+        .lines()
+        .filter(|l| l.trim() == ".scaffold")
+        .count();
+    assert_eq!(
+        scaffold_count, 1,
+        ".gitignore must contain .scaffold exactly once, got: {gitignore:?}"
+    );
+}
+
+#[test]
+fn init_output_is_parseable_by_setup() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    // `lgs setup` will fail on repo sync (no real LEZ path), but if it gets past
+    // config parsing we've confirmed the generated scaffold.toml is well-formed.
+    // A parse failure surfaces as "invalid scaffold.toml" on stderr.
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("setup")
+        .output()
+        .expect("run lgs setup");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid scaffold.toml"),
+        "scaffold.toml written by init should parse cleanly; stderr: {stderr}"
+    );
+}

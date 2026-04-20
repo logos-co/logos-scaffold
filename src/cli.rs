@@ -10,6 +10,7 @@ use crate::commands::completions::cmd_completions;
 use crate::commands::deploy::cmd_deploy;
 use crate::commands::doctor::cmd_doctor;
 use crate::commands::idl::cmd_idl;
+use crate::commands::init::cmd_init;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
@@ -63,6 +64,8 @@ enum Commands {
     Report(ReportArgs),
     #[command(about = "Print a shell completion script to stdout (bash or zsh)")]
     Completions(CompletionsArgs),
+    #[command(about = "Initialize scaffold.toml in the current directory")]
+    Init,
     #[command(hide = true)]
     Help,
 }
@@ -315,6 +318,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
         Some(Commands::Completions(args)) => cmd_completions(&args.shell),
+        Some(Commands::Init) => cmd_init(),
         Some(Commands::Help) => print_help(),
         None => print_help(),
     }
