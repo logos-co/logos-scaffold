@@ -16,7 +16,6 @@ use crate::project::{ensure_dir_exists, find_project_root, load_project};
 use crate::state::{read_localnet_state, write_localnet_state};
 use crate::DynResult;
 
-use super::setup::cmd_setup;
 use super::wallet_support::{rpc_get_last_block, wallet_state_path, RpcReachabilityError};
 
 // LOCALNET_ADDR is now read from project config (localnet.port)
@@ -514,9 +513,6 @@ pub(crate) fn cmd_localnet_reset(
     }
 
     reset_cleanup(project, lez, state_path, reset_wallet)?;
-
-    println!("running setup…");
-    cmd_setup()?;
 
     println!("starting sequencer…");
     cmd_localnet_start(
