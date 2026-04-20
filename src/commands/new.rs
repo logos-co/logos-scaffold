@@ -106,6 +106,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
             },
         },
         localnet: LocalnetConfig::default(),
+        basecamp: None,
     };
 
     let template_root = lez_repo_path.join("examples/program_deployment");

@@ -4,7 +4,9 @@ use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
     FRAMEWORK_KIND_DEFAULT, LEZ_URL,
 };
-use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
+use crate::model::{
+    BasecampConfig, Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef,
+};
 use crate::DynResult;
 
 pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
@@ -27,6 +29,13 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     let mut framework_version = String::new();
     let mut framework_idl_spec = String::new();
     let mut framework_idl_path = String::new();
+
+    let mut basecamp_seen = false;
+    let mut basecamp_pin = String::new();
+    let mut basecamp_source = String::new();
+    let mut basecamp_lgpm_flake = String::new();
+    let mut basecamp_port_base: u16 = 60000;
+    let mut basecamp_port_stride: u16 = 10;
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -81,6 +90,24 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     wallet_home_dir = value;
                 }
             }
+            "basecamp" => {
+                basecamp_seen = true;
+                if key == "pin" {
+                    basecamp_pin = value;
+                } else if key == "source" {
+                    basecamp_source = value;
+                } else if key == "lgpm_flake" {
+                    basecamp_lgpm_flake = value;
+                } else if key == "port_base" {
+                    if let Ok(p) = value.parse::<u16>() {
+                        basecamp_port_base = p;
+                    }
+                } else if key == "port_stride" {
+                    if let Ok(p) = value.parse::<u16>() {
+                        basecamp_port_stride = p;
+                    }
+                }
+            }
             "localnet" => {
                 if key == "port" {
                     if !value.is_empty() {
@@ -128,6 +155,18 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         framework_idl_path = DEFAULT_FRAMEWORK_IDL_PATH.to_string();
     }
 
+    let basecamp = if basecamp_seen {
+        Some(BasecampConfig {
+            pin: basecamp_pin,
+            source: basecamp_source,
+            lgpm_flake: basecamp_lgpm_flake,
+            port_base: basecamp_port_base,
+            port_stride: basecamp_port_stride,
+        })
+    } else {
+        None
+    };
+
     Ok(Config {
         version,
         cache_root,
@@ -150,11 +189,12 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                 path: framework_idl_path,
             },
         },
+        basecamp,
     })
 }
 
 pub(crate) fn serialize_config(cfg: &Config) -> String {
-    format!(
+    let mut out = format!(
         "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
         escape_toml_string(&cfg.version),
         escape_toml_string(&cfg.cache_root),
@@ -169,7 +209,20 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
         escape_toml_string(&cfg.framework.idl.path),
         cfg.localnet.port,
         cfg.localnet.risc0_dev_mode,
-    )
+    );
+
+    if let Some(bc) = &cfg.basecamp {
+        out.push_str(&format!(
+            "\n[basecamp]\npin = \"{}\"\nsource = \"{}\"\nlgpm_flake = \"{}\"\nport_base = {}\nport_stride = {}\n",
+            escape_toml_string(&bc.pin),
+            escape_toml_string(&bc.source),
+            escape_toml_string(&bc.lgpm_flake),
+            bc.port_base,
+            bc.port_stride,
+        ));
+    }
+
+    out
 }
 
 pub(crate) fn unquote(value: &str) -> String {
@@ -186,7 +239,7 @@ pub(crate) fn escape_toml_string(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_config;
+    use super::*;
 
     fn minimal_scaffold_toml() -> String {
         r#"[scaffold]
@@ -232,5 +285,75 @@ pin = "deadbeef"
     fn default_localnet_port_when_section_omitted() {
         let cfg = parse_config(&minimal_scaffold_toml()).unwrap();
         assert_eq!(cfg.localnet.port, 3040);
+    }
+
+    fn base_config() -> Config {
+        Config {
+            version: "0.1.0".to_string(),
+            cache_root: "cache".to_string(),
+            lez: RepoRef {
+                url: LEZ_URL.to_string(),
+                source: LEZ_URL.to_string(),
+                path: "lez".to_string(),
+                pin: "abc123".to_string(),
+            },
+            wallet_home_dir: ".scaffold/wallet".to_string(),
+            localnet: LocalnetConfig::default(),
+            framework: FrameworkConfig {
+                kind: FRAMEWORK_KIND_DEFAULT.to_string(),
+                version: DEFAULT_FRAMEWORK_VERSION.to_string(),
+                idl: FrameworkIdlConfig {
+                    spec: DEFAULT_FRAMEWORK_IDL_SPEC.to_string(),
+                    path: DEFAULT_FRAMEWORK_IDL_PATH.to_string(),
+                },
+            },
+            basecamp: None,
+        }
+    }
+
+    #[test]
+    fn basecamp_absent_roundtrips_as_none() {
+        let cfg = base_config();
+        let serialized = serialize_config(&cfg);
+        assert!(
+            !serialized.contains("[basecamp]"),
+            "basecamp section should be omitted when None, got:\n{serialized}"
+        );
+
+        let parsed = parse_config(&serialized).expect("parse");
+        assert!(parsed.basecamp.is_none());
+    }
+
+    #[test]
+    fn basecamp_section_roundtrips_preserving_fields() {
+        let mut cfg = base_config();
+        cfg.basecamp = Some(BasecampConfig {
+            pin: "deadbeef".to_string(),
+            source: "https://github.com/logos-co/logos-basecamp".to_string(),
+            lgpm_flake: "github:logos-co/lgpm#lgpm".to_string(),
+            port_base: 61000,
+            port_stride: 20,
+        });
+
+        let serialized = serialize_config(&cfg);
+        assert!(serialized.contains("[basecamp]"));
+
+        let parsed = parse_config(&serialized).expect("parse");
+        let bc = parsed.basecamp.expect("basecamp present");
+        assert_eq!(bc.pin, "deadbeef");
+        assert_eq!(bc.source, "https://github.com/logos-co/logos-basecamp");
+        assert_eq!(bc.lgpm_flake, "github:logos-co/lgpm#lgpm");
+        assert_eq!(bc.port_base, 61000);
+        assert_eq!(bc.port_stride, 20);
+    }
+
+    #[test]
+    fn basecamp_section_with_only_pin_applies_defaults() {
+        let text = "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"cache\"\n\n[repos.lez]\nurl = \"u\"\nsource = \"s\"\npath = \"p\"\npin = \"q\"\n\n[basecamp]\npin = \"sha1\"\n";
+        let parsed = parse_config(text).expect("parse");
+        let bc = parsed.basecamp.expect("basecamp present");
+        assert_eq!(bc.pin, "sha1");
+        assert_eq!(bc.port_base, 60000);
+        assert_eq!(bc.port_stride, 10);
     }
 }

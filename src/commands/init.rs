@@ -55,6 +55,7 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
             },
         },
         localnet: LocalnetConfig::default(),
+        basecamp: None,
     };
 
     write_text(&scaffold_path, &serialize_config(&cfg))?;

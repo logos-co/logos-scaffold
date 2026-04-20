@@ -33,6 +33,28 @@ pub(crate) struct Config {
     pub(crate) wallet_home_dir: String,
     pub(crate) framework: FrameworkConfig,
     pub(crate) localnet: LocalnetConfig,
+    pub(crate) basecamp: Option<BasecampConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct BasecampConfig {
+    pub(crate) pin: String,
+    pub(crate) source: String,
+    pub(crate) lgpm_flake: String,
+    pub(crate) port_base: u16,
+    pub(crate) port_stride: u16,
+}
+
+impl Default for BasecampConfig {
+    fn default() -> Self {
+        Self {
+            pin: String::new(),
+            source: "https://github.com/logos-co/logos-basecamp".to_string(),
+            lgpm_flake: String::new(),
+            port_base: 60000,
+            port_stride: 10,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +66,20 @@ pub(crate) struct Project {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LocalnetState {
     pub(crate) sequencer_pid: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BasecampSource {
+    Path(String),
+    Flake(String),
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BasecampState {
+    pub(crate) pin: String,
+    pub(crate) basecamp_bin: String,
+    pub(crate) lgpm_bin: String,
+    pub(crate) sources: Vec<BasecampSource>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
