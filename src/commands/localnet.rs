@@ -502,15 +502,16 @@ pub(crate) fn cmd_localnet_reset(
     println!("stopping sequencer…");
     cmd_localnet_stop(state_path, localnet_port)?;
 
-    // cmd_localnet_stop only kills sequencers we manage. If a foreign process
-    // still holds the port, restart would fail — refuse to delete data.
-    if port_open(localnet_addr) {
-        return Err(ResetError::ForeignListener {
+    // `cmd_localnet_stop` sends SIGTERM without waiting, so the port may still
+    // be held by our own sequencer for a short window. Poll briefly for it to
+    // free. If it stays open past the deadline, something foreign owns it and
+    // we refuse to delete data (restart would fail anyway).
+    wait_for_port_free(localnet_addr, Duration::from_secs(5)).map_err(|_| {
+        ResetError::ForeignListener {
             addr: localnet_addr.to_string(),
             pid: listener_pid(localnet_port),
         }
-        .into());
-    }
+    })?;
 
     reset_cleanup(project, lez, state_path, reset_wallet)?;
 
@@ -573,6 +574,20 @@ fn remove_file_if_exists(path: &Path, label: &str) -> DynResult<()> {
     Ok(())
 }
 
+/// Poll `localnet_addr` until no listener is accepting, or `timeout` elapses.
+fn wait_for_port_free(localnet_addr: &str, timeout: Duration) -> Result<(), ()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !port_open(localnet_addr) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn verify_block_production(localnet_addr: &str, timeout_sec: u64) -> DynResult<()> {
     // `rpc_get_last_block` needs a full URL; `localnet_addr` is `host:port`.
     let rpc_url = format!("http://{localnet_addr}");
@@ -611,7 +626,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{reset_cleanup, verify_block_production};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    use super::{reset_cleanup, verify_block_production, wait_for_port_free};
     use crate::commands::wallet_support::wallet_state_path;
     use crate::error::ResetError;
     use crate::model::{
@@ -720,6 +738,21 @@ mod tests {
 
         // No rocksdb, no wallet, no state file — cleanup should succeed silently.
         reset_cleanup(&project, &lez, &state_path, true).unwrap();
+    }
+
+    #[test]
+    fn wait_for_port_free_returns_ok_when_nothing_listening() {
+        // Port 1 is privileged and unbound on a user account.
+        wait_for_port_free("127.0.0.1:1", Duration::from_millis(200)).unwrap();
+    }
+
+    #[test]
+    fn wait_for_port_free_times_out_when_listener_stays_open() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let err = wait_for_port_free(&addr, Duration::from_millis(300));
+        drop(listener);
+        assert!(err.is_err(), "expected timeout while listener was open");
     }
 
     #[test]
