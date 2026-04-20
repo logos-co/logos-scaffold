@@ -415,6 +415,19 @@ pub(crate) fn rpc_get_last_block_id(sequencer_addr: &str) -> Result<u64, RpcReac
         ))
     })?;
 
+    if let Some(err_obj) = body.get("error") {
+        let code = err_obj.get("code").and_then(Value::as_i64);
+        let message = err_obj.get("message").and_then(Value::as_str).unwrap_or("");
+        let formatted = match code {
+            Some(c) => format!("getLastBlockId RPC error {c}: {message}"),
+            None => format!(
+                "getLastBlockId RPC error: {}",
+                one_line(&err_obj.to_string())
+            ),
+        };
+        return Err(RpcReachabilityError::Other(formatted));
+    }
+
     body.get("result").and_then(Value::as_u64).ok_or_else(|| {
         RpcReachabilityError::Other(format!(
             "getLastBlockId response missing numeric `result`: {}",
@@ -762,7 +775,18 @@ details: [1, 2, 3]
         });
 
         let result = super::rpc_get_last_block_id(&url);
-        assert!(result.is_err(), "method-not-found should surface as error");
+        let err_msg = result
+            .expect_err("method-not-found should surface as error")
+            .to_string();
+        assert!(
+            err_msg.contains("-32601") && err_msg.contains("Method not found"),
+            "expected JSON-RPC error code and message to surface, got: {err_msg}"
+        );
+        assert!(
+            !err_msg.contains("missing numeric"),
+            "JSON-RPC error should surface structurally, not fall through to the \
+             generic missing-result branch; got: {err_msg}"
+        );
         handle.join().expect("server thread");
     }
 
