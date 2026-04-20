@@ -18,6 +18,14 @@ include = [
   "/LICENSE-*",
 ]
 
+[[bin]]
+name = "logos-scaffold"
+path = "src/bin/logos-scaffold.rs"
+
+[[bin]]
+name = "lgs"
+path = "src/bin/lgs.rs"
+
 [dependencies]
 anyhow = "1.0"
 bs58 = "0.5"

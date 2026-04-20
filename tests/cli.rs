@@ -1676,3 +1676,83 @@ fn respond_last_block(stream: &mut TcpStream) {
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
+
+#[test]
+fn lgs_help_usage_line_shows_lgs() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: lgs"));
+}
+
+#[test]
+fn logos_scaffold_help_usage_line_shows_logos_scaffold() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: logos-scaffold"));
+}
+
+#[test]
+fn lgs_and_logos_scaffold_advertise_same_subcommands() {
+    let subcommands = [
+        "create", "new", "setup", "build", "deploy", "wallet", "localnet", "doctor", "report",
+    ];
+
+    let lgs_help = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("--help")
+        .output()
+        .expect("run lgs --help");
+    let ls_help = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("--help")
+        .output()
+        .expect("run logos-scaffold --help");
+
+    assert!(lgs_help.status.success(), "lgs --help failed");
+    assert!(ls_help.status.success(), "logos-scaffold --help failed");
+
+    let lgs_out = String::from_utf8_lossy(&lgs_help.stdout);
+    let ls_out = String::from_utf8_lossy(&ls_help.stdout);
+
+    for sub in subcommands {
+        assert!(lgs_out.contains(sub), "lgs help missing subcommand `{sub}`");
+        assert!(
+            ls_out.contains(sub),
+            "logos-scaffold help missing subcommand `{sub}`"
+        );
+    }
+}
+
+#[test]
+fn lgs_and_logos_scaffold_version_match() {
+    let lgs_ver = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("--version")
+        .output()
+        .expect("run lgs --version");
+    let ls_ver = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("--version")
+        .output()
+        .expect("run logos-scaffold --version");
+
+    assert!(lgs_ver.status.success());
+    assert!(ls_ver.status.success());
+
+    let lgs_version_number = String::from_utf8_lossy(&lgs_ver.stdout)
+        .split_whitespace()
+        .last()
+        .unwrap_or_default()
+        .to_string();
+    let ls_version_number = String::from_utf8_lossy(&ls_ver.stdout)
+        .split_whitespace()
+        .last()
+        .unwrap_or_default()
+        .to_string();
+
+    assert_eq!(
+        lgs_version_number, ls_version_number,
+        "version numbers differ"
+    );
+    assert!(!lgs_version_number.is_empty(), "version number is empty");
+}
