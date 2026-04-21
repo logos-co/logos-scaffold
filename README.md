@@ -36,32 +36,15 @@ alias `lgs`. They are functionally identical; use either.
 
 ### Shell completions
 
-Generate a completion script and install it where your shell expects:
+`lgs completions <shell>` prints a completion script to stdout. The script
+completes both `lgs` and `logos-scaffold`.
+
+Per-shell install instructions live in the CLI help itself:
 
 ```bash
-# bash
-lgs completions bash > ~/.local/share/bash-completion/completions/lgs
+lgs completions bash --help
+lgs completions zsh --help
 ```
-
-zsh (plain): drop the script into a directory on `$fpath` and reload `compinit`:
-
-```zsh
-mkdir -p ~/.zfunc
-lgs completions zsh > ~/.zfunc/_lgs
-# add these two lines to ~/.zshrc if not already present:
-#   fpath=(~/.zfunc $fpath)
-#   autoload -Uz compinit && compinit
-```
-
-zsh (oh-my-zsh): install as a custom plugin:
-
-```zsh
-mkdir -p ~/.oh-my-zsh/custom/plugins/lgs
-lgs completions zsh > ~/.oh-my-zsh/custom/plugins/lgs/_lgs
-# then add `lgs` to the `plugins=(...)` array in ~/.zshrc and reload the shell
-```
-
-The generated script completes both `lgs` and `logos-scaffold`.
 
 ## DOGFOODING
 

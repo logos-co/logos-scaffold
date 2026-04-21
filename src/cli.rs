@@ -62,7 +62,11 @@ enum Commands {
     Doctor(DoctorArgs),
     #[command(about = "Collect a sanitized diagnostics archive for issue reporting")]
     Report(ReportArgs),
-    #[command(about = "Print a shell completion script to stdout (bash or zsh)")]
+    #[command(
+        about = "Print a shell completion script to stdout",
+        long_about = "Print a shell completion script to stdout.\n\n\
+                      Run `lgs completions <shell> --help` for per-shell install instructions."
+    )]
     Completions(CompletionsArgs),
     #[command(about = "Initialize scaffold.toml in the current directory")]
     Init,
@@ -72,8 +76,37 @@ enum Commands {
 
 #[derive(Debug, clap::Args)]
 struct CompletionsArgs {
-    #[arg(value_name = "SHELL")]
-    shell: String,
+    #[command(subcommand)]
+    shell: CompletionsShell,
+}
+
+#[derive(Debug, Subcommand)]
+enum CompletionsShell {
+    #[command(
+        about = "Print bash completion script to stdout",
+        long_about = "Print bash completion script to stdout.\n\n\
+                      The generated script completes both `lgs` and `logos-scaffold`.\n\n\
+                      Install:\n\n    \
+                      lgs completions bash > ~/.local/share/bash-completion/completions/lgs\n\n\
+                      Then reload your shell (or `source` the file) to pick up completions."
+    )]
+    Bash,
+    #[command(
+        about = "Print zsh completion script to stdout",
+        long_about = "Print zsh completion script to stdout.\n\n\
+                      The generated script completes both `lgs` and `logos-scaffold`.\n\n\
+                      Install (plain zsh):\n\n    \
+                      mkdir -p ~/.zfunc\n    \
+                      lgs completions zsh > ~/.zfunc/_lgs\n\n\
+                      Then ensure ~/.zshrc contains:\n\n    \
+                      fpath=(~/.zfunc $fpath)\n    \
+                      autoload -Uz compinit && compinit\n\n\
+                      Install (oh-my-zsh, as a custom plugin):\n\n    \
+                      mkdir -p ~/.oh-my-zsh/custom/plugins/lgs\n    \
+                      lgs completions zsh > ~/.oh-my-zsh/custom/plugins/lgs/_lgs\n\n\
+                      Then add `lgs` to the `plugins=(...)` array in ~/.zshrc and reload the shell."
+    )]
+    Zsh,
 }
 
 #[derive(Debug, clap::Args)]
@@ -317,7 +350,13 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
-        Some(Commands::Completions(args)) => cmd_completions(&args.shell),
+        Some(Commands::Completions(args)) => {
+            let shell = match args.shell {
+                CompletionsShell::Bash => "bash",
+                CompletionsShell::Zsh => "zsh",
+            };
+            cmd_completions(shell)
+        }
         Some(Commands::Init) => cmd_init(),
         Some(Commands::Help) => print_help(),
         None => print_help(),

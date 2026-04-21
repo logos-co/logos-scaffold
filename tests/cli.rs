@@ -1857,7 +1857,32 @@ fn completions_unsupported_shell_errors() {
         .args(["completions", "fish"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unsupported shell"));
+        .stderr(predicate::str::contains("fish"));
+}
+
+#[test]
+fn completions_bash_help_shows_install_instructions() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "bash", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("bash-completion/completions/lgs")
+                .and(predicate::str::contains("logos-scaffold")),
+        );
+}
+
+#[test]
+fn completions_zsh_help_shows_install_instructions() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "zsh", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("~/.zfunc/_lgs")
+                .and(predicate::str::contains("oh-my-zsh"))
+                .and(predicate::str::contains("compinit")),
+        );
 }
 
 #[test]
