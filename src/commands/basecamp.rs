@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, MAIN_SEPARATOR};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context};
 
 use crate::constants::{
-    BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB, BASECAMP_URL, BASECAMP_XDG_APP_SUBPATH,
-    DEFAULT_BASECAMP_PIN, DEFAULT_LGPM_FLAKE,
+    BASECAMP_AUTODISCOVER_SKIP_SUBDIRS, BASECAMP_PROFILES_REL, BASECAMP_PROFILE_ALICE,
+    BASECAMP_PROFILE_BOB, BASECAMP_URL, BASECAMP_XDG_APP_SUBPATH, DEFAULT_BASECAMP_PIN,
+    DEFAULT_LGPM_FLAKE,
 };
 use crate::model::{BasecampSource, BasecampState, Project, RepoRef};
 use crate::process::run_checked;
@@ -92,7 +93,7 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
     let basecamp_bin = build_basecamp_app(&basecamp_repo_path, &pin_artifacts)?;
     let lgpm_bin = build_lgpm(&pin_artifacts, bc.lgpm_flake.as_str())?;
 
-    let profiles_root = project.root.join(".scaffold/basecamp/profiles");
+    let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
     let seeded = seed_profiles(
         &profiles_root,
         &[BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB],
@@ -195,8 +196,13 @@ fn cmd_basecamp_launch(
             BASECAMP_PROFILE_BOB
         );
     }
+    // Defense-in-depth against a future caller bypassing the allowlist: refuse
+    // any profile name that could escape the profiles root via path separators.
+    if profile.contains('/') || profile.contains(MAIN_SEPARATOR) {
+        bail!("profile name `{profile}` must not contain path separators");
+    }
 
-    let profiles_root = project.root.join(".scaffold/basecamp/profiles");
+    let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
     let profile_dir = profiles_root.join(&profile);
     if !profile_dir.is_dir() {
         bail!(
@@ -209,10 +215,10 @@ fn cmd_basecamp_launch(
     let expected_comm = basecamp_comm_name(&state.basecamp_bin);
     if let Some(pid) = read_launch_pid(&launch_state_path) {
         // PID reuse means we can't be sure the recorded PID still maps to basecamp.
-        // Only issue signals if the PID's current comm matches; otherwise skip and
-        // clear the stale record so the next launch doesn't keep checking.
+        // Only issue signals if the PID's current comm matches; `kill_process_tree`
+        // re-verifies the comm before each signal to reduce the TOCTOU window.
         if pid_comm_matches(pid, &expected_comm) {
-            kill_process_tree(pid);
+            kill_process_tree(pid, &expected_comm);
         }
         let _ = fs::remove_file(&launch_state_path);
     }
@@ -235,8 +241,6 @@ fn cmd_basecamp_launch(
     }
 
     let env = launch_env(&profile_dir, &profile);
-    write_launch_pid(&launch_state_path, std::process::id())?;
-
     println!("launching basecamp for profile {profile}");
     let mut cmd = Command::new(&state.basecamp_bin);
     for (k, v) in &env {
@@ -246,6 +250,7 @@ fn cmd_basecamp_launch(
     // flow in via a registry — empty in v1 since no modules have published names.
     // Concurrent alice/bob on the same host may collide on module-level ports
     // until upstreams adopt overrides; see basecamp-profiles §3.4.
+    write_launch_pid(&launch_state_path, std::process::id())?;
     let err = cmd.exec();
     // exec() only returns on failure. On Linux/Unix exec preserves the PID, so
     // launch.state is valid once exec succeeds — but on failure the PID we wrote
@@ -279,7 +284,7 @@ fn launch_env(profile_dir: &Path, profile_name: &str) -> BTreeMap<String, OsStri
 /// path outside `<project>/.scaffold/basecamp/profiles/` — guards against a
 /// caller that constructs an absolute profile_dir pointing elsewhere.
 fn scrub_profile_data_and_cache(project_root: &Path, profile_dir: &Path) -> DynResult<()> {
-    let safe_root = project_root.join(".scaffold/basecamp/profiles");
+    let safe_root = project_root.join(BASECAMP_PROFILES_REL);
     // canonicalize() requires every path component to exist. Create safe_root up
     // front so the canonical form is well-defined before the prefix check. For
     // profile_dir we canonicalize the parent (which must exist — we just made it)
@@ -366,6 +371,11 @@ fn basecamp_comm_name(basecamp_bin: &str) -> String {
 /// portable `ps -p` so this works on Linux and macOS. Returns false if `ps`
 /// fails (process gone, PID reused by a process we can't inspect, etc.) — fail
 /// closed: the caller skips the kill on a mismatch.
+///
+/// Both sides are truncated to 15 bytes (the kernel `/proc/<pid>/comm` limit)
+/// before comparison, so a 20-byte binary name like `logos-basecamp-dev` still
+/// matches a `comm` of `logos-basecamp-`. Equality is strict after truncation —
+/// a prefix like `logos-bas` does not match `logos-basecamp-`.
 fn pid_comm_matches(pid: u32, expected: &str) -> bool {
     let out = Command::new("ps")
         .arg("-p")
@@ -378,43 +388,130 @@ fn pid_comm_matches(pid: u32, expected: &str) -> bool {
         return false;
     }
     let comm = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if comm.is_empty() {
+        return false;
+    }
     // ps may print a leading path (BSD) or just the comm (Linux). Compare
     // basenames and tolerate the 15-byte comm truncation either side.
     let comm_base = Path::new(&comm)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(&comm);
-    let len = expected.len().min(comm_base.len()).min(15);
-    len > 0 && comm_base[..len] == expected[..len]
+    let comm_trunc: String = comm_base.chars().take(15).collect();
+    let expected_trunc: String = expected.chars().take(15).collect();
+    !comm_trunc.is_empty() && comm_trunc == expected_trunc
 }
 
-/// Kill the process tree rooted at `pid`. Sends SIGTERM to descendants and the
-/// process itself, waits briefly, then escalates with SIGKILL. Always KILLs
-/// descendants on the second pass — the parent may exit before its children,
-/// leaving them orphaned to init while still bound to profile ports.
-fn kill_process_tree(pid: u32) {
-    let _ = Command::new("pkill")
-        .arg("-TERM")
-        .arg("-P")
-        .arg(pid.to_string())
-        .status();
-    let _ = Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .status();
+/// Kill the process tree rooted at `pid`. Enumerates descendants via `/proc`
+/// (Linux) and falls back to `pkill -P` on other Unix hosts where `/proc` isn't
+/// available. Every signal is gated on a fresh `pid_comm_matches(pid, expected)`
+/// check so a PID that was recycled between our entry check and the actual kill
+/// doesn't get signalled at all. Descendants are always KILLed after the grace
+/// period — the parent may exit before its children, leaving them orphaned to
+/// init while still bound to profile ports.
+fn kill_process_tree(pid: u32, expected_comm: &str) {
+    // Snapshot descendants *before* TERM — once the parent starts exiting, its
+    // children get reparented to init and we lose the ppid linkage.
+    let descendants = collect_descendant_pids(pid);
+    for child in &descendants {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(child.to_string())
+            .status();
+    }
+    if pid_comm_matches(pid, expected_comm) {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+    }
     let parent_exited = wait_for_exit(pid, Duration::from_millis(1500));
-    let _ = Command::new("pkill")
-        .arg("-KILL")
-        .arg("-P")
-        .arg(pid.to_string())
-        .status();
-    if !parent_exited {
+    for child in &descendants {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(child.to_string())
+            .status();
+    }
+    if !parent_exited && pid_comm_matches(pid, expected_comm) {
         let _ = Command::new("kill")
             .arg("-KILL")
             .arg(pid.to_string())
             .status();
         let _ = wait_for_exit(pid, Duration::from_millis(500));
     }
+}
+
+/// BFS over `/proc/<pid>/stat` to collect every descendant PID rooted at
+/// `root`. On non-Linux hosts (no `/proc`), falls back to a one-level `pgrep -P`
+/// — best-effort; grandchildren may be missed on macOS until v2 tracks them via
+/// process groups.
+fn collect_descendant_pids(root: u32) -> Vec<u32> {
+    if Path::new("/proc").is_dir() {
+        return linux_descendant_pids(root);
+    }
+    // Non-Linux fallback: direct children only.
+    let out = Command::new("pgrep")
+        .arg("-P")
+        .arg(root.to_string())
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .collect()
+}
+
+fn linux_descendant_pids(root: u32) -> Vec<u32> {
+    // Build child-map: ppid -> [pid...].
+    let mut children: std::collections::HashMap<u32, Vec<u32>> =
+        std::collections::HashMap::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // /proc/<pid>/stat layout: `<pid> (<comm>) <state> <ppid> ...`
+        // `comm` can contain spaces/parens; split on the *last* ')'.
+        let Some(rparen) = stat.rfind(')') else {
+            continue;
+        };
+        let rest = stat[rparen + 1..].trim_start();
+        let mut fields = rest.split_ascii_whitespace();
+        let _state = fields.next();
+        let Some(ppid_str) = fields.next() else {
+            continue;
+        };
+        let Ok(ppid) = ppid_str.parse::<u32>() else {
+            continue;
+        };
+        children.entry(ppid).or_default().push(pid);
+    }
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut queue: VecDeque<u32> = VecDeque::new();
+    queue.push_back(root);
+    while let Some(p) = queue.pop_front() {
+        if let Some(kids) = children.get(&p) {
+            for &k in kids {
+                if seen.insert(k) {
+                    out.push(k);
+                    queue.push_back(k);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
@@ -456,13 +553,20 @@ fn cmd_basecamp_install(
 
     let cache_root = project.root.join(&project.config.cache_root);
     let lgx_cache = cache_root.join("basecamp/lgx-links");
-    let skip_subdirs: Vec<&str> = vec![project.config.cache_root.as_str(), "target", "node_modules"];
+    let cache_root_first = first_path_component(&project.config.cache_root);
+    let mut skip_subdirs: Vec<&str> =
+        BASECAMP_AUTODISCOVER_SKIP_SUBDIRS.iter().copied().collect();
+    if let Some(c) = cache_root_first.as_deref() {
+        if !skip_subdirs.contains(&c) {
+            skip_subdirs.push(c);
+        }
+    }
     let sources = resolve_install_sources(&project.root, &paths, &flakes, probe, &skip_subdirs)?;
 
     fs::create_dir_all(&lgx_cache)
         .with_context(|| format!("create {}", lgx_cache.display()))?;
 
-    let profiles_root = project.root.join(".scaffold/basecamp/profiles");
+    let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
     let target_profiles: Vec<String> = match profile.as_deref() {
         Some(name) => {
             let profile_dir = profiles_root.join(name);
@@ -489,6 +593,15 @@ fn cmd_basecamp_install(
     // prior resolver policy, superseded by `#lgx-dual`) linger and be replayed by
     // `launch`, causing wasted rebuilds and, when two refs target the same flake
     // dir, overwrites in the profile install tree.
+    let prev_count = state.sources.len();
+    println!(
+        "resolved {} source(s); replacing previous {} recorded source(s)",
+        sources.len(),
+        prev_count
+    );
+    for src in &sources {
+        println!("  - {}", flake_ref(src));
+    }
     let new_state = BasecampState {
         sources: sources.clone(),
         ..state.clone()
@@ -527,7 +640,16 @@ fn collect_lgx_files(sources: &[BasecampSource], lgx_cache: &Path) -> DynResult<
             // On failure (malformed flake, transient nix issue, …) we pass the
             // unfiltered list — nix will warn on unknown inputs rather than fail.
             if let Ok(declared) = flake_declared_inputs(target_ref) {
+                let before = overrides.clone();
                 overrides = retain_declared_overrides(overrides, &declared);
+                for (name, value) in &before {
+                    if !overrides.iter().any(|(n, _)| n == name) {
+                        eprintln!(
+                            "warning: skipping sibling override `{name}` -> `{value}`: \
+                             not declared as an input of `{target_ref}`"
+                        );
+                    }
+                }
             }
         }
         out.extend(materialize_lgx_files(src, lgx_cache, &overrides)?);
@@ -587,6 +709,17 @@ fn flake_path_prefix(flake_ref: &str) -> Option<&str> {
     let rest = flake_ref.strip_prefix("path:")?;
     let end = rest.find('#').unwrap_or(rest.len());
     Some(&rest[..end])
+}
+
+/// First path component of a relative subpath, e.g. `"cache"` for
+/// `"cache/basecamp"`. Returns `None` if the path is empty or absolute.
+fn first_path_component(rel: &str) -> Option<String> {
+    Path::new(rel)
+        .components()
+        .find_map(|c| match c {
+            Component::Normal(s) => s.to_str().map(|s| s.to_string()),
+            _ => None,
+        })
 }
 
 /// Compute the sibling-overrides list for `target`: every other path-flake in
@@ -707,7 +840,7 @@ fn lgpm_install_args(
 }
 
 /// Produce the list of `.lgx` files referenced by a given source.
-/// For `Path`, accepts either a single `.lgx` file or a directory (all `*.lgx` inside).
+/// For `Path`, expects a single `.lgx` file — directories are rejected.
 /// For `Flake`, runs `nix build <ref>` and collects `*.lgx` at the build result root.
 fn materialize_lgx_files(
     src: &BasecampSource,
@@ -739,15 +872,27 @@ fn materialize_lgx_files(
 
 /// Out-link filename for a user-supplied flake ref. Slugified for readability, with a
 /// short hash suffix so two refs that slugify the same don't clobber each other's build.
+/// Uses FNV-1a 64-bit so the suffix is deterministic across Rust versions — unlike
+/// `DefaultHasher`, which may rehash differently between releases and invalidate
+/// persisted `result` symlinks under the nix store after a compiler bump.
 fn flake_out_link_name(flake_ref: &str) -> String {
     let slug: String = flake_ref
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(&flake_ref, &mut hasher);
-    let hash = std::hash::Hasher::finish(&hasher);
+    let hash = fnv1a_64(flake_ref.as_bytes());
     format!("{slug}-{hash:016x}-result")
+}
+
+/// FNV-1a 64-bit. Stable, dependency-free, good enough for collision-avoidance
+/// on short slugs. Not cryptographic.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    h
 }
 
 fn list_lgx(dir: &Path) -> DynResult<Vec<PathBuf>> {

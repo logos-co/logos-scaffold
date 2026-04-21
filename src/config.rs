@@ -99,13 +99,17 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                 } else if key == "lgpm_flake" {
                     basecamp_lgpm_flake = value;
                 } else if key == "port_base" {
-                    if let Ok(p) = value.parse::<u16>() {
-                        basecamp_port_base = p;
-                    }
+                    basecamp_port_base = value.parse::<u16>().map_err(|e| {
+                        anyhow::anyhow!(
+                            "invalid scaffold.toml: [basecamp].port_base = {value:?}: {e}"
+                        )
+                    })?;
                 } else if key == "port_stride" {
-                    if let Ok(p) = value.parse::<u16>() {
-                        basecamp_port_stride = p;
-                    }
+                    basecamp_port_stride = value.parse::<u16>().map_err(|e| {
+                        anyhow::anyhow!(
+                            "invalid scaffold.toml: [basecamp].port_stride = {value:?}: {e}"
+                        )
+                    })?;
                 }
             }
             "localnet" => {

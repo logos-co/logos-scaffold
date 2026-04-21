@@ -1590,6 +1590,7 @@ risc0_dev_mode = true
         .stderr(predicate::str::contains("unknown profile").not());
 }
 
+#[cfg(unix)]
 #[test]
 fn basecamp_launch_rejects_unknown_profile() {
     let temp = tempdir().expect("tempdir");

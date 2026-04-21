@@ -19,6 +19,14 @@ pub(crate) const BASECAMP_URL: &str = "https://github.com/logos-co/logos-basecam
 pub(crate) const DEFAULT_BASECAMP_PIN: &str = "a746cdbc521f72ee22c5a4856fd17a9802bb9d69";
 pub(crate) const BASECAMP_PROFILE_ALICE: &str = "alice";
 pub(crate) const BASECAMP_PROFILE_BOB: &str = "bob";
+/// Relative path (under the project root) to the per-profile XDG tree root.
+pub(crate) const BASECAMP_PROFILES_REL: &str = ".scaffold/basecamp/profiles";
+/// Subdirectories of the project root that `basecamp install` auto-discovery
+/// never descends into when probing for `.lgx`-producing flakes. Hidden dirs
+/// (those starting with `.`) are skipped separately and are not listed here.
+/// The configured `cache_root` is prepended at call sites — it's dynamic.
+pub(crate) const BASECAMP_AUTODISCOVER_SKIP_SUBDIRS: &[&str] =
+    &["target", "node_modules", "result"];
 /// Path under `XDG_DATA_HOME` (and `XDG_CACHE_HOME`) where basecamp reads and
 /// writes its user data — modules, plugins, preinstall seed. Must match the
 /// Qt `QApplication::applicationName()` the pinned basecamp binary is built
