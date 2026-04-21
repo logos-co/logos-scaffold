@@ -41,9 +41,24 @@ Generate a completion script and install it where your shell expects:
 ```bash
 # bash
 lgs completions bash > ~/.local/share/bash-completion/completions/lgs
+```
 
-# zsh (first-existing fpath dir, e.g. ~/.zfunc)
-lgs completions zsh > "${fpath[1]}/_lgs"
+zsh (plain): drop the script into a directory on `$fpath` and reload `compinit`:
+
+```zsh
+mkdir -p ~/.zfunc
+lgs completions zsh > ~/.zfunc/_lgs
+# add these two lines to ~/.zshrc if not already present:
+#   fpath=(~/.zfunc $fpath)
+#   autoload -Uz compinit && compinit
+```
+
+zsh (oh-my-zsh): install as a custom plugin:
+
+```zsh
+mkdir -p ~/.oh-my-zsh/custom/plugins/lgs
+lgs completions zsh > ~/.oh-my-zsh/custom/plugins/lgs/_lgs
+# then add `lgs` to the `plugins=(...)` array in ~/.zshrc and reload the shell
 ```
 
 The generated script completes both `lgs` and `logos-scaffold`.
