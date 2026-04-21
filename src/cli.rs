@@ -137,6 +137,7 @@ enum LocalnetSubcommand {
     Stop,
     Status(LocalnetStatusArgs),
     Logs(LocalnetLogsArgs),
+    Reset(LocalnetResetArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -155,6 +156,23 @@ struct LocalnetStatusArgs {
 struct LocalnetLogsArgs {
     #[arg(long, default_value_t = 200)]
     tail: usize,
+}
+
+/// Reset localnet to a clean state: stop the sequencer, delete the sequencer
+/// database, restart the sequencer, and verify block production.
+///
+/// The wallet is preserved by default. Pass `--reset-wallet` to additionally
+/// delete wallet keypairs and wallet state.
+#[derive(Debug, clap::Args)]
+struct LocalnetResetArgs {
+    /// Also delete the wallet home directory and wallet state. Destructive:
+    /// keypairs are not recoverable after this.
+    #[arg(long)]
+    reset_wallet: bool,
+
+    /// Seconds to wait for the restarted sequencer to produce a block.
+    #[arg(long, default_value_t = 30)]
+    verify_timeout_sec: u64,
 }
 
 #[derive(Debug, clap::Args)]
@@ -255,6 +273,10 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 LocalnetSubcommand::Stop => LocalnetAction::Stop,
                 LocalnetSubcommand::Status(args) => LocalnetAction::Status { json: args.json },
                 LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
+                LocalnetSubcommand::Reset(args) => LocalnetAction::Reset {
+                    reset_wallet: args.reset_wallet,
+                    verify_timeout_sec: args.verify_timeout_sec,
+                },
             };
             cmd_localnet(action)
         }
