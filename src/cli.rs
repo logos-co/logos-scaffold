@@ -276,7 +276,14 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         return cmd_wallet(action);
     }
 
-    let cli = match Cli::try_parse_from(args) {
+    let bin_name = args
+        .first()
+        .and_then(|s| std::path::Path::new(s).file_name())
+        .and_then(|f| f.to_str())
+        .unwrap_or("logos-scaffold")
+        .to_string();
+
+    let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
             clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
@@ -358,8 +365,8 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             cmd_completions(shell)
         }
         Some(Commands::Init) => cmd_init(),
-        Some(Commands::Help) => print_help(),
-        None => print_help(),
+        Some(Commands::Help) => print_help(&bin_name),
+        None => print_help(&bin_name),
     }
 }
 
@@ -367,8 +374,8 @@ pub(crate) fn cli_command() -> clap::Command {
     Cli::command()
 }
 
-pub(crate) fn print_help() -> DynResult<()> {
-    let mut cmd = Cli::command();
+pub(crate) fn print_help(bin_name: &str) -> DynResult<()> {
+    let mut cmd = Cli::command().bin_name(bin_name);
     cmd.print_help()?;
     println!();
     Ok(())

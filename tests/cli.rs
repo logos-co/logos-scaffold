@@ -1696,6 +1696,40 @@ fn logos_scaffold_help_usage_line_shows_logos_scaffold() {
 }
 
 #[test]
+fn lgs_help_subcommand_uses_invoked_bin_name() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: lgs"));
+}
+
+#[test]
+fn logos_scaffold_help_subcommand_uses_invoked_bin_name() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: logos-scaffold"));
+}
+
+#[test]
+fn lgs_no_args_uses_invoked_bin_name() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: lgs"));
+}
+
+#[test]
+fn logos_scaffold_no_args_uses_invoked_bin_name() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: logos-scaffold"));
+}
+
+#[test]
 fn lgs_and_logos_scaffold_advertise_same_subcommands() {
     let subcommands = [
         "create", "new", "setup", "build", "deploy", "wallet", "localnet", "doctor", "report",
