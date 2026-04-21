@@ -359,12 +359,12 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
         Some(Commands::Completions(args)) => {
             let shell = match args.shell {
-                CompletionsShell::Bash => "bash",
-                CompletionsShell::Zsh => "zsh",
+                CompletionsShell::Bash => clap_complete::Shell::Bash,
+                CompletionsShell::Zsh => clap_complete::Shell::Zsh,
             };
             cmd_completions(shell)
         }
-        Some(Commands::Init) => cmd_init(),
+        Some(Commands::Init) => cmd_init(&bin_name),
         Some(Commands::Help) => print_help(&bin_name),
         None => print_help(&bin_name),
     }

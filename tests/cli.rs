@@ -1810,7 +1810,7 @@ fn completions_bash_prints_script_covering_both_bin_names() {
 }
 
 #[test]
-fn completions_zsh_prints_script_with_compdef_alias() {
+fn completions_zsh_compdef_directive_covers_both_names() {
     let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .args(["completions", "zsh"])
         .output()
@@ -1823,8 +1823,10 @@ fn completions_zsh_prints_script_with_compdef_alias() {
         "expected exactly one #compdef header, got {compdef_headers}: {stdout}"
     );
     assert!(
-        stdout.contains("compdef _lgs logos-scaffold"),
-        "missing alias binding: {stdout}"
+        stdout.starts_with("#compdef lgs logos-scaffold\n"),
+        "expected `#compdef lgs logos-scaffold` directive so autoload \
+         registers both names at compinit time; got head: {:?}",
+        stdout.lines().next()
     );
 }
 
@@ -2018,5 +2020,73 @@ fn init_appends_gitignore_once() {
     assert_eq!(
         scaffold_count, 1,
         ".gitignore must contain .scaffold exactly once, got: {gitignore:?}"
+    );
+}
+
+#[test]
+fn init_hint_uses_invoked_bin_name() {
+    let temp_lgs = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp_lgs.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Run 'lgs setup'"));
+
+    let temp_long = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp_long.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Run 'logos-scaffold setup'"));
+}
+
+#[test]
+fn completions_zsh_registers_both_names_in_pristine_shell() {
+    if std::process::Command::new("zsh")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: zsh not available");
+        return;
+    }
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "zsh"])
+        .output()
+        .expect("run lgs completions zsh");
+    assert!(output.status.success(), "expected success exit");
+
+    let temp = tempdir().expect("tempdir");
+    let fpath_dir = temp.path().join("fpath");
+    fs::create_dir_all(&fpath_dir).expect("mkdir fpath");
+    fs::write(fpath_dir.join("_lgs"), &output.stdout).expect("write _lgs");
+
+    // Run a pristine zsh (-f skips rc files) with only our fpath plus
+    // system completion functions, then verify both names are registered
+    // at compinit time — not deferred to first tab.
+    let script = format!(
+        "fpath=({} /usr/share/zsh/*/functions); \
+         autoload -Uz compinit && compinit -u -d {}/zcompdump; \
+         print \"lgs=${{_comps[lgs]:-MISSING}}\"; \
+         print \"logos-scaffold=${{_comps[logos-scaffold]:-MISSING}}\"",
+        fpath_dir.display(),
+        temp.path().display(),
+    );
+
+    let zsh_output = std::process::Command::new("zsh")
+        .args(["-f", "-c", &script])
+        .output()
+        .expect("run pristine zsh");
+    let stdout = String::from_utf8_lossy(&zsh_output.stdout);
+    assert!(
+        stdout.contains("lgs=_lgs"),
+        "expected lgs to be registered, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("logos-scaffold=_lgs"),
+        "expected logos-scaffold to be registered at compinit time, got: {stdout}"
     );
 }

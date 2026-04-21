@@ -15,12 +15,12 @@ use crate::state::write_text;
 use crate::template::project::ensure_scaffold_in_gitignore;
 use crate::DynResult;
 
-pub(crate) fn cmd_init() -> DynResult<()> {
+pub(crate) fn cmd_init(bin_name: &str) -> DynResult<()> {
     let cwd = env::current_dir()?;
-    cmd_init_at(&cwd)
+    cmd_init_at(&cwd, bin_name)
 }
 
-pub(crate) fn cmd_init_at(target: &Path) -> DynResult<()> {
+pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
     let scaffold_path = target.join("scaffold.toml");
     if scaffold_path.exists() {
         bail!(
@@ -65,7 +65,7 @@ pub(crate) fn cmd_init_at(target: &Path) -> DynResult<()> {
     ensure_scaffold_in_gitignore(target)?;
 
     println!(
-        "scaffold.toml created at {}. Run 'lgs setup' to clone LEZ and build dependencies.",
+        "scaffold.toml created at {}. Run '{bin_name} setup' to clone LEZ and build dependencies.",
         scaffold_path.display()
     );
 
@@ -83,7 +83,7 @@ mod tests {
     fn init_writes_parseable_scaffold_toml() {
         let temp = tempdir().expect("tempdir");
         let target = temp.path();
-        cmd_init_at(target).expect("init");
+        cmd_init_at(target, "lgs").expect("init");
 
         let text = fs::read_to_string(target.join("scaffold.toml")).expect("read scaffold.toml");
         let cfg = parse_config(&text).expect("parse scaffold.toml");
@@ -102,7 +102,7 @@ mod tests {
         let target = temp.path();
         fs::write(target.join("scaffold.toml"), "# existing\n").expect("seed");
 
-        let err = cmd_init_at(target).expect_err("should refuse");
+        let err = cmd_init_at(target, "lgs").expect_err("should refuse");
         assert!(
             err.to_string().contains("already exists"),
             "unexpected error: {err}"
@@ -116,7 +116,7 @@ mod tests {
     fn init_creates_scaffold_state_and_logs_dirs() {
         let temp = tempdir().expect("tempdir");
         let target = temp.path();
-        cmd_init_at(target).expect("init");
+        cmd_init_at(target, "lgs").expect("init");
 
         assert!(target.join(".scaffold/state").is_dir());
         assert!(target.join(".scaffold/logs").is_dir());
@@ -128,7 +128,7 @@ mod tests {
         let target = temp.path();
         fs::write(target.join(".gitignore"), "target\n.scaffold\n").expect("seed");
 
-        cmd_init_at(target).expect("init");
+        cmd_init_at(target, "lgs").expect("init");
 
         let text = fs::read_to_string(target.join(".gitignore")).unwrap();
         let count = text.lines().filter(|l| l.trim() == ".scaffold").count();
