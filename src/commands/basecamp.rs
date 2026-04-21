@@ -522,10 +522,58 @@ fn cmd_basecamp_install(
 fn collect_lgx_files(sources: &[BasecampSource], lgx_cache: &Path) -> DynResult<Vec<PathBuf>> {
     let mut out = Vec::new();
     for src in sources {
-        let overrides = sibling_overrides_for(src, sources);
+        let mut overrides = sibling_overrides_for(src, sources);
+        if let (false, BasecampSource::Flake(target_ref)) = (overrides.is_empty(), src) {
+            // On failure (malformed flake, transient nix issue, …) we pass the
+            // unfiltered list — nix will warn on unknown inputs rather than fail.
+            if let Ok(declared) = flake_declared_inputs(target_ref) {
+                overrides = retain_declared_overrides(overrides, &declared);
+            }
+        }
         out.extend(materialize_lgx_files(src, lgx_cache, &overrides)?);
     }
     Ok(out)
+}
+
+/// Drop overrides for input names that aren't in `declared`. Pure function so
+/// tests can exercise the filter without shelling out to nix.
+fn retain_declared_overrides(
+    overrides: Vec<(String, String)>,
+    declared: &std::collections::HashSet<String>,
+) -> Vec<(String, String)> {
+    overrides
+        .into_iter()
+        .filter(|(name, _)| declared.contains(name))
+        .collect()
+}
+
+/// Names of the inputs declared by `flake_ref`'s root flake. Implemented via
+/// `nix flake metadata --json` — lighter than `nix eval` since it only reads
+/// the lockfile / flake.nix inputs block, not any package expressions.
+fn flake_declared_inputs(flake_ref: &str) -> DynResult<std::collections::HashSet<String>> {
+    let out = Command::new("nix")
+        .arg("flake")
+        .arg("metadata")
+        .arg("--json")
+        .arg(flake_ref)
+        .output()
+        .with_context(|| format!("spawn nix flake metadata {flake_ref}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!(
+            "nix flake metadata {flake_ref} failed ({}): {}",
+            out.status,
+            stderr.trim()
+        );
+    }
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).context("parse nix flake metadata JSON")?;
+    let inputs = json
+        .pointer("/locks/nodes/root/inputs")
+        .and_then(|v| v.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    Ok(inputs)
 }
 
 /// Extract the absolute path from a `path:<abs>#attr` flake ref. Returns `None`
@@ -1086,6 +1134,31 @@ mod tests {
             got,
             vec![("tictactoe".to_string(), "path:/repo/tictactoe".to_string())]
         );
+    }
+
+    #[test]
+    fn retain_declared_overrides_drops_unknown_names() {
+        let declared: std::collections::HashSet<String> =
+            ["tictactoe".to_string()].into_iter().collect();
+        let kept = retain_declared_overrides(
+            vec![
+                ("tictactoe".to_string(), "path:/a".to_string()),
+                ("tictactoe-ui-cpp".to_string(), "path:/b".to_string()),
+                ("tictactoe-ui-qml".to_string(), "path:/c".to_string()),
+            ],
+            &declared,
+        );
+        assert_eq!(kept, vec![("tictactoe".to_string(), "path:/a".to_string())]);
+    }
+
+    #[test]
+    fn retain_declared_overrides_empty_declared_drops_all() {
+        let declared = std::collections::HashSet::new();
+        let kept = retain_declared_overrides(
+            vec![("x".to_string(), "path:/x".to_string())],
+            &declared,
+        );
+        assert!(kept.is_empty());
     }
 
     #[test]
