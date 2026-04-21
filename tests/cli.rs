@@ -1252,7 +1252,8 @@ fn deploy_single_program_submits_successfully() {
                     "Submission confirmed by wallet exit status",
                 ))
                 .and(predicate::str::contains("Succeeded: 1"))
-                .and(predicate::str::contains("Failed: 0")),
+                .and(predicate::str::contains("Failed: 0"))
+                .and(predicate::str::contains("reachability probe failed").not()),
         );
 }
 
@@ -1666,7 +1667,7 @@ fn respond_last_block(stream: &mut TcpStream) {
     let mut buf = [0_u8; 4096];
     let _ = stream.read(&mut buf);
 
-    let body = r#"{"jsonrpc":"2.0","result":{"last_block":123},"id":1}"#;
+    let body = r#"{"jsonrpc":"2.0","result":123,"id":1}"#;
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
         body.len(),
