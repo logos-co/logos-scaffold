@@ -71,6 +71,9 @@ logos-scaffold wallet topup [<address> | --address <address-ref>] [--dry-run]
 logos-scaffold wallet default set <address-ref>
 logos-scaffold wallet default set --address <address-ref>
 logos-scaffold wallet -- <wallet-command...>
+logos-scaffold basecamp setup
+logos-scaffold basecamp install [--path PATH]... [--flake REF]... [--profile NAME]
+logos-scaffold basecamp launch <profile> [--no-clean]
 logos-scaffold doctor [--json]
 logos-scaffold report [--out PATH] [--tail N]
 logos-scaffold completions <bash|zsh>
@@ -90,6 +93,9 @@ logos-scaffold help
 - `wallet topup` checks account state first (`wallet account get --account-id ...`), runs `wallet auth-transfer init --account-id ...` only when the destination is uninitialized, then performs Piñata faucet claim (`wallet pinata claim --to ...`). If address is omitted, scaffold uses project default wallet from `.scaffold/state/wallet.state`.
 - `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.
 - `wallet -- ...` forwards raw wallet CLI arguments to the project-local wallet binary while preserving project wallet environment.
+- `basecamp setup` pins basecamp + `lgpm`, builds both, and seeds per-profile XDG directories for `alice` and `bob` under `.scaffold/basecamp/profiles/`.
+- `basecamp install` resolves the project's `.lgx` sources (auto-discovers `packages.<system>.lgx-dual` or the older `.lgx` from the root flake or immediate sub-flakes), builds each via `nix build`, and installs them into every seeded profile via `lgpm`. Project requirements are documented in [docs/basecamp-module-requirements.md](./docs/basecamp-module-requirements.md); pass `--path`/`--flake` to override auto-discovery.
+- `basecamp launch <profile>` scrubs the profile's data/cache, replays `install` to rebuild against current sources, assigns per-profile ports, and execs `basecamp` with the profile's XDG environment. Pass `--no-clean` to skip the scrub.
 - `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
 - `report` creates a `.tar.gz` diagnostics bundle for GitHub issues using strict allowlist collection with redaction and explicit skip reporting.
 - `completions <shell>` prints a shell completion script to stdout. Supported shells: `bash`, `zsh`. The generated script covers both `lgs` and `logos-scaffold`.
