@@ -816,7 +816,7 @@ fn nix_current_system() -> &'static str {
 }
 
 /// Probes a flake ref for the set of package names it exposes under the current system.
-/// Returned list is used to detect `.#lgx` vs `.#lgx-portable` in source resolution.
+/// Returned list is used to detect `.#lgx-dual` / `.#lgx` / `.#lgx-portable` in source resolution.
 trait LgxFlakeProbe {
     fn package_names(&self, flake_ref: &str) -> DynResult<Vec<String>>;
 }
@@ -825,8 +825,9 @@ trait LgxFlakeProbe {
 ///
 /// Precedence (matches §2.2 of the basecamp-profiles spec):
 /// 1. Explicit `--path` / `--flake` — wins if supplied.
-/// 2. Project root `flake.nix` exposing `packages.<system>.lgx` — build `.#lgx`.
-/// 3. Sub-directories with a `flake.nix` exposing `packages.<system>.lgx`.
+/// 2. Project root `flake.nix` exposing `packages.<system>.lgx-dual` (preferred) or
+///    `.lgx` (backwards compat) — build that attribute.
+/// 3. Sub-directories with a `flake.nix` exposing the same.
 /// 4. Project exposes only `.#lgx-portable` — fail with a targeted hint.
 /// 5. No `.lgx` sources found anywhere — fail with a generic hint.
 fn resolve_install_sources(
@@ -884,8 +885,8 @@ fn resolve_install_sources(
     if !portable_only_dirs.is_empty() {
         portable_only_dirs.sort();
         bail!(
-            "found `.#lgx-portable` in {} but no `.#lgx` output.\n\
-             Next step: expose `packages.<system>.lgx` in your flake, or re-run with \
+            "found `.#lgx-portable` in {} but no `.#lgx-dual` / `.#lgx` output.\n\
+             Next step: expose `packages.<system>.lgx-dual` in your flake, or re-run with \
              `--flake <path>#lgx-portable` to opt into the portable variant explicitly.",
             portable_only_dirs.join(", ")
         );
@@ -893,8 +894,8 @@ fn resolve_install_sources(
 
     bail!(
         "no `.lgx` sources found in this project.\n\
-         Next step: expose `packages.<system>.lgx` in a `flake.nix` at the project root \
-         (or in a sub-directory), or pass `--path <file.lgx>` / `--flake <ref>#lgx`."
+         Next step: expose `packages.<system>.lgx-dual` in a `flake.nix` at the project root \
+         (or in a sub-directory), or pass `--path <file.lgx>` / `--flake <ref>#lgx-dual`."
     )
 }
 
@@ -906,11 +907,18 @@ fn classify_flake_dir(
 ) -> DynResult<()> {
     let flake_ref = format!("path:{}", dir.display());
     let names = probe.package_names(&flake_ref)?;
-    let has_lgx = names.iter().any(|n| n == "lgx");
-    let has_portable = names.iter().any(|n| n == "lgx-portable");
-    if has_lgx {
-        found.push(BasecampSource::Flake(format!("{flake_ref}#lgx")));
-    } else if has_portable {
+    // Prefer `lgx-dual` (unified dev+prod target) over `lgx` (older name).
+    // `lgx-portable` alone is a failure case handled by the caller.
+    let attr = if names.iter().any(|n| n == "lgx-dual") {
+        Some("lgx-dual")
+    } else if names.iter().any(|n| n == "lgx") {
+        Some("lgx")
+    } else {
+        None
+    };
+    if let Some(attr) = attr {
+        found.push(BasecampSource::Flake(format!("{flake_ref}#{attr}")));
+    } else if names.iter().any(|n| n == "lgx-portable") {
         portable_only_dirs.push(dir.display().to_string());
     }
     Ok(())
@@ -994,14 +1002,47 @@ mod tests {
     }
 
     #[test]
-    fn resolve_install_sources_prefers_root_flake_lgx() {
+    fn resolve_install_sources_prefers_root_flake_lgx_dual() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        fs::write(root.join("flake.nix"), b"{}").unwrap();
+        let root_ref = format!("path:{}", root.display());
+        let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx-dual", "default"])]);
+        let got = resolve_install_sources(root, &[], &[], &probe, &[]).expect("resolve");
+        assert_eq!(
+            got,
+            vec![BasecampSource::Flake(format!("{root_ref}#lgx-dual"))]
+        );
+    }
+
+    #[test]
+    fn resolve_install_sources_prefers_lgx_dual_over_lgx_when_both_present() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        fs::write(root.join("flake.nix"), b"{}").unwrap();
+        let root_ref = format!("path:{}", root.display());
+        let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx", "lgx-dual"])]);
+        let got = resolve_install_sources(root, &[], &[], &probe, &[]).expect("resolve");
+        assert_eq!(
+            got,
+            vec![BasecampSource::Flake(format!("{root_ref}#lgx-dual"))],
+            "lgx-dual is the unified target; prefer it when a flake exposes both"
+        );
+    }
+
+    #[test]
+    fn resolve_install_sources_falls_back_to_lgx_when_dual_absent() {
         let tmp = tempdir().expect("tempdir");
         let root = tmp.path();
         fs::write(root.join("flake.nix"), b"{}").unwrap();
         let root_ref = format!("path:{}", root.display());
         let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx", "default"])]);
         let got = resolve_install_sources(root, &[], &[], &probe, &[]).expect("resolve");
-        assert_eq!(got, vec![BasecampSource::Flake(format!("{root_ref}#lgx"))]);
+        assert_eq!(
+            got,
+            vec![BasecampSource::Flake(format!("{root_ref}#lgx"))],
+            "backwards compat: modules still exposing only `lgx` must keep working"
+        );
     }
 
     #[test]
@@ -1016,9 +1057,9 @@ mod tests {
             fs::write(d.join("flake.nix"), b"{}").unwrap();
         }
         let refs = [
-            (format!("path:{}", sub_a.display()), vec!["lgx"]),
-            (format!("path:{}", sub_b.display()), vec!["lgx"]),
-            (format!("path:{}", hidden.display()), vec!["lgx"]),
+            (format!("path:{}", sub_a.display()), vec!["lgx-dual"]),
+            (format!("path:{}", sub_b.display()), vec!["lgx-dual"]),
+            (format!("path:{}", hidden.display()), vec!["lgx-dual"]),
         ];
         let answers: Vec<(&str, &[&str])> = refs
             .iter()
@@ -1029,8 +1070,8 @@ mod tests {
         assert_eq!(
             got,
             vec![
-                BasecampSource::Flake(format!("path:{}#lgx", sub_a.display())),
-                BasecampSource::Flake(format!("path:{}#lgx", sub_b.display())),
+                BasecampSource::Flake(format!("path:{}#lgx-dual", sub_a.display())),
+                BasecampSource::Flake(format!("path:{}#lgx-dual", sub_b.display())),
             ],
             "hidden dotdirs must be skipped; results must be sorted"
         );
@@ -1064,9 +1105,9 @@ mod tests {
         fs::create_dir_all(&real).unwrap();
         fs::write(real.join("flake.nix"), b"{}").unwrap();
         let answers_owned = vec![
-            (format!("path:{}", root.join("target").display()), vec!["lgx"]),
-            (format!("path:{}", root.join("cache").display()), vec!["lgx"]),
-            (format!("path:{}", real.display()), vec!["lgx"]),
+            (format!("path:{}", root.join("target").display()), vec!["lgx-dual"]),
+            (format!("path:{}", root.join("cache").display()), vec!["lgx-dual"]),
+            (format!("path:{}", real.display()), vec!["lgx-dual"]),
         ];
         let answers: Vec<(&str, &[&str])> = answers_owned
             .iter()
@@ -1077,7 +1118,7 @@ mod tests {
             .expect("resolve");
         assert_eq!(
             got,
-            vec![BasecampSource::Flake(format!("path:{}#lgx", real.display()))],
+            vec![BasecampSource::Flake(format!("path:{}#lgx-dual", real.display()))],
             "skip_subdirs must prune target/cache even if they contain flake.nix"
         );
     }
