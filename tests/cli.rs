@@ -1759,28 +1759,96 @@ fn lgs_and_logos_scaffold_version_match() {
 
 #[test]
 fn completions_bash_prints_script_covering_both_bin_names() {
-    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .args(["completions", "bash"])
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("complete -F")
-                .and(predicate::str::contains("lgs"))
-                .and(predicate::str::contains("logos-scaffold")),
-        );
+        .output()
+        .expect("run lgs completions bash");
+    assert!(output.status.success(), "expected success exit");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(
+        stdout.contains("complete -F _lgs"),
+        "missing primary binding: {stdout}"
+    );
+    assert!(
+        stdout.contains("logos-scaffold"),
+        "missing alias binding: {stdout}"
+    );
 }
 
 #[test]
-fn completions_zsh_prints_script_covering_both_bin_names() {
-    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+fn completions_zsh_prints_script_with_compdef_alias() {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .args(["completions", "zsh"])
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("#compdef")
-                .and(predicate::str::contains("_lgs"))
-                .and(predicate::str::contains("_logos-scaffold")),
-        );
+        .output()
+        .expect("run lgs completions zsh");
+    assert!(output.status.success(), "expected success exit");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let compdef_headers = stdout.matches("#compdef").count();
+    assert_eq!(
+        compdef_headers, 1,
+        "expected exactly one #compdef header, got {compdef_headers}: {stdout}"
+    );
+    assert!(
+        stdout.contains("compdef _lgs logos-scaffold"),
+        "missing alias binding: {stdout}"
+    );
+}
+
+#[test]
+fn completions_bash_output_is_syntax_clean() {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "bash"])
+        .output()
+        .expect("run lgs completions bash");
+    assert!(output.status.success(), "expected success exit");
+
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("lgs.bash");
+    fs::write(&path, &output.stdout).expect("write script");
+
+    let syntax = std::process::Command::new("bash")
+        .arg("-n")
+        .arg(&path)
+        .output()
+        .expect("bash -n");
+    assert!(
+        syntax.status.success(),
+        "bash -n failed: {}",
+        String::from_utf8_lossy(&syntax.stderr)
+    );
+}
+
+#[test]
+fn completions_zsh_output_is_syntax_clean() {
+    if std::process::Command::new("zsh")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: zsh not available");
+        return;
+    }
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "zsh"])
+        .output()
+        .expect("run lgs completions zsh");
+    assert!(output.status.success(), "expected success exit");
+
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("_lgs");
+    fs::write(&path, &output.stdout).expect("write script");
+
+    let syntax = std::process::Command::new("zsh")
+        .arg("-n")
+        .arg(&path)
+        .output()
+        .expect("zsh -n");
+    assert!(
+        syntax.status.success(),
+        "zsh -n failed: {}",
+        String::from_utf8_lossy(&syntax.stderr)
+    );
 }
 
 #[test]
@@ -1891,30 +1959,5 @@ fn init_appends_gitignore_once() {
     assert_eq!(
         scaffold_count, 1,
         ".gitignore must contain .scaffold exactly once, got: {gitignore:?}"
-    );
-}
-
-#[test]
-fn init_output_is_parseable_by_setup() {
-    let temp = tempdir().expect("tempdir");
-
-    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
-        .current_dir(temp.path())
-        .arg("init")
-        .assert()
-        .success();
-
-    // `lgs setup` will fail on repo sync (no real LEZ path), but if it gets past
-    // config parsing we've confirmed the generated scaffold.toml is well-formed.
-    // A parse failure surfaces as "invalid scaffold.toml" on stderr.
-    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
-        .current_dir(temp.path())
-        .arg("setup")
-        .output()
-        .expect("run lgs setup");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("invalid scaffold.toml"),
-        "scaffold.toml written by init should parse cleanly; stderr: {stderr}"
     );
 }

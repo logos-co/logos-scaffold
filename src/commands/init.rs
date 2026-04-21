@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 
 use crate::config::serialize_config;
 use crate::constants::{
@@ -58,8 +58,10 @@ pub(crate) fn cmd_init_at(target: &Path) -> DynResult<()> {
     };
 
     write_text(&scaffold_path, &serialize_config(&cfg))?;
-    fs::create_dir_all(target.join(".scaffold/state"))?;
-    fs::create_dir_all(target.join(".scaffold/logs"))?;
+    fs::create_dir_all(target.join(".scaffold/state"))
+        .with_context(|| format!("creating {}/.scaffold/state", target.display()))?;
+    fs::create_dir_all(target.join(".scaffold/logs"))
+        .with_context(|| format!("creating {}/.scaffold/logs", target.display()))?;
     ensure_scaffold_in_gitignore(target)?;
 
     println!(
@@ -75,25 +77,13 @@ mod tests {
     use super::*;
     use crate::config::parse_config;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn mk_temp_dir(suffix: &str) -> std::path::PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "logos-scaffold-init-{suffix}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
+    use tempfile::tempdir;
 
     #[test]
     fn init_writes_parseable_scaffold_toml() {
-        let target = mk_temp_dir("parse");
-        cmd_init_at(&target).expect("init");
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        cmd_init_at(target).expect("init");
 
         let text = fs::read_to_string(target.join("scaffold.toml")).expect("read scaffold.toml");
         let cfg = parse_config(&text).expect("parse scaffold.toml");
@@ -104,16 +94,15 @@ mod tests {
         assert_eq!(cfg.wallet_home_dir, ".scaffold/wallet");
         assert_eq!(cfg.localnet.port, 3040);
         assert!(cfg.localnet.risc0_dev_mode);
-
-        fs::remove_dir_all(&target).ok();
     }
 
     #[test]
     fn init_refuses_when_scaffold_toml_exists() {
-        let target = mk_temp_dir("refuse");
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
         fs::write(target.join("scaffold.toml"), "# existing\n").expect("seed");
 
-        let err = cmd_init_at(&target).expect_err("should refuse");
+        let err = cmd_init_at(target).expect_err("should refuse");
         assert!(
             err.to_string().contains("already exists"),
             "unexpected error: {err}"
@@ -121,32 +110,28 @@ mod tests {
 
         let after = fs::read_to_string(target.join("scaffold.toml")).unwrap();
         assert_eq!(after, "# existing\n");
-
-        fs::remove_dir_all(&target).ok();
     }
 
     #[test]
     fn init_creates_scaffold_state_and_logs_dirs() {
-        let target = mk_temp_dir("dirs");
-        cmd_init_at(&target).expect("init");
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        cmd_init_at(target).expect("init");
 
         assert!(target.join(".scaffold/state").is_dir());
         assert!(target.join(".scaffold/logs").is_dir());
-
-        fs::remove_dir_all(&target).ok();
     }
 
     #[test]
     fn init_gitignore_is_idempotent_with_existing_scaffold_line() {
-        let target = mk_temp_dir("gitignore");
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
         fs::write(target.join(".gitignore"), "target\n.scaffold\n").expect("seed");
 
-        cmd_init_at(&target).expect("init");
+        cmd_init_at(target).expect("init");
 
         let text = fs::read_to_string(target.join(".gitignore")).unwrap();
         let count = text.lines().filter(|l| l.trim() == ".scaffold").count();
         assert_eq!(count, 1);
-
-        fs::remove_dir_all(&target).ok();
     }
 }

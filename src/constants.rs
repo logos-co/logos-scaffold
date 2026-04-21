@@ -1,4 +1,4 @@
-pub(crate) const VERSION: &str = "0.1.0";
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const LEZ_URL: &str = "https://github.com/logos-blockchain/logos-execution-zone.git";
 pub(crate) const DEFAULT_LEZ_PIN: &str = "35d8df0d031315219f94d1546ceb862b0e5b208f";
 pub(crate) const DEFAULT_HELLO_WORLD_IMAGE_ID_HEX: &str =
