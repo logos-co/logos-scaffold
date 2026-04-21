@@ -175,11 +175,7 @@ fn resolve_basecamp_binary(app_link: &Path) -> DynResult<PathBuf> {
 // lock; document as 'don't do that'"). The code below assumes a single launcher
 // per profile at a time — scrub, re-seed, replay install, and PID write are all
 // non-atomic. If two invocations race, expect partial state.
-fn cmd_basecamp_launch(
-    project: Project,
-    profile: String,
-    no_clean: bool,
-) -> DynResult<()> {
+fn cmd_basecamp_launch(project: Project, profile: String, no_clean: bool) -> DynResult<()> {
     let state_path = project.root.join(".scaffold/state/basecamp.state");
     let state = match read_basecamp_state(&state_path).ok() {
         Some(s) if !s.basecamp_bin.is_empty() && !s.lgpm_bin.is_empty() => s,
@@ -289,8 +285,7 @@ fn scrub_profile_data_and_cache(project_root: &Path, profile_dir: &Path) -> DynR
     // front so the canonical form is well-defined before the prefix check. For
     // profile_dir we canonicalize the parent (which must exist — we just made it)
     // and append the final component, matching how the path would resolve.
-    fs::create_dir_all(&safe_root)
-        .with_context(|| format!("create {}", safe_root.display()))?;
+    fs::create_dir_all(&safe_root).with_context(|| format!("create {}", safe_root.display()))?;
     let canon_safe = safe_root
         .canonicalize()
         .with_context(|| format!("canonicalize {}", safe_root.display()))?;
@@ -305,8 +300,7 @@ fn scrub_profile_data_and_cache(project_root: &Path, profile_dir: &Path) -> DynR
     for xdg in ["xdg-data", "xdg-cache"] {
         let dir = profile_dir.join(xdg);
         if dir.exists() {
-            fs::remove_dir_all(&dir)
-                .with_context(|| format!("scrub {}", dir.display()))?;
+            fs::remove_dir_all(&dir).with_context(|| format!("scrub {}", dir.display()))?;
         }
     }
     Ok(())
@@ -347,12 +341,10 @@ fn read_launch_pid(path: &Path) -> Option<u32> {
 /// leave a truncated `launch.state` that reads back as malformed garbage.
 fn write_launch_pid(path: &Path, pid: u32) -> DynResult<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     let tmp = path.with_extension("state.tmp");
-    fs::write(&tmp, format!("pid={pid}\n"))
-        .with_context(|| format!("write {}", tmp.display()))?;
+    fs::write(&tmp, format!("pid={pid}\n")).with_context(|| format!("write {}", tmp.display()))?;
     fs::rename(&tmp, path)
         .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))
 }
@@ -466,8 +458,7 @@ fn collect_descendant_pids(root: u32) -> Vec<u32> {
 
 fn linux_descendant_pids(root: u32) -> Vec<u32> {
     // Build child-map: ppid -> [pid...].
-    let mut children: std::collections::HashMap<u32, Vec<u32>> =
-        std::collections::HashMap::new();
+    let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
     let Ok(entries) = fs::read_dir("/proc") else {
         return Vec::new();
     };
@@ -518,10 +509,7 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         // `kill -0` returns non-zero when the PID no longer exists (or we lack perms).
-        let status = Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .status();
+        let status = Command::new("kill").arg("-0").arg(pid.to_string()).status();
         if matches!(status, Ok(s) if !s.success()) || status.is_err() {
             return true;
         }
@@ -542,9 +530,7 @@ fn cmd_basecamp_install(
         .ok()
         .filter(|s| !s.basecamp_bin.is_empty() && !s.lgpm_bin.is_empty())
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "basecamp not set up yet; run: logos-scaffold basecamp setup"
-            )
+            anyhow::anyhow!("basecamp not set up yet; run: logos-scaffold basecamp setup")
         })?;
 
     if !Path::new(&state.basecamp_bin).exists() || !Path::new(&state.lgpm_bin).exists() {
@@ -554,8 +540,7 @@ fn cmd_basecamp_install(
     let cache_root = project.root.join(&project.config.cache_root);
     let lgx_cache = cache_root.join("basecamp/lgx-links");
     let cache_root_first = first_path_component(&project.config.cache_root);
-    let mut skip_subdirs: Vec<&str> =
-        BASECAMP_AUTODISCOVER_SKIP_SUBDIRS.iter().copied().collect();
+    let mut skip_subdirs: Vec<&str> = BASECAMP_AUTODISCOVER_SKIP_SUBDIRS.iter().copied().collect();
     if let Some(c) = cache_root_first.as_deref() {
         if !skip_subdirs.contains(&c) {
             skip_subdirs.push(c);
@@ -563,8 +548,7 @@ fn cmd_basecamp_install(
     }
     let sources = resolve_install_sources(&project.root, &paths, &flakes, probe, &skip_subdirs)?;
 
-    fs::create_dir_all(&lgx_cache)
-        .with_context(|| format!("create {}", lgx_cache.display()))?;
+    fs::create_dir_all(&lgx_cache).with_context(|| format!("create {}", lgx_cache.display()))?;
 
     let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
     let target_profiles: Vec<String> = match profile.as_deref() {
@@ -714,21 +698,16 @@ fn flake_path_prefix(flake_ref: &str) -> Option<&str> {
 /// First path component of a relative subpath, e.g. `"cache"` for
 /// `"cache/basecamp"`. Returns `None` if the path is empty or absolute.
 fn first_path_component(rel: &str) -> Option<String> {
-    Path::new(rel)
-        .components()
-        .find_map(|c| match c {
-            Component::Normal(s) => s.to_str().map(|s| s.to_string()),
-            _ => None,
-        })
+    Path::new(rel).components().find_map(|c| match c {
+        Component::Normal(s) => s.to_str().map(|s| s.to_string()),
+        _ => None,
+    })
 }
 
 /// Compute the sibling-overrides list for `target`: every other path-flake in
 /// `all` whose path lives under the same parent directory as `target`'s path.
 /// Returned as `(input_name, "path:<abs>")` pairs ready for `--override-input`.
-fn sibling_overrides_for(
-    target: &BasecampSource,
-    all: &[BasecampSource],
-) -> Vec<(String, String)> {
+fn sibling_overrides_for(target: &BasecampSource, all: &[BasecampSource]) -> Vec<(String, String)> {
     let BasecampSource::Flake(target_ref) = target else {
         return Vec::new();
     };
@@ -815,8 +794,7 @@ fn install_sources_into_profiles(
         return Ok(());
     }
     let lgx_cache = project_root.join(cache_root).join("basecamp/lgx-links");
-    fs::create_dir_all(&lgx_cache)
-        .with_context(|| format!("create {}", lgx_cache.display()))?;
+    fs::create_dir_all(&lgx_cache).with_context(|| format!("create {}", lgx_cache.display()))?;
     let lgx_files = collect_lgx_files(&state.sources, &lgx_cache)?;
     run_lgpm_install(&state.lgpm_bin, profiles_root, profiles, &lgx_files, false)
 }
@@ -928,8 +906,7 @@ impl LgxFlakeProbe for NixLgxProbe {
             // Anything else — lockfile errors, syntax errors, network failures —
             // must propagate so the user sees the real reason instead of the generic
             // "no .lgx sources found" fallback.
-            if stderr.contains("does not provide attribute")
-                || stderr.contains("missing attribute")
+            if stderr.contains("does not provide attribute") || stderr.contains("missing attribute")
             {
                 return Ok(Vec::new());
             }
@@ -1004,7 +981,8 @@ fn resolve_install_sources(
         for entry in fs::read_dir(project_root)
             .with_context(|| format!("read {}", project_root.display()))?
         {
-            let entry = entry.with_context(|| format!("read entry in {}", project_root.display()))?;
+            let entry =
+                entry.with_context(|| format!("read entry in {}", project_root.display()))?;
             let path = entry.path();
             if !path.is_dir() {
                 continue;
@@ -1107,10 +1085,7 @@ mod tests {
         fn new(answers: &[(&str, &[&str])]) -> Self {
             let mut map = HashMap::new();
             for (k, v) in answers {
-                map.insert(
-                    k.to_string(),
-                    v.iter().map(|s| s.to_string()).collect(),
-                );
+                map.insert(k.to_string(), v.iter().map(|s| s.to_string()).collect());
             }
             Self {
                 answers: RefCell::new(map),
@@ -1135,8 +1110,8 @@ mod tests {
         let probe = FakeProbe::new(&[]);
         let paths = vec![PathBuf::from("/a/mod.lgx")];
         let flakes = vec!["./sub#lgx".to_string()];
-        let got = resolve_install_sources(tmp.path(), &paths, &flakes, &probe, &[])
-            .expect("resolve");
+        let got =
+            resolve_install_sources(tmp.path(), &paths, &flakes, &probe, &[]).expect("resolve");
         assert_eq!(
             got,
             vec![
@@ -1250,8 +1225,14 @@ mod tests {
         fs::create_dir_all(&real).unwrap();
         fs::write(real.join("flake.nix"), b"{}").unwrap();
         let answers_owned = vec![
-            (format!("path:{}", root.join("target").display()), vec!["lgx-dual"]),
-            (format!("path:{}", root.join("cache").display()), vec!["lgx-dual"]),
+            (
+                format!("path:{}", root.join("target").display()),
+                vec!["lgx-dual"],
+            ),
+            (
+                format!("path:{}", root.join("cache").display()),
+                vec!["lgx-dual"],
+            ),
             (format!("path:{}", real.display()), vec!["lgx-dual"]),
         ];
         let answers: Vec<(&str, &[&str])> = answers_owned
@@ -1259,11 +1240,14 @@ mod tests {
             .map(|(k, v)| (k.as_str(), v.as_slice()))
             .collect();
         let probe = FakeProbe::new(&answers);
-        let got = resolve_install_sources(root, &[], &[], &probe, &["target", "cache"])
-            .expect("resolve");
+        let got =
+            resolve_install_sources(root, &[], &[], &probe, &["target", "cache"]).expect("resolve");
         assert_eq!(
             got,
-            vec![BasecampSource::Flake(format!("path:{}#lgx-dual", real.display()))],
+            vec![BasecampSource::Flake(format!(
+                "path:{}#lgx-dual",
+                real.display()
+            ))],
             "skip_subdirs must prune target/cache even if they contain flake.nix"
         );
     }
@@ -1344,10 +1328,8 @@ mod tests {
     #[test]
     fn retain_declared_overrides_empty_declared_drops_all() {
         let declared = std::collections::HashSet::new();
-        let kept = retain_declared_overrides(
-            vec![("x".to_string(), "path:/x".to_string())],
-            &declared,
-        );
+        let kept =
+            retain_declared_overrides(vec![("x".to_string(), "path:/x".to_string())], &declared);
         assert!(kept.is_empty());
     }
 
@@ -1358,19 +1340,13 @@ mod tests {
             BasecampSource::Flake("path:/repo/b#lgx".to_string()),
         ];
         assert!(
-            sibling_overrides_for(
-                &BasecampSource::Path("/anywhere.lgx".to_string()),
-                &all
-            )
-            .is_empty(),
+            sibling_overrides_for(&BasecampSource::Path("/anywhere.lgx".to_string()), &all)
+                .is_empty(),
             "Path sources don't need overrides — they aren't built with nix"
         );
         assert!(
-            sibling_overrides_for(
-                &BasecampSource::Flake("github:x/y#lgx".to_string()),
-                &all
-            )
-            .is_empty(),
+            sibling_overrides_for(&BasecampSource::Flake("github:x/y#lgx".to_string()), &all)
+                .is_empty(),
             "remote flakes don't get sibling-override treatment (no shared local parent)"
         );
     }
@@ -1396,15 +1372,8 @@ mod tests {
 
         for name in names {
             for xdg in ["xdg-config", "xdg-data", "xdg-cache"] {
-                let dir = root
-                    .join(name)
-                    .join(xdg)
-                    .join(BASECAMP_XDG_APP_SUBPATH);
-                assert!(
-                    dir.is_dir(),
-                    "expected XDG subdir at {}",
-                    dir.display()
-                );
+                let dir = root.join(name).join(xdg).join(BASECAMP_XDG_APP_SUBPATH);
+                assert!(dir.is_dir(), "expected XDG subdir at {}", dir.display());
             }
         }
     }
@@ -1413,9 +1382,18 @@ mod tests {
     fn launch_env_exports_xdg_under_profile_dir_and_profile_name() {
         let profile_dir = Path::new("/p/alice");
         let env = launch_env(profile_dir, "alice");
-        assert_eq!(env.get("XDG_CONFIG_HOME").unwrap(), &OsString::from("/p/alice/xdg-config"));
-        assert_eq!(env.get("XDG_DATA_HOME").unwrap(), &OsString::from("/p/alice/xdg-data"));
-        assert_eq!(env.get("XDG_CACHE_HOME").unwrap(), &OsString::from("/p/alice/xdg-cache"));
+        assert_eq!(
+            env.get("XDG_CONFIG_HOME").unwrap(),
+            &OsString::from("/p/alice/xdg-config")
+        );
+        assert_eq!(
+            env.get("XDG_DATA_HOME").unwrap(),
+            &OsString::from("/p/alice/xdg-data")
+        );
+        assert_eq!(
+            env.get("XDG_CACHE_HOME").unwrap(),
+            &OsString::from("/p/alice/xdg-cache")
+        );
         assert_eq!(env.get("LOGOS_PROFILE").unwrap(), &OsString::from("alice"));
     }
 
@@ -1478,7 +1456,10 @@ mod tests {
         let path = tmp.path().join("launch.state");
         write_launch_pid(&path, 99).expect("write");
         // The atomic-write helper uses `<path>.state.tmp` as its staging file.
-        assert!(!path.with_extension("state.tmp").exists(), "tmp file must be renamed, not left behind");
+        assert!(
+            !path.with_extension("state.tmp").exists(),
+            "tmp file must be renamed, not left behind"
+        );
     }
 
     #[test]
@@ -1506,8 +1487,14 @@ mod tests {
 
     #[test]
     fn basecamp_comm_name_truncates_to_15_bytes_like_proc_comm() {
-        assert_eq!(basecamp_comm_name("/nix/store/xyz/bin/basecamp"), "basecamp");
-        assert_eq!(basecamp_comm_name("/x/extremely-long-binary-name"), "extremely-long-");
+        assert_eq!(
+            basecamp_comm_name("/nix/store/xyz/bin/basecamp"),
+            "basecamp"
+        );
+        assert_eq!(
+            basecamp_comm_name("/x/extremely-long-binary-name"),
+            "extremely-long-"
+        );
     }
 
     #[test]
@@ -1530,6 +1517,9 @@ mod tests {
             .join("keep-me.txt");
         fs::write(&sentinel, b"hi").expect("write sentinel");
         seed_profiles(&root, &["alice"]).expect("second");
-        assert!(sentinel.exists(), "second seed must not scrub existing contents");
+        assert!(
+            sentinel.exists(),
+            "second seed must not scrub existing contents"
+        );
     }
 }

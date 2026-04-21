@@ -195,6 +195,9 @@ mod tests {
             msg.contains("newline") && msg.contains("source:flake"),
             "expected newline-rejection error, got: {msg}"
         );
-        assert!(!path.exists(), "state file must not be written on validation failure");
+        assert!(
+            !path.exists(),
+            "state file must not be written on validation failure"
+        );
     }
 }
