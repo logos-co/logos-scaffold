@@ -18,7 +18,7 @@ You should have:
 
 Plus:
 
-- Rerun the relevant [DOGFOODING](./DOGFOODING.md) scenarios (`D1`–`L4`). See the "Minimum Rerun Guidance" section at the bottom of that doc.
+- Rerun the relevant [DOGFOODING](./DOGFOODING.md#minimum-rerun-guidance-for-future-changes) scenarios (`D1`–`L4`).
 - Read the PR template and fill in every section.
 
 ## What Makes a High-Quality PR
