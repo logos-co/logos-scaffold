@@ -16,7 +16,7 @@ use crate::project::{ensure_dir_exists, find_project_root, load_project};
 use crate::state::{read_localnet_state, write_localnet_state};
 use crate::DynResult;
 
-use super::wallet_support::{rpc_get_last_block, wallet_state_path, RpcReachabilityError};
+use super::wallet_support::{rpc_get_last_block_id, wallet_state_path, RpcReachabilityError};
 
 // LOCALNET_ADDR is now read from project config (localnet.port)
 
@@ -589,7 +589,7 @@ fn wait_for_port_free(localnet_addr: &str, timeout: Duration) -> Result<(), ()> 
 }
 
 fn verify_block_production(localnet_addr: &str, timeout_sec: u64) -> DynResult<()> {
-    // `rpc_get_last_block` needs a full URL; `localnet_addr` is `host:port`.
+    // `rpc_get_last_block_id` needs a full URL; `localnet_addr` is `host:port`.
     let rpc_url = format!("http://{localnet_addr}");
     let deadline = Instant::now() + Duration::from_secs(timeout_sec.max(1));
     loop {
@@ -597,7 +597,7 @@ fn verify_block_production(localnet_addr: &str, timeout_sec: u64) -> DynResult<(
             return Err(ResetError::BlocksNotProduced { timeout_sec }.into());
         }
 
-        match rpc_get_last_block(&rpc_url) {
+        match rpc_get_last_block_id(&rpc_url) {
             Ok(block_height) if block_height > 0 => {
                 println!(
                     "localnet reset complete; sequencer producing blocks (block_height={block_height})"
