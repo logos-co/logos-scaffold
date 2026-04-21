@@ -512,13 +512,70 @@ fn cmd_basecamp_install(
     Ok(())
 }
 
-/// Materialize every source into its `.lgx` files in the given cache dir.
+/// Materialize every source into its `.lgx` files in the given cache dir. When
+/// building a sub-flake, add `--override-input <sibling-dirname> path:<sibling>`
+/// for every other path-flake sibling in `sources` so local edits in one
+/// sub-flake flow into its dependents instead of pulling the sibling's master
+/// branch from the network. Assumes the developer's layout matches flake input
+/// names to sibling directory names (the scaffold convention for multi-flake
+/// module repos).
 fn collect_lgx_files(sources: &[BasecampSource], lgx_cache: &Path) -> DynResult<Vec<PathBuf>> {
     let mut out = Vec::new();
     for src in sources {
-        out.extend(materialize_lgx_files(src, lgx_cache)?);
+        let overrides = sibling_overrides_for(src, sources);
+        out.extend(materialize_lgx_files(src, lgx_cache, &overrides)?);
     }
     Ok(out)
+}
+
+/// Extract the absolute path from a `path:<abs>#attr` flake ref. Returns `None`
+/// for non-path refs (`github:`, `git+`, etc.) — we can't safely override those
+/// with a local path without user intent.
+fn flake_path_prefix(flake_ref: &str) -> Option<&str> {
+    let rest = flake_ref.strip_prefix("path:")?;
+    let end = rest.find('#').unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// Compute the sibling-overrides list for `target`: every other path-flake in
+/// `all` whose path lives under the same parent directory as `target`'s path.
+/// Returned as `(input_name, "path:<abs>")` pairs ready for `--override-input`.
+fn sibling_overrides_for(
+    target: &BasecampSource,
+    all: &[BasecampSource],
+) -> Vec<(String, String)> {
+    let BasecampSource::Flake(target_ref) = target else {
+        return Vec::new();
+    };
+    let Some(target_abs) = flake_path_prefix(target_ref) else {
+        return Vec::new();
+    };
+    let Some(target_parent) = Path::new(target_abs).parent() else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for other in all {
+        let BasecampSource::Flake(other_ref) = other else {
+            continue;
+        };
+        if other_ref == target_ref {
+            continue;
+        }
+        let Some(other_abs) = flake_path_prefix(other_ref) else {
+            continue;
+        };
+        let other_path = Path::new(other_abs);
+        if other_path.parent() != Some(target_parent) {
+            continue;
+        }
+        let Some(name) = other_path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        out.push((name.to_string(), format!("path:{other_abs}")));
+    }
+    out.sort();
+    out
 }
 
 /// `(modules_dir, plugins_dir)` under a profile's `XDG_DATA_HOME`. Pinning this
@@ -600,7 +657,11 @@ fn lgpm_install_args(
 /// Produce the list of `.lgx` files referenced by a given source.
 /// For `Path`, accepts either a single `.lgx` file or a directory (all `*.lgx` inside).
 /// For `Flake`, runs `nix build <ref>` and collects `*.lgx` at the build result root.
-fn materialize_lgx_files(src: &BasecampSource, cache: &Path) -> DynResult<Vec<PathBuf>> {
+fn materialize_lgx_files(
+    src: &BasecampSource,
+    cache: &Path,
+    overrides: &[(String, String)],
+) -> DynResult<Vec<PathBuf>> {
     match src {
         BasecampSource::Path(p) => {
             let pb = PathBuf::from(p);
@@ -612,14 +673,13 @@ fn materialize_lgx_files(src: &BasecampSource, cache: &Path) -> DynResult<Vec<Pa
         BasecampSource::Flake(flake_ref) => {
             let link = cache.join(flake_out_link_name(flake_ref));
             println!("building {flake_ref}");
-            run_checked(
-                Command::new("nix")
-                    .arg("build")
-                    .arg(flake_ref)
-                    .arg("--out-link")
-                    .arg(&link),
-                &format!("nix build {flake_ref}"),
-            )?;
+            let mut cmd = Command::new("nix");
+            cmd.arg("build").arg(flake_ref);
+            for (name, value) in overrides {
+                cmd.arg("--override-input").arg(name).arg(value);
+            }
+            cmd.arg("--out-link").arg(&link);
+            run_checked(&mut cmd, &format!("nix build {flake_ref}"))?;
             list_lgx(&link)
         }
     }
@@ -1005,6 +1065,50 @@ mod tests {
                 "/p/mod.lgx",
             ],
             "lgpm expects global --modules-dir / --ui-plugins-dir BEFORE the `install` subcommand"
+        );
+    }
+
+    #[test]
+    fn sibling_overrides_pair_path_flakes_under_a_shared_parent() {
+        let target = BasecampSource::Flake("path:/repo/tictactoe-ui-cpp#lgx".to_string());
+        let all = vec![
+            BasecampSource::Flake("path:/repo/tictactoe#lgx".to_string()),
+            BasecampSource::Flake("path:/repo/tictactoe-ui-cpp#lgx".to_string()),
+            // An unrelated path-flake under a different parent must NOT be paired.
+            BasecampSource::Flake("path:/elsewhere/other#lgx".to_string()),
+            // A .lgx path source is not a flake and must be ignored.
+            BasecampSource::Path("/repo/prebuilt.lgx".to_string()),
+            // A remote flake ref can't be overridden with a local path.
+            BasecampSource::Flake("github:foo/bar#lgx".to_string()),
+        ];
+        let got = sibling_overrides_for(&target, &all);
+        assert_eq!(
+            got,
+            vec![("tictactoe".to_string(), "path:/repo/tictactoe".to_string())]
+        );
+    }
+
+    #[test]
+    fn sibling_overrides_returns_empty_for_path_sources_and_remote_flakes() {
+        let all = vec![
+            BasecampSource::Flake("path:/repo/a#lgx".to_string()),
+            BasecampSource::Flake("path:/repo/b#lgx".to_string()),
+        ];
+        assert!(
+            sibling_overrides_for(
+                &BasecampSource::Path("/anywhere.lgx".to_string()),
+                &all
+            )
+            .is_empty(),
+            "Path sources don't need overrides — they aren't built with nix"
+        );
+        assert!(
+            sibling_overrides_for(
+                &BasecampSource::Flake("github:x/y#lgx".to_string()),
+                &all
+            )
+            .is_empty(),
+            "remote flakes don't get sibling-override treatment (no shared local parent)"
         );
     }
 
