@@ -551,13 +551,17 @@ fn retain_declared_overrides(
 /// `nix flake metadata --json` — lighter than `nix eval` since it only reads
 /// the lockfile / flake.nix inputs block, not any package expressions.
 fn flake_declared_inputs(flake_ref: &str) -> DynResult<std::collections::HashSet<String>> {
+    // `nix flake metadata` rejects fragments (`path:/p#lgx` → "unexpected fragment
+    // 'lgx' in flake reference"). Strip anything after `#` so we hand it just the
+    // flake itself.
+    let bare = flake_ref.split_once('#').map_or(flake_ref, |(b, _)| b);
     let out = Command::new("nix")
         .arg("flake")
         .arg("metadata")
         .arg("--json")
-        .arg(flake_ref)
+        .arg(bare)
         .output()
-        .with_context(|| format!("spawn nix flake metadata {flake_ref}"))?;
+        .with_context(|| format!("spawn nix flake metadata {bare}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         bail!(
