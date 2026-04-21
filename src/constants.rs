@@ -19,7 +19,14 @@ pub(crate) const BASECAMP_URL: &str = "https://github.com/logos-co/logos-basecam
 pub(crate) const DEFAULT_BASECAMP_PIN: &str = "a746cdbc521f72ee22c5a4856fd17a9802bb9d69";
 pub(crate) const BASECAMP_PROFILE_ALICE: &str = "alice";
 pub(crate) const BASECAMP_PROFILE_BOB: &str = "bob";
-pub(crate) const BASECAMP_XDG_APP_SUBPATH: &str = "Logos/LogosBasecamp";
+/// Path under `XDG_DATA_HOME` (and `XDG_CACHE_HOME`) where basecamp reads and
+/// writes its user data — modules, plugins, preinstall seed. Must match the
+/// Qt `QApplication::applicationName()` the pinned basecamp binary is built
+/// with: dev builds use `LogosBasecampDev`; release builds would use
+/// `LogosBasecamp`. The current pin (`DEFAULT_BASECAMP_PIN`) is a dev build,
+/// so lgpm must install under `LogosBasecampDev` for basecamp to discover
+/// the installed modules at launch.
+pub(crate) const BASECAMP_XDG_APP_SUBPATH: &str = "Logos/LogosBasecampDev";
 /// Default flake ref for the `lgpm` CLI. The basecamp flake does not expose `lgpm`;
 /// it lives in a separate repo (`logos-package-manager`). Pin alongside basecamp
 /// so dogfooding is reproducible. Override via `[basecamp].lgpm_flake` in scaffold.toml.

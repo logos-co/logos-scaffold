@@ -483,14 +483,14 @@ fn cmd_basecamp_install(
     // Commit resolved sources to state *before* invoking lgpm. If an install later
     // fails mid-loop, the sources list still reflects what the user asked for, so
     // `launch` (which scrubs + reinstalls) can reproduce the intended state.
-    let mut merged = state.sources.clone();
-    for src in &sources {
-        if !merged.iter().any(|e| e == src) {
-            merged.push(src.clone());
-        }
-    }
+    //
+    // `install` is declarative: each run replaces the recorded source set with the
+    // freshly-resolved list. Appending would let stale refs (e.g. `#lgx` from a
+    // prior resolver policy, superseded by `#lgx-dual`) linger and be replayed by
+    // `launch`, causing wasted rebuilds and, when two refs target the same flake
+    // dir, overwrites in the profile install tree.
     let new_state = BasecampState {
-        sources: merged,
+        sources: sources.clone(),
         ..state.clone()
     };
     write_basecamp_state(&state_path, &new_state)?;
