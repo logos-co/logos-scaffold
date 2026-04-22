@@ -530,12 +530,168 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
 }
 
 fn cmd_basecamp_build_portable(
-    _project: Project,
-    _paths: Vec<PathBuf>,
-    _flakes: Vec<String>,
-    _probe: &dyn LgxFlakeProbe,
+    project: Project,
+    paths: Vec<PathBuf>,
+    flakes: Vec<String>,
+    probe: &dyn LgxFlakeProbe,
 ) -> DynResult<()> {
-    bail!("basecamp build-portable is not yet implemented")
+    let cache_root_first = first_path_component(&project.config.cache_root);
+    let mut skip_subdirs: Vec<&str> = BASECAMP_AUTODISCOVER_SKIP_SUBDIRS.iter().copied().collect();
+    if let Some(c) = cache_root_first.as_deref() {
+        if !skip_subdirs.contains(&c) {
+            skip_subdirs.push(c);
+        }
+    }
+
+    let sources = resolve_install_sources(
+        &project.root,
+        &paths,
+        &flakes,
+        probe,
+        &skip_subdirs,
+        "lgx-portable",
+        "lgx",
+    )?;
+
+    let mut outputs: Vec<PathBuf> = Vec::new();
+    for src in &sources {
+        match src {
+            BasecampSource::Path(p) => {
+                outputs.push(build_portable_resolve_path(Path::new(p))?);
+            }
+            BasecampSource::Flake(flake_ref) => {
+                let overrides = build_portable_resolve_overrides(src, &sources, flake_ref);
+                let inv = build_portable_nix_invocation(flake_ref, &overrides);
+                outputs.extend(run_build_portable_nix(&project.root, flake_ref, &inv)?);
+            }
+        }
+    }
+
+    println!("Built portable .lgx artefacts (copy these into your basecamp AppImage manually):");
+    for out in &outputs {
+        println!("  {}", out.display());
+    }
+    Ok(())
+}
+
+/// Command-line arguments (after `nix`) plus an optional working-directory
+/// override. For `path:<abs>#<attr>` refs we cd into `<abs>` and invoke
+/// `nix build .#<attr>` so the default `./result-<attr>` symlink lands next
+/// to the flake. For remote refs we stay in the caller's cwd.
+#[derive(Debug, PartialEq, Eq)]
+struct NixBuildInvocation {
+    cwd_override: Option<PathBuf>,
+    args: Vec<String>,
+}
+
+fn build_portable_nix_invocation(
+    flake_ref: &str,
+    overrides: &[(String, String)],
+) -> NixBuildInvocation {
+    let (cwd_override, ref_arg) = match flake_path_prefix(flake_ref) {
+        Some(abs) => {
+            let attr = flake_ref
+                .split_once('#')
+                .map(|(_, a)| a)
+                .unwrap_or("lgx-portable");
+            (Some(PathBuf::from(abs)), format!(".#{attr}"))
+        }
+        None => (None, flake_ref.to_string()),
+    };
+
+    let mut args = vec!["build".to_string(), ref_arg];
+    for (name, value) in overrides {
+        args.push("--override-input".to_string());
+        args.push(name.clone());
+        args.push(value.clone());
+    }
+    args.push("--print-out-paths".to_string());
+
+    NixBuildInvocation { cwd_override, args }
+}
+
+/// Validate a `--path` source and return its canonical absolute path.
+fn build_portable_resolve_path(src: &Path) -> DynResult<PathBuf> {
+    if !src.is_file() || !src.extension().is_some_and(|e| e == "lgx") {
+        bail!("path `{}` is not a .lgx file", src.display());
+    }
+    Ok(src.canonicalize().unwrap_or_else(|_| src.to_path_buf()))
+}
+
+/// Compute the sibling-override list for a flake source, filtered down to
+/// inputs the target flake actually declares (mirrors `install`'s behaviour).
+fn build_portable_resolve_overrides(
+    src: &BasecampSource,
+    all: &[BasecampSource],
+    target_ref: &str,
+) -> Vec<(String, String)> {
+    let mut overrides = sibling_overrides_for(src, all);
+    if overrides.is_empty() {
+        return overrides;
+    }
+    if let Ok(declared) = flake_declared_inputs(target_ref) {
+        let before = overrides.clone();
+        overrides = retain_declared_overrides(overrides, &declared);
+        for (name, value) in &before {
+            if !overrides.iter().any(|(n, _)| n == name) {
+                eprintln!(
+                    "warning: skipping sibling override `{name}` -> `{value}`: \
+                     not declared as an input of `{target_ref}`"
+                );
+            }
+        }
+    }
+    overrides
+}
+
+fn run_build_portable_nix(
+    project_root: &Path,
+    flake_ref: &str,
+    inv: &NixBuildInvocation,
+) -> DynResult<Vec<PathBuf>> {
+    println!("building {flake_ref}");
+    let mut cmd = Command::new("nix");
+    match &inv.cwd_override {
+        Some(cwd) => {
+            cmd.current_dir(cwd);
+        }
+        None => {
+            cmd.current_dir(project_root);
+        }
+    }
+    for a in &inv.args {
+        cmd.arg(a);
+    }
+    let output = cmd
+        .output()
+        .with_context(|| format!("spawn nix build {flake_ref}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "nix build {flake_ref} failed ({}): {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let store_paths: Vec<PathBuf> = stdout
+        .lines()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    if store_paths.is_empty() {
+        bail!("nix build {flake_ref} returned no output paths");
+    }
+    let mut results = Vec::new();
+    for sp in store_paths {
+        if sp.is_dir() {
+            results.extend(list_lgx(&sp)?);
+        } else {
+            results.push(sp);
+        }
+    }
+    Ok(results)
 }
 
 fn cmd_basecamp_reset(project: Project, dry_run: bool) -> DynResult<()> {
@@ -1785,6 +1941,86 @@ mod tests {
         assert!(
             outside_file.exists(),
             "symlinked-to file must not be deleted"
+        );
+    }
+
+    // ---- build-portable helpers ----
+
+    #[test]
+    fn build_portable_nix_invocation_path_ref_cds_into_flake_dir() {
+        let inv = build_portable_nix_invocation("path:/abs/to/foo#lgx-portable", &[]);
+        assert_eq!(inv.cwd_override.as_deref(), Some(Path::new("/abs/to/foo")));
+        assert_eq!(
+            inv.args,
+            vec!["build", ".#lgx-portable", "--print-out-paths"]
+        );
+    }
+
+    #[test]
+    fn build_portable_nix_invocation_remote_ref_stays_in_project_root() {
+        let inv = build_portable_nix_invocation("github:foo/bar#lgx-portable", &[]);
+        assert!(
+            inv.cwd_override.is_none(),
+            "remote refs must not override cwd"
+        );
+        assert_eq!(
+            inv.args,
+            vec!["build", "github:foo/bar#lgx-portable", "--print-out-paths"]
+        );
+    }
+
+    #[test]
+    fn build_portable_nix_invocation_does_not_use_out_link() {
+        // Spec: `nix build` without `-o`, so the default `./result-<attr>` symlink
+        // lands next to the flake. No `--out-link`, no `--no-link`.
+        let inv = build_portable_nix_invocation("path:/abs/a#lgx-portable", &[]);
+        for forbidden in ["-o", "--out-link", "--no-link"] {
+            assert!(
+                !inv.args.iter().any(|a| a == forbidden),
+                "argv must not contain `{forbidden}`: {:?}",
+                inv.args
+            );
+        }
+    }
+
+    #[test]
+    fn build_portable_nix_invocation_inserts_overrides_before_print_out_paths() {
+        let inv = build_portable_nix_invocation(
+            "path:/abs/ui#lgx-portable",
+            &[("core".to_string(), "path:/abs/core".to_string())],
+        );
+        assert_eq!(
+            inv.args,
+            vec![
+                "build",
+                ".#lgx-portable",
+                "--override-input",
+                "core",
+                "path:/abs/core",
+                "--print-out-paths",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_portable_resolve_path_returns_canonical_absolute_lgx() {
+        let tmp = tempdir().expect("tempdir");
+        let p = tmp.path().join("module.lgx");
+        fs::write(&p, b"fake lgx").unwrap();
+        let got = build_portable_resolve_path(&p).expect("ok");
+        assert!(got.is_absolute(), "got: {}", got.display());
+        assert_eq!(got.canonicalize().unwrap(), p.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn build_portable_resolve_path_rejects_non_lgx_extension() {
+        let tmp = tempdir().expect("tempdir");
+        let p = tmp.path().join("module.txt");
+        fs::write(&p, b"not lgx").unwrap();
+        let err = build_portable_resolve_path(&p).unwrap_err();
+        assert!(
+            format!("{err}").contains("not a .lgx file"),
+            "expected extension-rejection hint, got: {err}"
         );
     }
 
