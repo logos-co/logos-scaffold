@@ -96,6 +96,7 @@ logos-scaffold help
 - `basecamp setup` pins basecamp + `lgpm`, builds both, and seeds per-profile XDG directories for `alice` and `bob` under `.scaffold/basecamp/profiles/`.
 - `basecamp install` resolves the project's `.lgx` sources (auto-discovers `packages.<system>.lgx` from the root flake or immediate sub-flakes), builds each via `nix build`, and installs them into every seeded profile via `lgpm`. Project requirements are documented in [docs/basecamp-module-requirements.md](./docs/basecamp-module-requirements.md); pass `--path`/`--flake` to override auto-discovery.
 - `basecamp launch <profile>` scrubs the profile's data/cache, replays `install` to rebuild against current sources, assigns per-profile ports, and execs `basecamp` with the profile's XDG environment. Pass `--no-clean` to skip the scrub.
+- `basecamp reset` kills any live basecamp tracked in `launch.state`, wipes `.scaffold/basecamp/profiles/`, clears recorded sources in `basecamp.state` (preserving the pinned basecamp + lgpm binaries), and re-seeds empty alice/bob profiles. Pass `--dry-run` to print the action plan without touching anything.
 - `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
 - `report` creates a `.tar.gz` diagnostics bundle for GitHub issues using strict allowlist collection with redaction and explicit skip reporting.
 - `completions <shell>` prints a shell completion script to stdout. Supported shells: `bash`, `zsh`. The generated script covers both `lgs` and `logos-scaffold`.
