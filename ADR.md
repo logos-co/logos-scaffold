@@ -30,7 +30,7 @@ Use native Cargo-based build flow as the primary compilation path.
 Developers need explicit, editable environment targeting for local and DevNet workflows.
 Use environment-file based network configuration as the default model.
 Generated projects include env files for local and DevNet,
-wallet interaction settings used by deploy and interact commands.
+wallet interaction settings used by deploy and wallet-based interaction commands.
 Env files are familiar and automation-friendly,
 but require strict handling to avoid credential leakage.
 
@@ -142,3 +142,11 @@ logic. The tradeoff is one extra argument on an internal helper; the upside is
 that any resolver fix automatically applies to both commands, and the "only
 `.#lgx-portable` found" and "only `.#lgx` found" error paths are symmetric by
 construction.
+
+## Build Output Discovery
+
+The deploy command must work for any scaffolded project regardless of its name.
+Binary discovery should derive paths from the actual project structure, not assume the template's naming.
+Use a two-tier strategy: walk `methods/target/` for program-name-matched `.bin` files in `riscv32im` paths (primary),
+with the hardcoded template path as a backward-compatible fallback.
+This keeps the scaffold general and avoids coupling to spel configuration formats.

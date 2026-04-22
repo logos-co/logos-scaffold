@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context};
+use walkdir::WalkDir;
 
 use crate::process::run_with_stdin;
 use crate::project::load_project;
@@ -60,7 +61,8 @@ pub(crate) fn cmd_deploy(
 
     let mut results = Vec::new();
     for program in selected_programs {
-        let binary_path = binaries_root.join(format!("{program}.bin"));
+        let binary_path = find_binary_path(&project.root, &program)
+            .unwrap_or_else(|| binaries_root.join(format!("{program}.bin")));
         if !binary_path.exists() {
             println!("FAIL {program} deployment failed");
             println!("  Error: missing binary at {}", binary_path.display());
@@ -324,5 +326,108 @@ impl DeployStatus {
             DeployStatus::Submitted => "submitted",
             DeployStatus::Failed => "failed",
         }
+    }
+}
+
+/// Walk `methods/target/` looking for `<program>.bin` in paths containing "riscv32im".
+/// Returns the first match, preferring release paths over debug. Returns `None` if not found.
+fn find_binary_path(project_root: &Path, program: &str) -> Option<PathBuf> {
+    // Sanity-check the program name to prevent pathological inputs
+    if program.len() > 128
+        || program.contains('/')
+        || program.contains('\\')
+        || program.contains("..")
+    {
+        return None;
+    }
+    let target_dir = project_root.join("methods/target");
+    if !target_dir.exists() {
+        return None;
+    }
+    let expected_filename = format!("{program}.bin");
+    let mut release_candidate: Option<PathBuf> = None;
+    for entry in WalkDir::new(&target_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if path.file_name().and_then(|f| f.to_str()) == Some(expected_filename.as_str()) {
+            let path_str = path.to_string_lossy();
+            if path_str.contains("riscv32im") {
+                if path_str.contains("/release/") || path_str.contains("\\release\\") {
+                    return Some(path.to_path_buf());
+                }
+                if release_candidate.is_none() {
+                    release_candidate = Some(path.to_path_buf());
+                }
+            }
+        }
+    }
+    release_candidate
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn find_binary_in_riscv32im_path() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp
+            .path()
+            .join("methods/target/some_crate/riscv32im-risc0-zkvm-elf/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("my_program.bin"), b"fake").unwrap();
+
+        let result = find_binary_path(tmp.path(), "my_program");
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("my_program.bin"));
+    }
+
+    #[test]
+    fn returns_none_when_methods_target_missing() {
+        let tmp = TempDir::new().unwrap();
+        assert!(find_binary_path(tmp.path(), "my_program").is_none());
+    }
+
+    #[test]
+    fn returns_none_when_no_matching_bin() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp
+            .path()
+            .join("methods/target/some_crate/riscv32im-risc0-zkvm-elf/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("other_program.bin"), b"fake").unwrap();
+
+        assert!(find_binary_path(tmp.path(), "my_program").is_none());
+    }
+
+    #[test]
+    fn ignores_non_riscv32im_paths() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp
+            .path()
+            .join("methods/target/some_crate/x86_64-unknown-linux/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("my_program.bin"), b"fake").unwrap();
+
+        assert!(find_binary_path(tmp.path(), "my_program").is_none());
+    }
+
+    #[test]
+    fn rejects_path_traversal_in_program_name() {
+        let tmp = TempDir::new().unwrap();
+        assert!(find_binary_path(tmp.path(), "../etc/passwd").is_none());
+        assert!(find_binary_path(tmp.path(), "foo/../bar").is_none());
+    }
+
+    #[test]
+    fn rejects_overlong_program_name() {
+        let tmp = TempDir::new().unwrap();
+        let long_name = "a".repeat(200);
+        assert!(find_binary_path(tmp.path(), &long_name).is_none());
     }
 }

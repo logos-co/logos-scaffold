@@ -7,6 +7,7 @@
 1. One public DevNet vertical slice: generate wallet, fund wallet, deploy contract, execute one transaction type, verify result.
 2. Integrate wallet generation as part of the scaffold workflow for bootstrap and interaction flows.
 3. Support native token topup for wallet operations on local and DevNet environments.
+4. Deploy command auto-discovers program binaries from `methods/target/` by matching program names, so non-template projects deploy without `--program-path`.
 
 ### Usability
 
