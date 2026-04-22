@@ -34,6 +34,9 @@ pub(crate) enum BasecampAction {
         profile: String,
         no_clean: bool,
     },
+    Reset {
+        dry_run: bool,
+    },
     ProfileList {
         json: bool,
     },
@@ -54,6 +57,7 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
         BasecampAction::Launch { profile, no_clean } => {
             cmd_basecamp_launch(project, profile, no_clean)
         }
+        BasecampAction::Reset { dry_run } => cmd_basecamp_reset(project, dry_run),
         // Phase 5 stub: load_project() above is intentional so "outside project"
         // errors precede "not implemented" — future implementer must preserve that order.
         BasecampAction::ProfileList { .. } => bail!("basecamp profile list is not yet implemented"),
@@ -516,6 +520,10 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
         thread::sleep(Duration::from_millis(100));
     }
     false
+}
+
+fn cmd_basecamp_reset(_project: Project, _dry_run: bool) -> DynResult<()> {
+    bail!("basecamp reset is not yet implemented")
 }
 
 fn cmd_basecamp_install(

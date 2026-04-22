@@ -1454,6 +1454,22 @@ fn basecamp_install_outside_project_errors() {
 }
 
 #[test]
+fn basecamp_reset_outside_project_errors() {
+    // Also validates that `reset` is a registered subcommand and `--dry-run`
+    // parses; outside-project check runs before the handler so the stub vs.
+    // implemented distinction doesn't matter here.
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "reset", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
 fn basecamp_install_before_setup_emits_hint() {
     let temp = tempdir().expect("tempdir");
     fs::write(

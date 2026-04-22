@@ -288,8 +288,17 @@ enum BasecampSubcommand {
     Install(BasecampInstallArgs),
     #[command(about = "Launch basecamp for a named profile with clean-slate semantics")]
     Launch(BasecampLaunchArgs),
+    #[command(about = "Kill any live basecamp, wipe profiles, clear recorded sources, re-seed")]
+    Reset(BasecampResetArgs),
     #[command(about = "Manage basecamp profiles")]
     Profile(BasecampProfileArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampResetArgs {
+    /// Print the action plan but do not kill, delete, or write anything
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -427,6 +436,9 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 BasecampSubcommand::Launch(args) => BasecampAction::Launch {
                     profile: args.profile,
                     no_clean: args.no_clean,
+                },
+                BasecampSubcommand::Reset(args) => BasecampAction::Reset {
+                    dry_run: args.dry_run,
                 },
                 BasecampSubcommand::Profile(args) => match args.command {
                     BasecampProfileSubcommand::List(args) => {
