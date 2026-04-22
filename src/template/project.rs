@@ -23,7 +23,7 @@ pub(crate) fn apply_overlay(
     ensure_scaffold_in_gitignore(target)
 }
 
-fn ensure_scaffold_in_gitignore(target: &Path) -> DynResult<()> {
+pub(crate) fn ensure_scaffold_in_gitignore(target: &Path) -> DynResult<()> {
     let gitignore_path = target.join(".gitignore");
     let mut content = if gitignore_path.exists() {
         fs::read_to_string(&gitignore_path)?

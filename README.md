@@ -2,6 +2,11 @@
 
 `logos-scaffold` is a Rust CLI for bootstrapping LEZ (Logos Execution Zone) `program_deployment` projects in standalone mode.
 
+## Documentation
+
+- [FURPS+](FURPS.md) — Functional and non-functional requirements
+- [ADR](ADR.md) — Architecture Decision Records
+
 ## Platform
 
 The CLI is currently Unix-only.
@@ -26,6 +31,21 @@ Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
 cargo install --path .
 ```
 
+This installs two binaries on your PATH: `logos-scaffold` and the shorter
+alias `lgs`. They are functionally identical; use either.
+
+### Shell completions
+
+`lgs completions <shell>` prints a completion script to stdout. The script
+completes both `lgs` and `logos-scaffold`.
+
+Per-shell install instructions live in the CLI help itself:
+
+```bash
+lgs completions bash --help
+lgs completions zsh --help
+```
+
 ## DOGFOODING
 
 Canonical dogfooding scenarios live in [DOGFOODING.md](./DOGFOODING.md).
@@ -33,9 +53,12 @@ Keep that runbook updated whenever first-class commands, templates, or supported
 
 ## CLI
 
+All commands below also work under the `lgs` alias (e.g. `lgs setup`).
+
 ```bash
 logos-scaffold create <name> [--vendor-deps] [--lez-path PATH] [--cache-root PATH]
 logos-scaffold new <name> [--vendor-deps] [--lez-path PATH] [--cache-root PATH]
+logos-scaffold init
 logos-scaffold setup
 logos-scaffold build [project-path]
 logos-scaffold deploy [program-name]
@@ -50,12 +73,14 @@ logos-scaffold wallet default set --address <address-ref>
 logos-scaffold wallet -- <wallet-command...>
 logos-scaffold doctor [--json]
 logos-scaffold report [--out PATH] [--tail N]
+logos-scaffold completions <bash|zsh>
 logos-scaffold help
 ```
 
 ## Command Semantics
 
 - `create` and `new` are aliases.
+- `init` writes `scaffold.toml` with defaults into the current directory so an existing project can use the scaffold workflow. It creates `.scaffold/{state,logs}` and appends `.scaffold` to `.gitignore`. It refuses to overwrite an existing `scaffold.toml`. Run `setup` next.
 - `setup` syncs LEZ to pinned commit, builds the standalone `sequencer_service` and `wallet` binaries locally inside the LEZ tree, and seeds a deterministic default wallet from preconfigured public accounts when none is set. Wallet binaries are project-local and are not installed to PATH — use `logos-scaffold wallet ...` commands to interact with the wallet.
 - `build [project-path]` runs `setup` and then `cargo build --workspace`.
 - `deploy [program-name]` deploys one or all guest programs discovered in `methods/guest/src/bin/*.rs` using prebuilt `.bin` artifacts.
@@ -67,6 +92,7 @@ logos-scaffold help
 - `wallet -- ...` forwards raw wallet CLI arguments to the project-local wallet binary while preserving project wallet environment.
 - `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
 - `report` creates a `.tar.gz` diagnostics bundle for GitHub issues using strict allowlist collection with redaction and explicit skip reporting.
+- `completions <shell>` prints a shell completion script to stdout. Supported shells: `bash`, `zsh`. The generated script covers both `lgs` and `logos-scaffold`.
 - Wallet-facing commands accept `LOGOS_SCAFFOLD_WALLET_PASSWORD` for password override (fallback: local dev default).
 
 ## Pinned LEZ Commit
@@ -78,15 +104,29 @@ Scaffold enforces this commit for standalone mode (v0.2.0-rc1):
 ## First Success Path
 
 ```bash
-logos-scaffold new my-app
+lgs new my-app
 cd my-app
-logos-scaffold setup
-logos-scaffold localnet start
-logos-scaffold build
-logos-scaffold deploy
-logos-scaffold wallet topup
-logos-scaffold wallet -- check-health
+lgs setup
+lgs localnet start
+lgs build
+lgs deploy
+lgs wallet topup
+lgs wallet -- check-health
 ```
+
+### Adopt scaffold in an existing project
+
+If you already have a Rust/LEZ project, add scaffold to it without regenerating:
+
+```bash
+cd my-existing-project
+lgs init
+lgs setup
+```
+
+`init` only writes `scaffold.toml` and creates `.scaffold/` directories.
+It does not touch your `Cargo.toml` or `src/`. Edit `scaffold.toml` if you
+need non-default framework settings (e.g. `lez-framework`).
 
 `setup` automatically seeds `.scaffold/state/wallet.state` with the first preconfigured public account when no default is present.
 

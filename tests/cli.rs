@@ -1252,7 +1252,8 @@ fn deploy_single_program_submits_successfully() {
                     "Submission confirmed by wallet exit status",
                 ))
                 .and(predicate::str::contains("Succeeded: 1"))
-                .and(predicate::str::contains("Failed: 0")),
+                .and(predicate::str::contains("Failed: 0"))
+                .and(predicate::str::contains("reachability probe failed").not()),
         );
 }
 
@@ -1666,7 +1667,7 @@ fn respond_last_block(stream: &mut TcpStream) {
     let mut buf = [0_u8; 4096];
     let _ = stream.read(&mut buf);
 
-    let body = r#"{"jsonrpc":"2.0","result":{"last_block":123},"id":1}"#;
+    let body = r#"{"jsonrpc":"2.0","result":123,"id":1}"#;
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
         body.len(),
@@ -1674,4 +1675,418 @@ fn respond_last_block(stream: &mut TcpStream) {
     );
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
+}
+
+#[test]
+fn lgs_help_usage_line_shows_lgs() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: lgs"));
+}
+
+#[test]
+fn logos_scaffold_help_usage_line_shows_logos_scaffold() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: logos-scaffold"));
+}
+
+#[test]
+fn lgs_help_subcommand_uses_invoked_bin_name() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: lgs"));
+}
+
+#[test]
+fn logos_scaffold_help_subcommand_uses_invoked_bin_name() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: logos-scaffold"));
+}
+
+#[test]
+fn lgs_no_args_uses_invoked_bin_name() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: lgs"));
+}
+
+#[test]
+fn logos_scaffold_no_args_uses_invoked_bin_name() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: logos-scaffold"));
+}
+
+#[test]
+fn lgs_and_logos_scaffold_advertise_same_subcommands() {
+    let subcommands = [
+        "create", "new", "setup", "build", "deploy", "wallet", "localnet", "doctor", "report",
+    ];
+
+    let lgs_help = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("--help")
+        .output()
+        .expect("run lgs --help");
+    let ls_help = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("--help")
+        .output()
+        .expect("run logos-scaffold --help");
+
+    assert!(lgs_help.status.success(), "lgs --help failed");
+    assert!(ls_help.status.success(), "logos-scaffold --help failed");
+
+    let lgs_out = String::from_utf8_lossy(&lgs_help.stdout);
+    let ls_out = String::from_utf8_lossy(&ls_help.stdout);
+
+    for sub in subcommands {
+        assert!(lgs_out.contains(sub), "lgs help missing subcommand `{sub}`");
+        assert!(
+            ls_out.contains(sub),
+            "logos-scaffold help missing subcommand `{sub}`"
+        );
+    }
+}
+
+#[test]
+fn lgs_and_logos_scaffold_version_match() {
+    let lgs_ver = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("--version")
+        .output()
+        .expect("run lgs --version");
+    let ls_ver = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("--version")
+        .output()
+        .expect("run logos-scaffold --version");
+
+    assert!(lgs_ver.status.success());
+    assert!(ls_ver.status.success());
+
+    let lgs_version_number = String::from_utf8_lossy(&lgs_ver.stdout)
+        .split_whitespace()
+        .last()
+        .unwrap_or_default()
+        .to_string();
+    let ls_version_number = String::from_utf8_lossy(&ls_ver.stdout)
+        .split_whitespace()
+        .last()
+        .unwrap_or_default()
+        .to_string();
+
+    assert_eq!(
+        lgs_version_number, ls_version_number,
+        "version numbers differ"
+    );
+    assert!(!lgs_version_number.is_empty(), "version number is empty");
+}
+
+#[test]
+fn completions_bash_prints_script_covering_both_bin_names() {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "bash"])
+        .output()
+        .expect("run lgs completions bash");
+    assert!(output.status.success(), "expected success exit");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(
+        stdout.contains("complete -F _lgs"),
+        "missing primary binding: {stdout}"
+    );
+    assert!(
+        stdout.contains("logos-scaffold"),
+        "missing alias binding: {stdout}"
+    );
+}
+
+#[test]
+fn completions_zsh_compdef_directive_covers_both_names() {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "zsh"])
+        .output()
+        .expect("run lgs completions zsh");
+    assert!(output.status.success(), "expected success exit");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let compdef_headers = stdout.matches("#compdef").count();
+    assert_eq!(
+        compdef_headers, 1,
+        "expected exactly one #compdef header, got {compdef_headers}: {stdout}"
+    );
+    assert!(
+        stdout.starts_with("#compdef lgs logos-scaffold\n"),
+        "expected `#compdef lgs logos-scaffold` directive so autoload \
+         registers both names at compinit time; got head: {:?}",
+        stdout.lines().next()
+    );
+}
+
+#[test]
+fn completions_bash_output_is_syntax_clean() {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "bash"])
+        .output()
+        .expect("run lgs completions bash");
+    assert!(output.status.success(), "expected success exit");
+
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("lgs.bash");
+    fs::write(&path, &output.stdout).expect("write script");
+
+    let syntax = std::process::Command::new("bash")
+        .arg("-n")
+        .arg(&path)
+        .output()
+        .expect("bash -n");
+    assert!(
+        syntax.status.success(),
+        "bash -n failed: {}",
+        String::from_utf8_lossy(&syntax.stderr)
+    );
+}
+
+#[test]
+fn completions_zsh_output_is_syntax_clean() {
+    if std::process::Command::new("zsh")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: zsh not available");
+        return;
+    }
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "zsh"])
+        .output()
+        .expect("run lgs completions zsh");
+    assert!(output.status.success(), "expected success exit");
+
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("_lgs");
+    fs::write(&path, &output.stdout).expect("write script");
+
+    let syntax = std::process::Command::new("zsh")
+        .arg("-n")
+        .arg(&path)
+        .output()
+        .expect("zsh -n");
+    assert!(
+        syntax.status.success(),
+        "zsh -n failed: {}",
+        String::from_utf8_lossy(&syntax.stderr)
+    );
+}
+
+#[test]
+fn completions_unsupported_shell_errors() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "fish"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("fish"));
+}
+
+#[test]
+fn completions_bash_help_shows_install_instructions() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "bash", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("bash-completion/completions/lgs")
+                .and(predicate::str::contains("logos-scaffold")),
+        );
+}
+
+#[test]
+fn completions_zsh_help_shows_install_instructions() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "zsh", "--help"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("~/.zfunc/_lgs")
+                .and(predicate::str::contains("oh-my-zsh"))
+                .and(predicate::str::contains("compinit")),
+        );
+}
+
+#[test]
+fn completions_missing_shell_arg_errors() {
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .arg("completions")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn completions_does_not_write_filesystem() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(["completions", "bash"])
+        .assert()
+        .success();
+
+    let entries: Vec<_> = fs::read_dir(temp.path())
+        .expect("read tempdir")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "completions must not write to cwd, found: {:?}",
+        entries.iter().map(|e| e.path()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn init_creates_scaffold_toml_and_dirs() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    assert!(
+        temp.path().join("scaffold.toml").exists(),
+        "scaffold.toml missing"
+    );
+    assert!(
+        temp.path().join(".scaffold/state").is_dir(),
+        ".scaffold/state missing"
+    );
+    assert!(
+        temp.path().join(".scaffold/logs").is_dir(),
+        ".scaffold/logs missing"
+    );
+
+    let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read .gitignore");
+    assert!(
+        gitignore.lines().any(|l| l.trim() == ".scaffold"),
+        ".gitignore must contain .scaffold, got: {gitignore:?}"
+    );
+}
+
+#[test]
+fn init_refuses_existing_scaffold_toml() {
+    let temp = tempdir().expect("tempdir");
+    let scaffold_path = temp.path().join("scaffold.toml");
+    let original = "# pre-existing\n";
+    fs::write(&scaffold_path, original).expect("seed scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("scaffold.toml already exists"));
+
+    let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
+    assert_eq!(
+        after, original,
+        "init must not overwrite existing scaffold.toml"
+    );
+}
+
+#[test]
+fn init_appends_gitignore_once() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join(".gitignore"), "target\n.scaffold\nother\n")
+        .expect("seed .gitignore");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    let gitignore = fs::read_to_string(temp.path().join(".gitignore")).expect("read .gitignore");
+    let scaffold_count = gitignore
+        .lines()
+        .filter(|l| l.trim() == ".scaffold")
+        .count();
+    assert_eq!(
+        scaffold_count, 1,
+        ".gitignore must contain .scaffold exactly once, got: {gitignore:?}"
+    );
+}
+
+#[test]
+fn init_hint_uses_invoked_bin_name() {
+    let temp_lgs = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp_lgs.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Run 'lgs setup'"));
+
+    let temp_long = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp_long.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Run 'logos-scaffold setup'"));
+}
+
+#[test]
+fn completions_zsh_registers_both_names_in_pristine_shell() {
+    if std::process::Command::new("zsh")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: zsh not available");
+        return;
+    }
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .args(["completions", "zsh"])
+        .output()
+        .expect("run lgs completions zsh");
+    assert!(output.status.success(), "expected success exit");
+
+    let temp = tempdir().expect("tempdir");
+    let fpath_dir = temp.path().join("fpath");
+    fs::create_dir_all(&fpath_dir).expect("mkdir fpath");
+    fs::write(fpath_dir.join("_lgs"), &output.stdout).expect("write _lgs");
+
+    // Run a pristine zsh (-f skips rc files) with only our fpath plus
+    // system completion functions, then verify both names are registered
+    // at compinit time — not deferred to first tab.
+    let script = format!(
+        "fpath=({} /usr/share/zsh/*/functions); \
+         autoload -Uz compinit && compinit -u -d {}/zcompdump; \
+         print \"lgs=${{_comps[lgs]:-MISSING}}\"; \
+         print \"logos-scaffold=${{_comps[logos-scaffold]:-MISSING}}\"",
+        fpath_dir.display(),
+        temp.path().display(),
+    );
+
+    let zsh_output = std::process::Command::new("zsh")
+        .args(["-f", "-c", &script])
+        .output()
+        .expect("run pristine zsh");
+    let stdout = String::from_utf8_lossy(&zsh_output.stdout);
+    assert!(
+        stdout.contains("lgs=_lgs"),
+        "expected lgs to be registered, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("logos-scaffold=_lgs"),
+        "expected logos-scaffold to be registered at compinit time, got: {stdout}"
+    );
 }

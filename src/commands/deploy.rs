@@ -9,7 +9,7 @@ use crate::project::load_project;
 use crate::DynResult;
 
 use super::wallet_support::{
-    extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block,
+    extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block_id,
     rpc_get_program_ids, sequencer_unreachable_hint, summarize_command_failure, wallet_password,
     RpcReachabilityError,
 };
@@ -210,7 +210,7 @@ pub(crate) fn cmd_deploy(
 }
 
 fn preflight_sequencer_reachability(sequencer_addr: &str) -> DynResult<()> {
-    match rpc_get_last_block(sequencer_addr) {
+    match rpc_get_last_block_id(sequencer_addr) {
         Ok(_) => Ok(()),
         Err(RpcReachabilityError::Connectivity(err)) => {
             bail!(

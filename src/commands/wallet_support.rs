@@ -389,11 +389,11 @@ impl std::fmt::Display for RpcReachabilityError {
 
 impl std::error::Error for RpcReachabilityError {}
 
-pub(crate) fn rpc_get_last_block(sequencer_addr: &str) -> Result<u64, RpcReachabilityError> {
+pub(crate) fn rpc_get_last_block_id(sequencer_addr: &str) -> Result<u64, RpcReachabilityError> {
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1_u64,
-        "method": "get_last_block",
+        "method": "getLastBlockId",
         "params": {}
     });
 
@@ -411,19 +411,29 @@ pub(crate) fn rpc_get_last_block(sequencer_addr: &str) -> Result<u64, RpcReachab
 
     let body: Value = response.into_json().map_err(|err| {
         RpcReachabilityError::Other(format!(
-            "failed to decode get_last_block response from {sequencer_addr}: {err}"
+            "failed to decode getLastBlockId response from {sequencer_addr}: {err}"
         ))
     })?;
 
-    body.get("result")
-        .and_then(|result| result.get("last_block"))
-        .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            RpcReachabilityError::Other(format!(
-                "get_last_block response missing `result.last_block`: {}",
-                one_line(&body.to_string())
-            ))
-        })
+    if let Some(err_obj) = body.get("error") {
+        let code = err_obj.get("code").and_then(Value::as_i64);
+        let message = err_obj.get("message").and_then(Value::as_str).unwrap_or("");
+        let formatted = match code {
+            Some(c) => format!("getLastBlockId RPC error {c}: {message}"),
+            None => format!(
+                "getLastBlockId RPC error: {}",
+                one_line(&err_obj.to_string())
+            ),
+        };
+        return Err(RpcReachabilityError::Other(formatted));
+    }
+
+    body.get("result").and_then(Value::as_u64).ok_or_else(|| {
+        RpcReachabilityError::Other(format!(
+            "getLastBlockId response missing numeric `result`: {}",
+            one_line(&body.to_string())
+        ))
+    })
 }
 
 fn map_ureq_error(err: ureq::Error) -> RpcReachabilityError {
@@ -715,7 +725,7 @@ details: [1, 2, 3]
     }
 
     #[test]
-    fn rpc_get_last_block_parses_valid_response() {
+    fn rpc_get_last_block_id_parses_valid_response() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
 
@@ -728,7 +738,7 @@ details: [1, 2, 3]
             let mut buf = [0_u8; 4096];
             let _ = stream.read(&mut buf);
 
-            let body = r#"{"jsonrpc":"2.0","result":{"last_block":42},"id":1}"#;
+            let body = r#"{"jsonrpc":"2.0","result":42,"id":1}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 body.len(),
@@ -738,14 +748,15 @@ details: [1, 2, 3]
             stream.flush().expect("flush");
         });
 
-        let block = super::rpc_get_last_block(&url).expect("rpc_get_last_block should succeed");
+        let block =
+            super::rpc_get_last_block_id(&url).expect("rpc_get_last_block_id should succeed");
         assert_eq!(block, 42);
         handle.join().expect("server thread");
     }
 
     #[test]
-    fn rpc_get_last_block_returns_connectivity_error_when_unreachable() {
-        let result = super::rpc_get_last_block("http://127.0.0.1:1");
+    fn rpc_get_last_block_id_returns_connectivity_error_when_unreachable() {
+        let result = super::rpc_get_last_block_id("http://127.0.0.1:1");
         assert!(result.is_err());
         match result.unwrap_err() {
             super::RpcReachabilityError::Connectivity(_) => {}
@@ -754,7 +765,7 @@ details: [1, 2, 3]
     }
 
     #[test]
-    fn rpc_get_last_block_returns_error_on_malformed_response() {
+    fn rpc_get_last_block_id_returns_error_on_malformed_response() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
 
@@ -767,7 +778,7 @@ details: [1, 2, 3]
             let mut buf = [0_u8; 4096];
             let _ = stream.read(&mut buf);
 
-            // Response missing `result.last_block`
+            // Response with non-numeric `result`
             let body = r#"{"jsonrpc":"2.0","result":{},"id":1}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -778,12 +789,53 @@ details: [1, 2, 3]
             stream.flush().expect("flush");
         });
 
-        let result = super::rpc_get_last_block(&url);
+        let result = super::rpc_get_last_block_id(&url);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("missing `result.last_block`"),
-            "expected missing last_block error, got: {err_msg}"
+            err_msg.contains("missing numeric `result`"),
+            "expected missing numeric result error, got: {err_msg}"
+        );
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn rpc_get_last_block_id_returns_error_on_method_not_found() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://{addr}");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+
+            let body =
+                r#"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":1}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+            stream.flush().expect("flush");
+        });
+
+        let result = super::rpc_get_last_block_id(&url);
+        let err_msg = result
+            .expect_err("method-not-found should surface as error")
+            .to_string();
+        assert!(
+            err_msg.contains("-32601") && err_msg.contains("Method not found"),
+            "expected JSON-RPC error code and message to surface, got: {err_msg}"
+        );
+        assert!(
+            !err_msg.contains("missing numeric"),
+            "JSON-RPC error should surface structurally, not fall through to the \
+             generic missing-result branch; got: {err_msg}"
         );
         handle.join().expect("server thread");
     }
