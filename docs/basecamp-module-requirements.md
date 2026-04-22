@@ -1,6 +1,6 @@
 # Basecamp Module Requirements
 
-This is the contract between a module project and `logos-scaffold basecamp {setup,install,launch}`. If your project satisfies the rules below, the commands will resolve, build, and install your `.lgx` artefacts into the pre-seeded `alice` and `bob` profiles automatically.
+This is the contract between a module project and `logos-scaffold basecamp {setup,install,launch,reset,build-portable}`. If your project satisfies the rules below, the commands will resolve, build, and install your `.lgx` artefacts into the pre-seeded `alice` and `bob` profiles automatically. `build-portable` additionally targets the `lgx-portable` flake output for hand-loading into a basecamp AppImage.
 
 ## Hard requirements
 
@@ -45,6 +45,21 @@ logos-scaffold basecamp install --flake github:me/my-module#lgx
 ```
 
 Explicit sources win over auto-discovery entirely — no root or sub-flake probing happens when `--path` or `--flake` is present.
+
+## AppImage testing via `build-portable`
+
+`basecamp install` / `launch` load modules into the scaffold-managed alice/bob profiles. To instead test against a released basecamp **AppImage**, use `build-portable`:
+
+```bash
+logos-scaffold basecamp build-portable
+# → builds .#lgx-portable for each auto-discovered source
+# → prints the absolute store paths of the built .lgx artefacts
+# → leaves `./result-lgx-portable` symlinks next to each flake
+```
+
+`build-portable` does not touch profiles, `basecamp.state`, or the AppImage itself — it only produces artefacts. Copy them into your AppImage's module directory manually; scaffold is intentionally unaware of that path.
+
+If a flake exposes only `lgx` (not `lgx-portable`), `build-portable` fails with a targeted hint — mirror of the `install` portable-only failure, in reverse.
 
 ## Quick checklist
 

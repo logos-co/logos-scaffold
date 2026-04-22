@@ -1482,6 +1482,52 @@ fn basecamp_build_portable_rejects_dry_run_flag() {
 }
 
 #[test]
+fn basecamp_build_portable_inside_empty_project_emits_generic_hint() {
+    // Inside a scaffold project with no flake.nix and no --path/--flake args,
+    // the resolver must fail with the generic "no .lgx sources found" hint
+    // pointing at both CLI escape hatches. Validates end-to-end wiring to the
+    // resolver without needing a real nix build.
+    let temp = tempdir().expect("tempdir");
+    fs::write(
+        temp.path().join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#,
+    )
+    .expect("write scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "build-portable"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no `.lgx` sources found"))
+        .stderr(predicate::str::contains("lgx-portable"));
+}
+
+#[test]
 fn basecamp_reset_outside_project_errors() {
     // Also validates that `reset` is a registered subcommand and `--dry-run`
     // parses; outside-project check runs before the handler so the stub vs.
