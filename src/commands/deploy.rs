@@ -86,9 +86,6 @@ pub(crate) fn cmd_deploy(
 
     preflight_sequencer_reachability(&sequencer_addr)?;
 
-    // Fetch all program IDs once before the loop to avoid N RPC calls
-    let program_ids = rpc_get_program_ids(&sequencer_addr).unwrap_or_default();
-
     let mut results = Vec::new();
     for program in selected_programs {
         // Try dynamic discovery first, fall back to hardcoded path
@@ -163,16 +160,23 @@ pub(crate) fn cmd_deploy(
         if let Some(tx) = tx.clone() {
             println!("  Tx: {tx}");
         }
-        // Show program ID from pre-fetched map
-        if let Some(id) = program_ids.get(&program) {
-            println!("  Program ID: {id}");
-        }
+
         results.push(DeployResult {
             program,
             status: DeployStatus::Submitted,
             detail: "wallet submission command exited successfully".to_string(),
             tx,
         });
+    }
+
+    // Fetch program IDs after all deployments complete
+    let program_ids = rpc_get_program_ids(&sequencer_addr).unwrap_or_default();
+    for result in &results {
+        if matches!(result.status, DeployStatus::Submitted) {
+            if let Some(id) = program_ids.get(&result.program) {
+                println!("  {} → Program ID: {id}", result.program);
+            }
+        }
     }
 
     let success_count = results
@@ -326,18 +330,13 @@ fn deploy_single_program(
         .and_then(|ids| ids.get(program_name).cloned());
 
     if json {
-        let tx_val = tx
-            .as_deref()
-            .map(|t| format!("\"{}\"", t))
-            .unwrap_or_else(|| "null".to_string());
-        let id_val = program_id
-            .as_deref()
-            .map(|id| format!("\"{}\"", id))
-            .unwrap_or_else(|| "null".to_string());
-        println!(
-            "{{\"status\":\"submitted\",\"program\":\"{}\",\"tx\":{},\"program_id\":{}}}",
-            program_name, tx_val, id_val
-        );
+        let json_out = serde_json::json!({
+            "status": "submitted",
+            "program": program_name,
+            "tx": tx.as_deref(),
+            "program_id": program_id.as_deref(),
+        });
+        println!("{}", serde_json::to_string(&json_out).unwrap_or_default());
     } else {
         println!("OK  {program_name} submitted");
         println!("  Binary: {}", binary_path.display());
