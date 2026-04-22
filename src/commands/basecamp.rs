@@ -37,6 +37,10 @@ pub(crate) enum BasecampAction {
     Reset {
         dry_run: bool,
     },
+    BuildPortable {
+        paths: Vec<PathBuf>,
+        flakes: Vec<String>,
+    },
     ProfileList {
         json: bool,
     },
@@ -58,6 +62,9 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
             cmd_basecamp_launch(project, profile, no_clean)
         }
         BasecampAction::Reset { dry_run } => cmd_basecamp_reset(project, dry_run),
+        BasecampAction::BuildPortable { paths, flakes } => {
+            cmd_basecamp_build_portable(project, paths, flakes, &NixLgxProbe)
+        }
         // Phase 5 stub: load_project() above is intentional so "outside project"
         // errors precede "not implemented" — future implementer must preserve that order.
         BasecampAction::ProfileList { .. } => bail!("basecamp profile list is not yet implemented"),
@@ -520,6 +527,15 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
         thread::sleep(Duration::from_millis(100));
     }
     false
+}
+
+fn cmd_basecamp_build_portable(
+    _project: Project,
+    _paths: Vec<PathBuf>,
+    _flakes: Vec<String>,
+    _probe: &dyn LgxFlakeProbe,
+) -> DynResult<()> {
+    bail!("basecamp build-portable is not yet implemented")
 }
 
 fn cmd_basecamp_reset(project: Project, dry_run: bool) -> DynResult<()> {

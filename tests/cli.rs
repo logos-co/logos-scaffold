@@ -1454,6 +1454,34 @@ fn basecamp_install_outside_project_errors() {
 }
 
 #[test]
+fn basecamp_build_portable_outside_project_errors() {
+    // Also validates that `build-portable` is a registered subcommand and that
+    // `--path` / `--flake` parse; outside-project check runs first.
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "build-portable", "--flake", ".#lgx-portable"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
+fn basecamp_build_portable_rejects_dry_run_flag() {
+    // Per spec: only `reset` is destructive; `build-portable` does not get a
+    // `--dry-run` flag. Clap must reject it with a usage error.
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "build-portable", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--dry-run"));
+}
+
+#[test]
 fn basecamp_reset_outside_project_errors() {
     // Also validates that `reset` is a registered subcommand and `--dry-run`
     // parses; outside-project check runs before the handler so the stub vs.
