@@ -150,6 +150,7 @@ Extends v0.2 with two subcommands: a release-style `.lgx-portable` build path fo
 
 1. `build-portable`'s manual copy-to-AppImage step is explicit: scaffold does not know or print the AppImage's destination path. The AppImage lifecycle is intentionally outside scaffold's scope — see ADR "AppImage Path is Outside Scaffold's Scope".
 2. `reset`'s action plan doubles as a verification checklist when debugging stale profile state.
+3. Known limitation: multi-sub-flake projects must unify transitive `logos-module-builder` references via `inputs.<dep>.inputs.logos-module-builder.follows = "logos-module-builder"`. Without it, `install` can fail via the overridden sibling's lock even when a direct `nix build` succeeds. Documented fully in `docs/basecamp-module-requirements.md`; expected to become obsolete once upstream `logos-module-builder` scaffolding emits this `follows` automatically.
 
 ### Dependencies
 

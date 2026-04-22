@@ -31,6 +31,43 @@ Concretely:
 
 Non-path flake refs (e.g. `github:…`) and `.lgx` path sources are never auto-overridden.
 
+### Transitive inputs must `follows` the top-level `logos-module-builder`
+
+Multi-sub-flake projects that pull in modules which themselves depend on `logos-module-builder` (e.g. `delivery_module` → `logos-module-builder`) **must** unify that transitive reference onto the project's top-level pin using a `follows` entry.
+
+Without it, your sub-flake's `flake.lock` ends up with two `logos-module-builder` entries: the one you pinned and a second one pulled in transitively (typically off the upstream's `main` branch, which may be incompatible with the `basecamp v0.1.1` wire format or with the tutorial-sanctioned contract). When scaffold then runs `nix build path:<sibling> --override-input <dir-name> path:<this-sub-flake>`, nix resolves transitive inputs through **this sub-flake's lock**, and the stale second entry silently wins — builds that work with a direct `nix build .#lgx` fail with opaque errors when invoked through scaffold.
+
+Concrete fix: in each sub-flake that declares both `logos-module-builder` and a module with its own `logos-module-builder` input, add the `follows`:
+
+```nix
+# tictactoe/flake.nix (example)
+{
+  inputs = {
+    logos-module-builder.url = "github:logos-co/logos-module-builder/tutorial-v1";
+    delivery_module.url = "github:logos-co/logos-delivery-module/<pinned-rev>";
+
+    # Force delivery_module's transitive `logos-module-builder` to follow our
+    # tutorial-v1 pin. Without this, delivery_module drags in its own
+    # master-branch module-builder (newer, incompatible with basecamp v0.1.1's
+    # bundled delivery_module wire format) as a second entry in flake.lock.
+    # That extra entry silently wins when a UI flake does
+    # `--override-input tictactoe path:...` and breaks the tutorial-sanctioned
+    # local-dev workflow.
+    delivery_module.inputs.logos-module-builder.follows = "logos-module-builder";
+  };
+  # ...
+}
+```
+
+Symptoms when this is missing:
+
+- `lgs basecamp install` fails inside `nix build` with errors from a newer `logos-module-builder` (e.g. `no 'main' field in metadata.json`).
+- `cd <sub-flake> && nix build .#lgx` works directly, because the direct build uses the sub-flake's own lock and never dereferences the extra entry.
+
+Apply the same `follows` wiring to every transitive input that *also* pulls in `logos-module-builder`. After adding it, re-run `nix flake update` in that sub-flake and verify `flake.lock` now contains exactly one `logos-module-builder` node (or `logos-module-builder_N` aliases all resolving to the same rev).
+
+This is a limitation of the current tutorial-era `logos-module-builder` scaffolding and is expected to be handled automatically upstream in a later release.
+
 ## Explicit escape hatch
 
 If the resolver doesn't do what you want, pass explicit sources to `basecamp install`:
@@ -67,4 +104,5 @@ If a flake exposes only `lgx` (not `lgx-portable`), `build-portable` fails with 
 - [ ] `logos-scaffold basecamp setup` has been run.
 - [ ] Each sub-flake exposes `packages.<system>.lgx`.
 - [ ] Sibling input names match sibling directory names, if applicable.
+- [ ] Transitive `logos-module-builder` references are unified with a `follows` onto the top-level pin (see "Transitive inputs must `follows` …" above).
 - [ ] No project relies on `lgx-portable` as the only output without passing `--flake` explicitly.
