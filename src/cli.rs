@@ -297,7 +297,7 @@ struct BasecampInstallArgs {
     /// Path to a pre-built .lgx file (repeatable; must be a file, not a directory)
     #[arg(long, value_name = "PATH")]
     path: Vec<PathBuf>,
-    /// Flake reference producing .lgx, e.g. `./sub#lgx-dual` (repeatable)
+    /// Flake reference producing .lgx, e.g. `./sub#lgx` (repeatable)
     #[arg(long, value_name = "REF")]
     flake: Vec<String>,
     /// Install into a specific profile (default: all seeded profiles)
