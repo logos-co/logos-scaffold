@@ -22,6 +22,35 @@ const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
 const GUEST_BIN_REL_PATH: &str =
     "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
 
+/// Minimal valid `scaffold.toml` content for tests that only need the project
+/// context to exist (no basecamp section). Older tests in this file inline
+/// the same content; new tests should prefer this helper.
+const MINIMAL_SCAFFOLD_TOML: &str = r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#;
+
 #[test]
 fn create_help_does_not_mutate_filesystem() {
     let temp = tempdir().expect("tempdir");
@@ -1488,35 +1517,8 @@ fn basecamp_build_portable_inside_empty_project_emits_generic_hint() {
     // pointing at both CLI escape hatches. Validates end-to-end wiring to the
     // resolver without needing a real nix build.
     let temp = tempdir().expect("tempdir");
-    fs::write(
-        temp.path().join("scaffold.toml"),
-        r#"[scaffold]
-version = "0.1.0"
-cache_root = "cache"
-
-[repos.lez]
-url = "https://example/lez.git"
-source = "https://example/lez.git"
-path = "lez"
-pin = "deadbeef"
-
-[wallet]
-home_dir = ".scaffold/wallet"
-
-[framework]
-kind = "default"
-version = "0.1.0"
-
-[framework.idl]
-spec = "lssa-idl/0.1.0"
-path = "idl"
-
-[localnet]
-port = 3040
-risc0_dev_mode = true
-"#,
-    )
-    .expect("write scaffold.toml");
+    fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
+        .expect("write scaffold.toml");
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1546,35 +1548,8 @@ fn basecamp_reset_outside_project_errors() {
 #[test]
 fn basecamp_reset_before_setup_emits_hint() {
     let temp = tempdir().expect("tempdir");
-    fs::write(
-        temp.path().join("scaffold.toml"),
-        r#"[scaffold]
-version = "0.1.0"
-cache_root = "cache"
-
-[repos.lez]
-url = "https://example/lez.git"
-source = "https://example/lez.git"
-path = "lez"
-pin = "deadbeef"
-
-[wallet]
-home_dir = ".scaffold/wallet"
-
-[framework]
-kind = "default"
-version = "0.1.0"
-
-[framework.idl]
-spec = "lssa-idl/0.1.0"
-path = "idl"
-
-[localnet]
-port = 3040
-risc0_dev_mode = true
-"#,
-    )
-    .expect("write scaffold.toml");
+    fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
+        .expect("write scaffold.toml");
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1594,35 +1569,7 @@ fn basecamp_reset_dry_run_is_non_destructive() {
     // profile's xdg-data tree. `reset --dry-run` must leave all of it alone.
     let temp = tempdir().expect("tempdir");
     let root = temp.path();
-    fs::write(
-        root.join("scaffold.toml"),
-        r#"[scaffold]
-version = "0.1.0"
-cache_root = "cache"
-
-[repos.lez]
-url = "https://example/lez.git"
-source = "https://example/lez.git"
-path = "lez"
-pin = "deadbeef"
-
-[wallet]
-home_dir = ".scaffold/wallet"
-
-[framework]
-kind = "default"
-version = "0.1.0"
-
-[framework.idl]
-spec = "lssa-idl/0.1.0"
-path = "idl"
-
-[localnet]
-port = 3040
-risc0_dev_mode = true
-"#,
-    )
-    .expect("write scaffold.toml");
+    fs::write(root.join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML).expect("write scaffold.toml");
 
     let state_dir = root.join(".scaffold/state");
     fs::create_dir_all(&state_dir).unwrap();
@@ -1657,35 +1604,7 @@ risc0_dev_mode = true
 fn basecamp_reset_wipes_profiles_and_clears_sources() {
     let temp = tempdir().expect("tempdir");
     let root = temp.path();
-    fs::write(
-        root.join("scaffold.toml"),
-        r#"[scaffold]
-version = "0.1.0"
-cache_root = "cache"
-
-[repos.lez]
-url = "https://example/lez.git"
-source = "https://example/lez.git"
-path = "lez"
-pin = "deadbeef"
-
-[wallet]
-home_dir = ".scaffold/wallet"
-
-[framework]
-kind = "default"
-version = "0.1.0"
-
-[framework.idl]
-spec = "lssa-idl/0.1.0"
-path = "idl"
-
-[localnet]
-port = 3040
-risc0_dev_mode = true
-"#,
-    )
-    .expect("write scaffold.toml");
+    fs::write(root.join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML).expect("write scaffold.toml");
 
     let state_dir = root.join(".scaffold/state");
     fs::create_dir_all(&state_dir).unwrap();

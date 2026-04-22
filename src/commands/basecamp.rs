@@ -543,6 +543,11 @@ fn cmd_basecamp_build_portable(
         }
     }
 
+    let flakes: Vec<String> = flakes
+        .into_iter()
+        .map(|f| normalize_flake_ref(&project.root, &f))
+        .collect();
+
     let sources = resolve_install_sources(
         &project.root,
         &paths,
@@ -560,7 +565,7 @@ fn cmd_basecamp_build_portable(
                 outputs.push(build_portable_resolve_path(Path::new(p))?);
             }
             BasecampSource::Flake(flake_ref) => {
-                let overrides = build_portable_resolve_overrides(src, &sources, flake_ref);
+                let overrides = resolve_sibling_overrides(src, &sources, flake_ref);
                 let inv = build_portable_nix_invocation(flake_ref, &overrides);
                 outputs.extend(run_build_portable_nix(&project.root, flake_ref, &inv)?);
             }
@@ -618,32 +623,6 @@ fn build_portable_resolve_path(src: &Path) -> DynResult<PathBuf> {
     Ok(src.canonicalize().unwrap_or_else(|_| src.to_path_buf()))
 }
 
-/// Compute the sibling-override list for a flake source, filtered down to
-/// inputs the target flake actually declares (mirrors `install`'s behaviour).
-fn build_portable_resolve_overrides(
-    src: &BasecampSource,
-    all: &[BasecampSource],
-    target_ref: &str,
-) -> Vec<(String, String)> {
-    let mut overrides = sibling_overrides_for(src, all);
-    if overrides.is_empty() {
-        return overrides;
-    }
-    if let Ok(declared) = flake_declared_inputs(target_ref) {
-        let before = overrides.clone();
-        overrides = retain_declared_overrides(overrides, &declared);
-        for (name, value) in &before {
-            if !overrides.iter().any(|(n, _)| n == name) {
-                eprintln!(
-                    "warning: skipping sibling override `{name}` -> `{value}`: \
-                     not declared as an input of `{target_ref}`"
-                );
-            }
-        }
-    }
-    overrides
-}
-
 fn run_build_portable_nix(
     project_root: &Path,
     flake_ref: &str,
@@ -673,11 +652,16 @@ fn run_build_portable_nix(
             stderr.trim()
         );
     }
+    // `nix build --print-out-paths` today emits only store paths on stdout;
+    // diagnostics go to stderr. Accept only lines that look like absolute
+    // filesystem paths so a future nix version that adds trailing summary
+    // text to stdout doesn't pollute our output list. Users with non-standard
+    // store prefixes (rare) still work — we don't hard-require `/nix/store/`.
     let stdout = String::from_utf8_lossy(&output.stdout);
     let store_paths: Vec<PathBuf> = stdout
         .lines()
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
+        .filter(|s| s.starts_with('/'))
         .map(PathBuf::from)
         .collect();
     if store_paths.is_empty() {
@@ -723,12 +707,19 @@ fn cmd_basecamp_reset(project: Project, dry_run: bool) -> DynResult<()> {
         return Ok(());
     }
 
-    for (_profile, pid, comm) in &live {
-        kill_process_tree(*pid, comm);
+    // Log each step so a mid-flight failure is legible: the user can tell
+    // from stdout exactly which stage completed and which errored.
+    if !live.is_empty() {
+        println!("killing {} live basecamp process(es)", live.len());
+        for (_profile, pid, comm) in &live {
+            kill_process_tree(*pid, comm);
+        }
     }
-
+    println!("wiping {}", profiles_root.display());
     remove_profiles_root(&project.root)?;
+    println!("clearing recorded sources");
     clear_basecamp_sources(&state_path)?;
+    println!("re-seeding profiles: {}", seed_names.join(", "));
     seed_profiles(&profiles_root, &seed_names)?;
 
     println!("reset complete; run `basecamp install` to install modules");
@@ -785,8 +776,17 @@ fn remove_profiles_root(project_root: &Path) -> DynResult<()> {
             canon_base.display()
         );
     }
-    fs::remove_dir_all(&profiles_root)
-        .with_context(|| format!("remove {}", profiles_root.display()))?;
+    // Pass the canonical path to `remove_dir_all` so a TOCTOU symlink swap
+    // between the check above and the removal can't redirect us to a path
+    // outside the safe root. If `profiles_root` itself was a symlink (its
+    // target was verified above to be under `canon_base`), the target is
+    // now gone — clean up the dangling link afterwards.
+    fs::remove_dir_all(&canon_profiles)
+        .with_context(|| format!("remove {}", canon_profiles.display()))?;
+    if profiles_root.is_symlink() {
+        fs::remove_file(&profiles_root)
+            .with_context(|| format!("remove symlink {}", profiles_root.display()))?;
+    }
     Ok(())
 }
 
@@ -828,6 +828,10 @@ fn cmd_basecamp_install(
             skip_subdirs.push(c);
         }
     }
+    let flakes: Vec<String> = flakes
+        .into_iter()
+        .map(|f| normalize_flake_ref(&project.root, &f))
+        .collect();
     let sources = resolve_install_sources(
         &project.root,
         &paths,
@@ -908,26 +912,47 @@ fn cmd_basecamp_install(
 fn collect_lgx_files(sources: &[BasecampSource], lgx_cache: &Path) -> DynResult<Vec<PathBuf>> {
     let mut out = Vec::new();
     for src in sources {
-        let mut overrides = sibling_overrides_for(src, sources);
-        if let (false, BasecampSource::Flake(target_ref)) = (overrides.is_empty(), src) {
-            // On failure (malformed flake, transient nix issue, …) we pass the
-            // unfiltered list — nix will warn on unknown inputs rather than fail.
-            if let Ok(declared) = flake_declared_inputs(target_ref) {
-                let before = overrides.clone();
-                overrides = retain_declared_overrides(overrides, &declared);
-                for (name, value) in &before {
-                    if !overrides.iter().any(|(n, _)| n == name) {
-                        eprintln!(
-                            "warning: skipping sibling override `{name}` -> `{value}`: \
-                             not declared as an input of `{target_ref}`"
-                        );
-                    }
-                }
+        let overrides = match src {
+            BasecampSource::Flake(target_ref) => {
+                resolve_sibling_overrides(src, sources, target_ref)
             }
-        }
+            BasecampSource::Path(_) => Vec::new(),
+        };
         out.extend(materialize_lgx_files(src, lgx_cache, &overrides)?);
     }
     Ok(out)
+}
+
+/// Compute the sibling `--override-input` flags for a flake source, filtered
+/// down to inputs the target flake actually declares. Shared by `install` and
+/// `build-portable` so both commands stay in sync on the override rules and
+/// the "skipped override" warning format.
+///
+/// On `flake_declared_inputs` failure (malformed flake, transient nix issue),
+/// returns the unfiltered list — nix will warn on unknown inputs rather than
+/// fail the build.
+fn resolve_sibling_overrides(
+    src: &BasecampSource,
+    all: &[BasecampSource],
+    target_ref: &str,
+) -> Vec<(String, String)> {
+    let mut overrides = sibling_overrides_for(src, all);
+    if overrides.is_empty() {
+        return overrides;
+    }
+    if let Ok(declared) = flake_declared_inputs(target_ref) {
+        let before = overrides.clone();
+        overrides = retain_declared_overrides(overrides, &declared);
+        for (name, value) in &before {
+            if !overrides.iter().any(|(n, _)| n == name) {
+                eprintln!(
+                    "warning: skipping sibling override `{name}` -> `{value}`: \
+                     not declared as an input of `{target_ref}`"
+                );
+            }
+        }
+    }
+    overrides
 }
 
 /// Drop overrides for input names that aren't in `declared`. Pure function so
@@ -973,6 +998,42 @@ fn flake_declared_inputs(flake_ref: &str) -> DynResult<std::collections::HashSet
         .map(|m| m.keys().cloned().collect())
         .unwrap_or_default();
     Ok(inputs)
+}
+
+/// Rewrite user-supplied plain-relative and absolute filesystem flake refs to
+/// the `path:<abs>#attr` form the resolver and sibling-override logic expect.
+/// Refs already carrying a scheme (`path:`, `github:`, `git+`, `http[s]:`,
+/// `gitlab:`) pass through untouched.
+///
+/// Without this normalization, `--flake ./sub#lgx` would end up in the
+/// resolver as-is; `sibling_overrides_for` only matches `path:` refs, so
+/// sibling inputs silently wouldn't be auto-overridden, and `build-portable`'s
+/// cwd-override would fall through to the project root instead of the flake
+/// directory. Normalizing at the command boundary keeps the downstream
+/// code paths uniform.
+fn normalize_flake_ref(project_root: &Path, flake_ref: &str) -> String {
+    if flake_ref.starts_with("path:")
+        || flake_ref.starts_with("github:")
+        || flake_ref.starts_with("git+")
+        || flake_ref.starts_with("http:")
+        || flake_ref.starts_with("https:")
+        || flake_ref.starts_with("gitlab:")
+        || flake_ref.starts_with("sourcehut:")
+    {
+        return flake_ref.to_string();
+    }
+    let (path_part, frag) = flake_ref.split_once('#').unwrap_or((flake_ref, ""));
+    let raw = if path_part.starts_with('/') {
+        PathBuf::from(path_part)
+    } else {
+        project_root.join(path_part)
+    };
+    let canon = raw.canonicalize().unwrap_or(raw);
+    if frag.is_empty() {
+        format!("path:{}", canon.display())
+    } else {
+        format!("path:{}#{}", canon.display(), frag)
+    }
 }
 
 /// Extract the absolute path from a `path:<abs>#attr` flake ref. Returns `None`
@@ -1331,6 +1392,11 @@ fn classify_flake_dir(
     found: &mut Vec<BasecampSource>,
     alt_only_dirs: &mut Vec<String>,
 ) -> DynResult<()> {
+    debug_assert_ne!(
+        attr, alt_attr,
+        "classify_flake_dir requires distinct attr / alt_attr — the `else if` \
+         would be unreachable and alt-only detection silently broken"
+    );
     let flake_ref = format!("path:{}", dir.display());
     let names = probe.package_names(&flake_ref)?;
     // A flake that exposes only `alt_attr` (not the requested `attr`) is a failure case
@@ -2022,6 +2088,75 @@ mod tests {
             format!("{err}").contains("not a .lgx file"),
             "expected extension-rejection hint, got: {err}"
         );
+    }
+
+    // ---- normalize_flake_ref (I2 fix) ----
+
+    #[test]
+    fn normalize_flake_ref_rewrites_relative_path_to_path_scheme() {
+        let tmp = tempdir().expect("tempdir");
+        let sub = tmp.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let got = normalize_flake_ref(tmp.path(), "./sub#lgx-portable");
+        assert!(got.starts_with("path:"), "got: {got}");
+        assert!(got.ends_with("#lgx-portable"), "got: {got}");
+        let canon = sub.canonicalize().unwrap();
+        assert!(
+            got.contains(canon.to_str().unwrap()),
+            "expected canonical sub path in {got}"
+        );
+    }
+
+    #[test]
+    fn normalize_flake_ref_rewrites_absolute_path_to_path_scheme() {
+        let tmp = tempdir().expect("tempdir");
+        let sub = tmp.path().join("abs-sub");
+        fs::create_dir_all(&sub).unwrap();
+        let abs_spec = format!("{}#lgx", sub.display());
+        let got = normalize_flake_ref(Path::new("/"), &abs_spec);
+        assert!(got.starts_with("path:"), "got: {got}");
+        assert!(got.ends_with("#lgx"), "got: {got}");
+    }
+
+    #[test]
+    fn normalize_flake_ref_passes_through_scheme_refs() {
+        let tmp = tempdir().expect("tempdir");
+        for input in [
+            "path:/abs/p#lgx",
+            "github:foo/bar#lgx-portable",
+            "git+https://example/r#lgx",
+            "https://example/archive.tar.gz#lgx",
+            "gitlab:foo/bar#lgx",
+        ] {
+            assert_eq!(
+                normalize_flake_ref(tmp.path(), input),
+                input,
+                "scheme ref must pass through unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_flake_ref_preserves_missing_fragment() {
+        let tmp = tempdir().expect("tempdir");
+        let sub = tmp.path().join("nofrag");
+        fs::create_dir_all(&sub).unwrap();
+        let got = normalize_flake_ref(tmp.path(), "./nofrag");
+        assert!(
+            got.starts_with("path:") && !got.contains('#'),
+            "no fragment means no `#` in output: {got}"
+        );
+    }
+
+    // ---- resolve_sibling_overrides (I1 fix) — exercised via the command paths;
+    //      a focused test pins the helper's Path-source short-circuit ----
+
+    #[test]
+    fn resolve_sibling_overrides_returns_empty_for_isolated_flake() {
+        let only = BasecampSource::Flake("path:/abs/alone#lgx".to_string());
+        let got =
+            resolve_sibling_overrides(&only, std::slice::from_ref(&only), "path:/abs/alone#lgx");
+        assert!(got.is_empty(), "no siblings → no overrides");
     }
 
     #[test]
