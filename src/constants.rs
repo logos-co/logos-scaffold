@@ -38,5 +38,12 @@ pub(crate) const BASECAMP_XDG_APP_SUBPATH: &str = "Logos/LogosBasecampDev";
 /// Default flake ref for the `lgpm` CLI. The basecamp flake does not expose `lgpm`;
 /// it lives in a separate repo (`logos-package-manager`). Pin alongside basecamp
 /// so dogfooding is reproducible. Override via `[basecamp].lgpm_flake` in scaffold.toml.
+///
+/// Pinned to `logos-package-manager` tag `tutorial-v1` (the last pre-validation
+/// commit). PR #8 introduced content-hash validation in the manifest; later
+/// lgpm commits tightened it further. Neither is compatible today with the
+/// `.lgx` files emitted by `logos-module-builder` tag `tutorial-v1`, which
+/// does not populate content hashes. Revisit when module-builder starts
+/// emitting hashes (or lgpm gains a compatibility mode).
 pub(crate) const DEFAULT_LGPM_FLAKE: &str =
-    "github:logos-co/logos-package-manager/9101875bc103214855bc6217834e22e66802ed86#cli";
+    "github:logos-co/logos-package-manager/e5c25989861f4487c3dc8c7b3bc0062bcbc3221f#cli";
