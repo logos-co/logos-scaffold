@@ -546,7 +546,15 @@ fn cmd_basecamp_install(
             skip_subdirs.push(c);
         }
     }
-    let sources = resolve_install_sources(&project.root, &paths, &flakes, probe, &skip_subdirs)?;
+    let sources = resolve_install_sources(
+        &project.root,
+        &paths,
+        &flakes,
+        probe,
+        &skip_subdirs,
+        "lgx",
+        "lgx-portable",
+    )?;
 
     fs::create_dir_all(&lgx_cache).with_context(|| format!("create {}", lgx_cache.display()))?;
 
@@ -573,9 +581,8 @@ fn cmd_basecamp_install(
     // `launch` (which scrubs + reinstalls) can reproduce the intended state.
     //
     // `install` is declarative: each run replaces the recorded source set with the
-    // freshly-resolved list. Appending would let stale refs (e.g. `#lgx` from a
-    // prior resolver policy, superseded by `#lgx-dual`) linger and be replayed by
-    // `launch`, causing wasted rebuilds and, when two refs target the same flake
+    // freshly-resolved list. Appending would let stale refs linger and be replayed
+    // by `launch`, causing wasted rebuilds and, when two refs target the same flake
     // dir, overwrites in the profile install tree.
     let prev_count = state.sources.len();
     println!(
@@ -938,7 +945,7 @@ fn nix_current_system() -> &'static str {
 }
 
 /// Probes a flake ref for the set of package names it exposes under the current system.
-/// Returned list is used to detect `.#lgx-dual` / `.#lgx` / `.#lgx-portable` in source resolution.
+/// Returned list is used to detect `.#lgx` / `.#lgx-portable` in source resolution.
 trait LgxFlakeProbe {
     fn package_names(&self, flake_ref: &str) -> DynResult<Vec<String>>;
 }
@@ -947,17 +954,22 @@ trait LgxFlakeProbe {
 ///
 /// Precedence (matches §2.2 of the basecamp-profiles spec):
 /// 1. Explicit `--path` / `--flake` — wins if supplied.
-/// 2. Project root `flake.nix` exposing `packages.<system>.lgx-dual` (preferred) or
-///    `.lgx` (backwards compat) — build that attribute.
+/// 2. Project root `flake.nix` exposing `packages.<system>.<attr>` — build that attribute.
 /// 3. Sub-directories with a `flake.nix` exposing the same.
-/// 4. Project exposes only `.#lgx-portable` — fail with a targeted hint.
-/// 5. No `.lgx` sources found anywhere — fail with a generic hint.
+/// 4. Project exposes only `.#<alt_attr>` — fail with a targeted hint pointing at it.
+/// 5. No matching sources found anywhere — fail with a generic hint.
+///
+/// `attr` selects which flake output to target (`"lgx"` for `install`, `"lgx-portable"`
+/// for `build-portable`). `alt_attr` is the variant reported in the fail-hint when only
+/// the other one is present.
 fn resolve_install_sources(
     project_root: &Path,
     explicit_paths: &[PathBuf],
     explicit_flakes: &[String],
     probe: &dyn LgxFlakeProbe,
     skip_subdirs: &[&str],
+    attr: &str,
+    alt_attr: &str,
 ) -> DynResult<Vec<BasecampSource>> {
     if !explicit_paths.is_empty() || !explicit_flakes.is_empty() {
         let mut out = Vec::new();
@@ -971,10 +983,17 @@ fn resolve_install_sources(
     }
 
     let mut found = Vec::new();
-    let mut portable_only_dirs = Vec::new();
+    let mut alt_only_dirs = Vec::new();
     let root_flake = project_root.join("flake.nix");
     if root_flake.is_file() {
-        classify_flake_dir(project_root, probe, &mut found, &mut portable_only_dirs)?;
+        classify_flake_dir(
+            project_root,
+            probe,
+            attr,
+            alt_attr,
+            &mut found,
+            &mut alt_only_dirs,
+        )?;
     }
 
     if found.is_empty() {
@@ -995,7 +1014,7 @@ fn resolve_install_sources(
                 continue;
             }
             if path.join("flake.nix").is_file() {
-                classify_flake_dir(&path, probe, &mut found, &mut portable_only_dirs)?;
+                classify_flake_dir(&path, probe, attr, alt_attr, &mut found, &mut alt_only_dirs)?;
             }
         }
     }
@@ -1005,44 +1024,39 @@ fn resolve_install_sources(
         return Ok(found);
     }
 
-    if !portable_only_dirs.is_empty() {
-        portable_only_dirs.sort();
+    if !alt_only_dirs.is_empty() {
+        alt_only_dirs.sort();
         bail!(
-            "found `.#lgx-portable` in {} but no `.#lgx-dual` / `.#lgx` output.\n\
-             Next step: expose `packages.<system>.lgx-dual` in your flake, or re-run with \
-             `--flake <path>#lgx-portable` to opt into the portable variant explicitly.",
-            portable_only_dirs.join(", ")
+            "found `.#{alt_attr}` in {dirs} but no `.#{attr}` output.\n\
+             Next step: expose `packages.<system>.{attr}` in your flake, or re-run with \
+             `--flake <path>#{alt_attr}` to opt into the {alt_attr} variant explicitly.",
+            dirs = alt_only_dirs.join(", "),
         );
     }
 
     bail!(
         "no `.lgx` sources found in this project.\n\
-         Next step: expose `packages.<system>.lgx-dual` in a `flake.nix` at the project root \
-         (or in a sub-directory), or pass `--path <file.lgx>` / `--flake <ref>#lgx-dual`."
+         Next step: expose `packages.<system>.{attr}` in a `flake.nix` at the project root \
+         (or in a sub-directory), or pass `--path <file.lgx>` / `--flake <ref>#{attr}`."
     )
 }
 
 fn classify_flake_dir(
     dir: &Path,
     probe: &dyn LgxFlakeProbe,
+    attr: &str,
+    alt_attr: &str,
     found: &mut Vec<BasecampSource>,
-    portable_only_dirs: &mut Vec<String>,
+    alt_only_dirs: &mut Vec<String>,
 ) -> DynResult<()> {
     let flake_ref = format!("path:{}", dir.display());
     let names = probe.package_names(&flake_ref)?;
-    // Prefer `lgx-dual` (unified dev+prod target) over `lgx` (older name).
-    // `lgx-portable` alone is a failure case handled by the caller.
-    let attr = if names.iter().any(|n| n == "lgx-dual") {
-        Some("lgx-dual")
-    } else if names.iter().any(|n| n == "lgx") {
-        Some("lgx")
-    } else {
-        None
-    };
-    if let Some(attr) = attr {
+    // A flake that exposes only `alt_attr` (not the requested `attr`) is a failure case
+    // handled by the caller with a targeted hint.
+    if names.iter().any(|n| n == attr) {
         found.push(BasecampSource::Flake(format!("{flake_ref}#{attr}")));
-    } else if names.iter().any(|n| n == "lgx-portable") {
-        portable_only_dirs.push(dir.display().to_string());
+    } else if names.iter().any(|n| n == alt_attr) {
+        alt_only_dirs.push(dir.display().to_string());
     }
     Ok(())
 }
@@ -1110,8 +1124,16 @@ mod tests {
         let probe = FakeProbe::new(&[]);
         let paths = vec![PathBuf::from("/a/mod.lgx")];
         let flakes = vec!["./sub#lgx".to_string()];
-        let got =
-            resolve_install_sources(tmp.path(), &paths, &flakes, &probe, &[]).expect("resolve");
+        let got = resolve_install_sources(
+            tmp.path(),
+            &paths,
+            &flakes,
+            &probe,
+            &[],
+            "lgx",
+            "lgx-portable",
+        )
+        .expect("resolve");
         assert_eq!(
             got,
             vec![
@@ -1122,46 +1144,46 @@ mod tests {
     }
 
     #[test]
-    fn resolve_install_sources_prefers_root_flake_lgx_dual() {
-        let tmp = tempdir().expect("tempdir");
-        let root = tmp.path();
-        fs::write(root.join("flake.nix"), b"{}").unwrap();
-        let root_ref = format!("path:{}", root.display());
-        let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx-dual", "default"])]);
-        let got = resolve_install_sources(root, &[], &[], &probe, &[]).expect("resolve");
-        assert_eq!(
-            got,
-            vec![BasecampSource::Flake(format!("{root_ref}#lgx-dual"))]
-        );
-    }
-
-    #[test]
-    fn resolve_install_sources_prefers_lgx_dual_over_lgx_when_both_present() {
-        let tmp = tempdir().expect("tempdir");
-        let root = tmp.path();
-        fs::write(root.join("flake.nix"), b"{}").unwrap();
-        let root_ref = format!("path:{}", root.display());
-        let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx", "lgx-dual"])]);
-        let got = resolve_install_sources(root, &[], &[], &probe, &[]).expect("resolve");
-        assert_eq!(
-            got,
-            vec![BasecampSource::Flake(format!("{root_ref}#lgx-dual"))],
-            "lgx-dual is the unified target; prefer it when a flake exposes both"
-        );
-    }
-
-    #[test]
-    fn resolve_install_sources_falls_back_to_lgx_when_dual_absent() {
+    fn resolve_install_sources_uses_root_flake_lgx() {
         let tmp = tempdir().expect("tempdir");
         let root = tmp.path();
         fs::write(root.join("flake.nix"), b"{}").unwrap();
         let root_ref = format!("path:{}", root.display());
         let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx", "default"])]);
-        let got = resolve_install_sources(root, &[], &[], &probe, &[]).expect("resolve");
+        let got = resolve_install_sources(root, &[], &[], &probe, &[], "lgx", "lgx-portable")
+            .expect("resolve");
+        assert_eq!(got, vec![BasecampSource::Flake(format!("{root_ref}#lgx"))]);
+    }
+
+    #[test]
+    fn resolve_install_sources_selects_portable_when_attr_is_lgx_portable() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        fs::write(root.join("flake.nix"), b"{}").unwrap();
+        let root_ref = format!("path:{}", root.display());
+        let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx", "lgx-portable"])]);
+        let got = resolve_install_sources(root, &[], &[], &probe, &[], "lgx-portable", "lgx")
+            .expect("resolve");
         assert_eq!(
             got,
-            vec![BasecampSource::Flake(format!("{root_ref}#lgx"))],
-            "backwards compat: modules still exposing only `lgx` must keep working"
+            vec![BasecampSource::Flake(format!("{root_ref}#lgx-portable"))],
+            "when requesting lgx-portable, the portable attr must win even if lgx is also present"
+        );
+    }
+
+    #[test]
+    fn resolve_install_sources_fails_when_requested_attr_absent() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        fs::write(root.join("flake.nix"), b"{}").unwrap();
+        let root_ref = format!("path:{}", root.display());
+        let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx"])]);
+        let err = resolve_install_sources(root, &[], &[], &probe, &[], "lgx-portable", "lgx")
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("lgx-portable") && msg.contains("lgx") && msg.contains("--flake"),
+            "expected alt-only hint for requested lgx-portable, got: {msg}"
         );
     }
 
@@ -1177,21 +1199,22 @@ mod tests {
             fs::write(d.join("flake.nix"), b"{}").unwrap();
         }
         let refs = [
-            (format!("path:{}", sub_a.display()), vec!["lgx-dual"]),
-            (format!("path:{}", sub_b.display()), vec!["lgx-dual"]),
-            (format!("path:{}", hidden.display()), vec!["lgx-dual"]),
+            (format!("path:{}", sub_a.display()), vec!["lgx"]),
+            (format!("path:{}", sub_b.display()), vec!["lgx"]),
+            (format!("path:{}", hidden.display()), vec!["lgx"]),
         ];
         let answers: Vec<(&str, &[&str])> = refs
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_slice()))
             .collect();
         let probe = FakeProbe::new(&answers);
-        let got = resolve_install_sources(root, &[], &[], &probe, &[]).expect("resolve");
+        let got = resolve_install_sources(root, &[], &[], &probe, &[], "lgx", "lgx-portable")
+            .expect("resolve");
         assert_eq!(
             got,
             vec![
-                BasecampSource::Flake(format!("path:{}#lgx-dual", sub_a.display())),
-                BasecampSource::Flake(format!("path:{}#lgx-dual", sub_b.display())),
+                BasecampSource::Flake(format!("path:{}#lgx", sub_a.display())),
+                BasecampSource::Flake(format!("path:{}#lgx", sub_b.display())),
             ],
             "hidden dotdirs must be skipped; results must be sorted"
         );
@@ -1204,7 +1227,8 @@ mod tests {
         fs::write(root.join("flake.nix"), b"{}").unwrap();
         let root_ref = format!("path:{}", root.display());
         let probe = FakeProbe::new(&[(root_ref.as_str(), &["lgx-portable"])]);
-        let err = resolve_install_sources(root, &[], &[], &probe, &[]).unwrap_err();
+        let err = resolve_install_sources(root, &[], &[], &probe, &[], "lgx", "lgx-portable")
+            .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("lgx-portable") && msg.contains("--flake"),
@@ -1227,25 +1251,33 @@ mod tests {
         let answers_owned = vec![
             (
                 format!("path:{}", root.join("target").display()),
-                vec!["lgx-dual"],
+                vec!["lgx"],
             ),
             (
                 format!("path:{}", root.join("cache").display()),
-                vec!["lgx-dual"],
+                vec!["lgx"],
             ),
-            (format!("path:{}", real.display()), vec!["lgx-dual"]),
+            (format!("path:{}", real.display()), vec!["lgx"]),
         ];
         let answers: Vec<(&str, &[&str])> = answers_owned
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_slice()))
             .collect();
         let probe = FakeProbe::new(&answers);
-        let got =
-            resolve_install_sources(root, &[], &[], &probe, &["target", "cache"]).expect("resolve");
+        let got = resolve_install_sources(
+            root,
+            &[],
+            &[],
+            &probe,
+            &["target", "cache"],
+            "lgx",
+            "lgx-portable",
+        )
+        .expect("resolve");
         assert_eq!(
             got,
             vec![BasecampSource::Flake(format!(
-                "path:{}#lgx-dual",
+                "path:{}#lgx",
                 real.display()
             ))],
             "skip_subdirs must prune target/cache even if they contain flake.nix"
@@ -1256,7 +1288,8 @@ mod tests {
     fn resolve_install_sources_no_lgx_anywhere_fails_with_generic_hint() {
         let tmp = tempdir().expect("tempdir");
         let probe = FakeProbe::new(&[]);
-        let err = resolve_install_sources(tmp.path(), &[], &[], &probe, &[]).unwrap_err();
+        let err = resolve_install_sources(tmp.path(), &[], &[], &probe, &[], "lgx", "lgx-portable")
+            .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("--path") && msg.contains("--flake"),
