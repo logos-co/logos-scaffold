@@ -1470,6 +1470,191 @@ fn basecamp_reset_outside_project_errors() {
 }
 
 #[test]
+fn basecamp_reset_before_setup_emits_hint() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(
+        temp.path().join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#,
+    )
+    .expect("write scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "reset"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "basecamp not set up yet; run: logos-scaffold basecamp setup",
+        ));
+}
+
+#[cfg(unix)]
+#[test]
+fn basecamp_reset_dry_run_is_non_destructive() {
+    // Seed a project as if `setup` + `install` had already run: scaffold.toml,
+    // basecamp.state with populated sources, and a sentinel file under one
+    // profile's xdg-data tree. `reset --dry-run` must leave all of it alone.
+    let temp = tempdir().expect("tempdir");
+    let root = temp.path();
+    fs::write(
+        root.join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#,
+    )
+    .expect("write scaffold.toml");
+
+    let state_dir = root.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/nonexistent/bin/basecamp\nlgpm_bin=/nonexistent/bin/lgpm\nsource:flake=./sub#lgx\n",
+    )
+    .expect("seed basecamp.state");
+
+    let sentinel = root.join(".scaffold/basecamp/profiles/alice/xdg-data/sentinel.txt");
+    fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+    fs::write(&sentinel, b"do-not-delete-on-dry-run").unwrap();
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(root)
+        .args(["basecamp", "reset", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reset plan:"))
+        .stdout(predicate::str::contains("rm -rf"));
+
+    assert!(sentinel.exists(), "dry-run must not delete profile data");
+    let state_text = fs::read_to_string(state_dir.join("basecamp.state")).unwrap();
+    assert!(
+        state_text.contains("source:flake=./sub#lgx"),
+        "dry-run must not clear recorded sources"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn basecamp_reset_wipes_profiles_and_clears_sources() {
+    let temp = tempdir().expect("tempdir");
+    let root = temp.path();
+    fs::write(
+        root.join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#,
+    )
+    .expect("write scaffold.toml");
+
+    let state_dir = root.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/nonexistent/bin/basecamp\nlgpm_bin=/nonexistent/bin/lgpm\nsource:flake=./sub#lgx\nsource:path=/m.lgx\n",
+    )
+    .expect("seed basecamp.state");
+
+    let junk = root.join(".scaffold/basecamp/profiles/alice/xdg-data/stale-module.bin");
+    fs::create_dir_all(junk.parent().unwrap()).unwrap();
+    fs::write(&junk, b"old module").unwrap();
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(root)
+        .args(["basecamp", "reset"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reset complete"));
+
+    assert!(!junk.exists(), "stale module file must be gone");
+
+    let alice_dir = root.join(".scaffold/basecamp/profiles/alice");
+    let bob_dir = root.join(".scaffold/basecamp/profiles/bob");
+    assert!(alice_dir.is_dir(), "alice must be re-seeded");
+    assert!(bob_dir.is_dir(), "bob must be re-seeded");
+
+    let state_text = fs::read_to_string(state_dir.join("basecamp.state")).unwrap();
+    assert!(
+        !state_text.contains("source:"),
+        "sources must be cleared, got:\n{state_text}"
+    );
+    assert!(
+        state_text.contains("basecamp_bin=/nonexistent/bin/basecamp"),
+        "basecamp_bin must be preserved, got:\n{state_text}"
+    );
+    assert!(
+        state_text.contains("lgpm_bin=/nonexistent/bin/lgpm"),
+        "lgpm_bin must be preserved, got:\n{state_text}"
+    );
+}
+
+#[test]
 fn basecamp_install_before_setup_emits_hint() {
     let temp = tempdir().expect("tempdir");
     fs::write(
