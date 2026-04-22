@@ -61,8 +61,6 @@
 
 ## FURPS+ (v0.2 — Basecamp Profiles)
 
-Spec: [`docs/specs/basecamp-profiles.md`](./docs/specs/basecamp-profiles.md).
-
 ### Functionality
 
 1. Fetch and build a pinned basecamp (`nix build '.#app'`) and pinned `lgpm` as project-local artifacts, in the same pin-isolated cache layout used for LEZ.
@@ -96,8 +94,7 @@ Spec: [`docs/specs/basecamp-profiles.md`](./docs/specs/basecamp-profiles.md).
 1. `logos-scaffold doctor` gains a basecamp section when `.scaffold/basecamp/` exists, covering binary presence, profile integrity, and installed-module state.
 2. Basecamp and `lgpm` pinned commits are explicit in `scaffold.toml`.
 3. `.scaffold/state/basecamp.state` is plain-text and line-oriented, matching existing scaffold state conventions.
-4. Spec (`docs/specs/basecamp-profiles.md`) documents the full command surface, directory layout, env contract, and boundaries.
-5. Dogfooding scenarios (`B1`–`B4` in `DOGFOODING.md`) cover setup, single-instance, multi-instance p2p, and clean-slate behaviors.
+4. Dogfooding scenarios (`B1`–`B4` in `DOGFOODING.md`) cover setup, single-instance, multi-instance p2p, and clean-slate behaviors.
 
 ### + (Privacy, Anonymity, Censorship-Resistance)
 
@@ -123,3 +120,39 @@ Spec: [`docs/specs/basecamp-profiles.md`](./docs/specs/basecamp-profiles.md).
 
 - `.#lgx` flake output on the project (or sub-flakes) — `.#lgx-portable`-only projects fail explicitly until they expose `.#lgx`.
 - Modules that bind sockets must honor external port override via env var (names chosen by each module) for multi-instance launch to be fully useful.
+
+## FURPS+ (v0.3 — Build Portable + Reset)
+
+Extends v0.2 with two subcommands: a release-style `.lgx-portable` build path for AppImage testing, and a single-command teardown of installed-module profile state.
+
+### Functionality
+
+1. `basecamp build-portable` builds the project's `.#lgx-portable` flake outputs (the variant that loads cleanly into a release basecamp AppImage) and prints the absolute store paths of the resulting `.lgx` artefacts.
+2. `basecamp reset` kills any live basecamp tracked in per-profile `launch.state`, wipes `.scaffold/basecamp/profiles/`, clears recorded `sources` in `basecamp.state` (preserving the pinned basecamp + lgpm binaries), and re-seeds empty `alice` / `bob` profiles in the same run.
+3. Source resolution for `build-portable` reuses the same auto-discovery + `--path` / `--flake` escape hatches as `install`, but targets `#lgx-portable` instead of `#lgx`.
+4. `basecamp reset --dry-run` prints the full action plan (PIDs to kill, paths to remove, source count to clear, profiles to re-seed) and exits 0 without side effects.
+
+### Usability
+
+1. Projects exposing only `.#lgx` (no `.#lgx-portable`) receive a targeted hint naming the missing attribute and suggesting `--flake <ref>#lgx-portable` for explicit opt-in — mirror of the v0.2 failure mode, in reverse.
+2. `build-portable` leaves the symlink destination to `nix build`'s default — no `.scaffold/`-owned output directory, so each flake's `./result-lgx-portable` symlink lands next to its `flake.nix`. Multi-flake projects get per-flake-dir disambiguation for free.
+3. `reset` prints the action plan before any destructive step, both for `--dry-run` and live invocations, so users see what's about to happen without surprises.
+4. `reset` exits with a targeted hint (run `basecamp setup`) when invoked before the basecamp state exists.
+
+### Reliability
+
+1. `reset` re-verifies each recorded PID's `/proc/<pid>/comm` against the pinned basecamp binary before issuing TERM or KILL, avoiding PID-reuse hazards.
+2. `reset` refuses to remove `.scaffold/basecamp/profiles/` when that path resolves (via symlink or otherwise) outside `.scaffold/basecamp/` — enforced by the same `canonicalize_under` guard used by `scrub_profile_data_and_cache`.
+3. `build-portable` never writes under `.scaffold/`, never invokes `lgpm`, and never touches `basecamp.state`, so a failed portable build cannot corrupt the scaffold-managed profile trees.
+4. `reset` is idempotent: a second invocation on a freshly-reset project prints an empty kill plan and completes cleanly.
+
+### Supportability
+
+1. `build-portable`'s manual copy-to-AppImage step is explicit: scaffold does not know or print the AppImage's destination path. The AppImage lifecycle is intentionally outside scaffold's scope — see ADR "AppImage Path is Outside Scaffold's Scope".
+2. `reset`'s action plan doubles as a verification checklist when debugging stale profile state.
+
+### Dependencies
+
+#### Module Dependencies
+
+- `.#lgx-portable` flake output for any module the developer wants to test against a basecamp AppImage. Projects without it get a clear error from `build-portable`, not a silent miss.
