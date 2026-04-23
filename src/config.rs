@@ -83,8 +83,13 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
             }
             "localnet" => {
                 if key == "port" {
-                    if let Ok(p) = value.parse::<u16>() {
-                        localnet_port = p;
+                    if !value.is_empty() {
+                        localnet_port = match value.parse::<u16>() {
+                            Ok(p) => p,
+                            Err(_) => bail!(
+                                "invalid scaffold.toml: [localnet] port `{value}` is not a valid u16 (expected 0-65535)"
+                            ),
+                        };
                     }
                 } else if key == "risc0_dev_mode" {
                     localnet_risc0_dev_mode = value != "false" && value != "0";
@@ -177,4 +182,55 @@ pub(crate) fn unquote(value: &str) -> String {
 
 pub(crate) fn escape_toml_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_config;
+
+    fn minimal_scaffold_toml() -> String {
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "/tmp/cache"
+
+[repos.lssa]
+url = "https://example.com/lssa.git"
+source = "https://example.com/lssa.git"
+path = "/tmp/lssa"
+pin = "deadbeef"
+
+"#
+        .to_string()
+    }
+
+    #[test]
+    fn rejects_invalid_localnet_port() {
+        let toml = minimal_scaffold_toml() + "[localnet]\nport = not_a_port\n";
+        let err = parse_config(&toml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not_a_port") && msg.contains("port"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_localnet_port_out_of_range() {
+        let toml = minimal_scaffold_toml() + "[localnet]\nport = 70000\n";
+        let err = parse_config(&toml).unwrap_err();
+        assert!(err.to_string().contains("70000"), "{err}");
+    }
+
+    #[test]
+    fn parses_valid_custom_localnet_port() {
+        let toml = minimal_scaffold_toml() + "[localnet]\nport = 3050\n";
+        let cfg = parse_config(&toml).unwrap();
+        assert_eq!(cfg.localnet.port, 3050);
+    }
+
+    #[test]
+    fn default_localnet_port_when_section_omitted() {
+        let cfg = parse_config(&minimal_scaffold_toml()).unwrap();
+        assert_eq!(cfg.localnet.port, 3040);
+    }
 }
