@@ -910,6 +910,55 @@ impl SourceOrigin {
     }
 }
 
+/// Extract the rev / tag segment from a `github:owner/repo/<ref>#…` flake
+/// ref. Returns `None` for non-github refs or refs without a ref segment.
+/// Same helper the doctor uses — kept local to `basecamp.rs` so the drift
+/// warning is self-contained.
+fn github_flake_ref_rev(flake_ref: &str) -> Option<&str> {
+    let rest = flake_ref.strip_prefix("github:")?;
+    let before_frag = rest.split_once('#').map_or(rest, |(b, _)| b);
+    let parts: Vec<&str> = before_frag.split('/').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    Some(parts[2])
+}
+
+/// Emit a drift warning when a project's `flake.lock` pins a runtime
+/// companion dep to a rev different from scaffold's default. The project
+/// pin wins (they're building against it), but the warning surfaces the
+/// risk of incompatibility with a basecamp shipped against the scaffold
+/// default — matches the `lez standalone pin` drift warning in `doctor`.
+fn warn_on_dep_pin_drift(
+    name: &str,
+    scaffold_default_ref: &str,
+    project_resolved_ref: &str,
+    source_flake_path: &Path,
+) {
+    let default_rev = github_flake_ref_rev(scaffold_default_ref);
+    let project_rev = github_flake_ref_rev(project_resolved_ref);
+    if let (Some(d), Some(p)) = (default_rev, project_rev) {
+        if d == p {
+            return; // revs match — no drift
+        }
+    } else if scaffold_default_ref == project_resolved_ref {
+        return;
+    }
+    eprintln!(
+        "warning: dep `{name}` pinned by `{}/flake.lock` at `{}` \
+         differs from scaffold default `{}`. Your module will build and \
+         run locally against the project-lock rev, but may not work \
+         against a basecamp release that expects the scaffold default. \
+         If you're building for release, either update the project lock \
+         to match the scaffold default or override via \
+         `[basecamp.dependencies]` in scaffold.toml with an explicit \
+         compatible pin.",
+        source_flake_path.display(),
+        project_rev.unwrap_or(project_resolved_ref),
+        default_rev.unwrap_or(scaffold_default_ref),
+    );
+}
+
 /// Given a source flake's local path and a dep name declared in its
 /// `metadata.json`, try to find that name as an input in the sibling
 /// `flake.lock` and return a `github:<owner>/<repo>/<rev>#lgx` ref.
@@ -1186,6 +1235,16 @@ fn resolve_manifest_dependencies(
         //    (e.g. when an upstream tag predates the `#lgx` convention).
         if let Some(path) = &local_path {
             if let Some(resolved) = resolve_dep_from_project_flake_lock(path, &name) {
+                // Drift warning: if scaffold also has a default pin for this
+                // dep AND the revs differ, surface it loudly. The project's
+                // pin wins (they're building against it) but the dev should
+                // know they're off-scaffold — their module may not work
+                // against a basecamp that shipped with the scaffold default.
+                if let Some((_, default_ref)) =
+                    BASECAMP_DEPENDENCIES.iter().find(|(n, _)| *n == name)
+                {
+                    warn_on_dep_pin_drift(&name, default_ref, &resolved, path);
+                }
                 out_sources.push(BasecampSource::Flake(resolved));
                 out_origins.push(SourceOrigin::DepFromProjectLock {
                     name: name.clone(),
@@ -1938,6 +1997,52 @@ fn push_basecamp_doctor_rows(project: &Project, rows: &mut Vec<crate::model::Che
     }
     for src in &state.dependencies {
         rows.push(captured_source_row("basecamp dep", src, &alice_modules));
+    }
+
+    // Drift between a captured dep ref and scaffold's default for that dep.
+    // Mirrors the `lez standalone pin` warning pattern: surfaces a rev
+    // mismatch so the dev knows they're off-scaffold. Matches by module name
+    // against `BASECAMP_DEPENDENCIES` entries; captured dep refs that aren't
+    // github refs (rare) are skipped silently.
+    for (name, default_ref) in BASECAMP_DEPENDENCIES {
+        let Some(captured) = state.dependencies.iter().find_map(|src| match src {
+            BasecampSource::Flake(f) => {
+                let rest = f.strip_prefix("github:")?;
+                let before_frag = rest.split_once('#').map_or(rest, |(b, _)| b);
+                let repo = before_frag.split('/').nth(1)?;
+                let candidate_name = repo.trim_start_matches("logos-").replace('-', "_");
+                if candidate_name == *name {
+                    Some(f.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }) else {
+            continue;
+        };
+        let captured_rev = github_flake_ref_rev(captured);
+        let default_rev = github_flake_ref_rev(default_ref);
+        let drifted = match (captured_rev, default_rev) {
+            (Some(c), Some(d)) => c != d,
+            _ => captured != *default_ref,
+        };
+        if drifted {
+            rows.push(crate::model::CheckRow {
+                status: crate::model::CheckStatus::Warn,
+                name: format!("basecamp dep pin drift: {name}"),
+                detail: format!(
+                    "captured `{}` differs from scaffold default `{}`",
+                    captured_rev.unwrap_or(captured),
+                    default_rev.unwrap_or(default_ref),
+                ),
+                remediation: Some(format!(
+                    "module may not work against a basecamp release built with the scaffold \
+                     default. Either update the project's flake.lock to match, or set \
+                     `[basecamp.dependencies].{name}` in scaffold.toml to a compatible rev."
+                )),
+            });
+        }
     }
 
     if let Some(expected_dev) = platform_dev_variant_key() {
@@ -3131,6 +3236,24 @@ mod tests {
             deps.is_empty(),
             "project-internal deps should not produce external captures"
         );
+    }
+
+    #[test]
+    fn github_flake_ref_rev_extracts_middle_segment() {
+        assert_eq!(
+            github_flake_ref_rev("github:logos-co/logos-delivery-module/1fde1566#lgx"),
+            Some("1fde1566")
+        );
+        assert_eq!(
+            github_flake_ref_rev("github:foo/bar/1.0.0#lgx"),
+            Some("1.0.0")
+        );
+    }
+
+    #[test]
+    fn github_flake_ref_rev_returns_none_for_non_github() {
+        assert_eq!(github_flake_ref_rev("path:/abs#lgx"), None);
+        assert_eq!(github_flake_ref_rev("github:foo/bar#lgx"), None);
     }
 
     #[test]
