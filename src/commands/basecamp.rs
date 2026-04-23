@@ -30,11 +30,11 @@ pub(crate) enum BasecampAction {
         flakes: Vec<String>,
         show: bool,
     },
-    Install {
-        paths: Vec<PathBuf>,
-        flakes: Vec<String>,
-        profile: Option<String>,
-    },
+    /// Pure replay: build and install everything captured in `state` (deps
+    /// first). No source-set flags — use `basecamp modules` to change what's
+    /// captured. If state is empty, transparently invokes `modules` in
+    /// auto-discover mode and proceeds.
+    Install,
     Launch {
         profile: String,
         no_clean: bool,
@@ -63,11 +63,7 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
             flakes,
             show,
         } => cmd_basecamp_modules(project, paths, flakes, show, &NixLgxProbe),
-        BasecampAction::Install {
-            paths,
-            flakes,
-            profile,
-        } => cmd_basecamp_install(project, paths, flakes, profile, &NixLgxProbe),
+        BasecampAction::Install => cmd_basecamp_install(project, &NixLgxProbe),
         BasecampAction::Launch { profile, no_clean } => {
             cmd_basecamp_launch(project, profile, no_clean)
         }
@@ -1102,13 +1098,17 @@ fn resolve_manifest_dependencies(
     (out_sources, out_origins)
 }
 
-fn cmd_basecamp_install(
-    project: Project,
-    paths: Vec<PathBuf>,
-    flakes: Vec<String>,
-    profile: Option<String>,
-    probe: &dyn LgxFlakeProbe,
-) -> DynResult<()> {
+/// Pure replay of `state.project_sources` + `state.dependencies` into every
+/// seeded profile. Dependencies build first (fail-fast on a broken companion
+/// pin, before we invest time on project sources). If state has no captured
+/// sources, transparently invokes `basecamp modules` in auto-discover mode
+/// and reloads state, then proceeds.
+///
+/// No CLI source flags (`--flake`/`--path`/`--profile`) — the source set
+/// lives in state, managed by `basecamp modules`. No selective profile
+/// installs either (KISS); reset + install again if you want one profile
+/// clean.
+fn cmd_basecamp_install(project: Project, probe: &dyn LgxFlakeProbe) -> DynResult<()> {
     let state_path = project.root.join(".scaffold/state/basecamp.state");
     let state = read_basecamp_state(&state_path)
         .ok()
@@ -1121,80 +1121,47 @@ fn cmd_basecamp_install(
         bail!("basecamp not set up yet; run: logos-scaffold basecamp setup");
     }
 
+    // If state has no captured sources, run `modules` in auto-discover mode
+    // transparently. This preserves the "bare install on a fresh project
+    // just works" story.
+    let state = if state.total_sources() == 0 {
+        println!("no modules captured yet; running `basecamp modules` for you");
+        cmd_basecamp_modules(project.clone(), Vec::new(), Vec::new(), false, probe)?;
+        read_basecamp_state(&state_path).with_context(|| {
+            format!("re-read state after auto-capture: {}", state_path.display())
+        })?
+    } else {
+        state
+    };
+
     let cache_root = project.root.join(&project.config.cache_root);
     let lgx_cache = cache_root.join("basecamp/lgx-links");
-    let cache_root_first = first_path_component(&project.config.cache_root);
-    let mut skip_subdirs: Vec<&str> = BASECAMP_AUTODISCOVER_SKIP_SUBDIRS.iter().copied().collect();
-    if let Some(c) = cache_root_first.as_deref() {
-        if !skip_subdirs.contains(&c) {
-            skip_subdirs.push(c);
-        }
-    }
-    let flakes: Vec<String> = flakes
-        .into_iter()
-        .map(|f| normalize_flake_ref(&project.root, &f))
-        .collect();
-    let sources = resolve_install_sources(
-        &project.root,
-        &paths,
-        &flakes,
-        probe,
-        &skip_subdirs,
-        "lgx",
-        "lgx-portable",
-    )?;
-
     fs::create_dir_all(&lgx_cache).with_context(|| format!("create {}", lgx_cache.display()))?;
 
     let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
-    let target_profiles: Vec<String> = match profile.as_deref() {
-        Some(name) => {
-            let profile_dir = profiles_root.join(name);
-            if !profile_dir.is_dir() {
-                bail!(
-                    "profile `{name}` does not exist under {}; run `logos-scaffold basecamp setup` first",
-                    profiles_root.display()
-                );
-            }
-            vec![name.to_string()]
-        }
-        None => vec![
-            BASECAMP_PROFILE_ALICE.to_string(),
-            BASECAMP_PROFILE_BOB.to_string(),
-        ],
-    };
+    let target_profiles: Vec<String> = vec![
+        BASECAMP_PROFILE_ALICE.to_string(),
+        BASECAMP_PROFILE_BOB.to_string(),
+    ];
 
-    // Commit resolved sources to state *before* invoking lgpm. If an install later
-    // fails mid-loop, the sources list still reflects what the user asked for, so
-    // `launch` (which scrubs + reinstalls) can reproduce the intended state.
-    //
-    // `install` is declarative: each run replaces the recorded source set with the
-    // freshly-resolved list. Appending would let stale refs linger and be replayed
-    // by `launch`, causing wasted rebuilds and, when two refs target the same flake
-    // dir, overwrites in the profile install tree.
-    let prev_count = state.total_sources();
-    println!(
-        "resolved {} source(s); replacing previous {} recorded source(s)",
-        sources.len(),
-        prev_count
-    );
-    for src in &sources {
+    // Deps-first build order. fail-fast: a broken companion pin surfaces
+    // before we invest nix build time on the dev's own modules.
+    let ordered: Vec<BasecampSource> = state.all_sources().cloned().collect();
+    if ordered.is_empty() {
+        bail!(
+            "no modules captured after auto-discovery; \
+             run `basecamp modules --flake <ref>#lgx` to supply sources explicitly"
+        );
+    }
+
+    println!("installing {} module(s) (deps first):", ordered.len());
+    for src in &ordered {
         println!("  - {}", flake_ref(src));
     }
-    // NOTE: pre-modules-command transition — explicit `install --flake/--path`
-    // writes everything as project_sources. The upcoming `basecamp modules`
-    // command will split properly based on manifest walking. Remove this
-    // transitional assignment when modules lands.
-    let new_state = BasecampState {
-        project_sources: sources.clone(),
-        dependencies: Vec::new(),
-        ..state.clone()
-    };
-    write_basecamp_state(&state_path, &new_state)?;
 
-    let lgx_files = collect_lgx_files(&sources, &lgx_cache)?;
+    let lgx_files = collect_lgx_files(&ordered, &lgx_cache)?;
     if lgx_files.is_empty() {
-        bail!("no .lgx files produced by the resolved sources");
+        bail!("no .lgx files produced by the captured sources");
     }
 
     run_lgpm_install(

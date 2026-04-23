@@ -1406,17 +1406,42 @@ fn basecamp_help_lists_setup_install_launch_and_profile() {
 }
 
 #[test]
-fn basecamp_install_help_lists_flags() {
-    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+fn basecamp_install_help_has_no_source_flags() {
+    // `install` is pure replay: no `--flake` / `--path` / `--profile`. Those
+    // live on `basecamp modules` (sole writer of the captured source set).
+    let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .arg("basecamp")
         .arg("install")
+        .arg("--help")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("--path"),
+        "install must not take --path: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--flake"),
+        "install must not take --flake: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--profile"),
+        "install must not take --profile: {stdout}"
+    );
+}
+
+#[test]
+fn basecamp_modules_help_lists_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("basecamp")
+        .arg("modules")
         .arg("--help")
         .assert()
         .success()
         .stdout(
             predicate::str::contains("--path")
                 .and(predicate::str::contains("--flake"))
-                .and(predicate::str::contains("--profile")),
+                .and(predicate::str::contains("--show")),
         );
 }
 

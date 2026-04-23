@@ -50,7 +50,11 @@ pub(crate) fn write_basecamp_state(path: &Path, state: &BasecampState) -> DynRes
     check_state_value("pin", &state.pin)?;
     check_state_value("basecamp_bin", &state.basecamp_bin)?;
     check_state_value("lgpm_bin", &state.lgpm_bin)?;
-    for source in state.project_sources.iter().chain(state.dependencies.iter()) {
+    for source in state
+        .project_sources
+        .iter()
+        .chain(state.dependencies.iter())
+    {
         let (key, value) = match source {
             BasecampSource::Path(p) => ("project:path", p.as_str()),
             BasecampSource::Flake(f) => ("project:flake", f.as_str()),
@@ -111,19 +115,31 @@ pub(crate) fn read_basecamp_state(path: &Path) -> DynResult<BasecampState> {
         } else if let Some(rest) = line.strip_prefix("lgpm_bin=") {
             state.lgpm_bin = rest.to_string();
         } else if let Some(rest) = line.strip_prefix("project:path=") {
-            state.project_sources.push(BasecampSource::Path(rest.to_string()));
+            state
+                .project_sources
+                .push(BasecampSource::Path(rest.to_string()));
         } else if let Some(rest) = line.strip_prefix("project:flake=") {
-            state.project_sources.push(BasecampSource::Flake(rest.to_string()));
+            state
+                .project_sources
+                .push(BasecampSource::Flake(rest.to_string()));
         } else if let Some(rest) = line.strip_prefix("dep:path=") {
-            state.dependencies.push(BasecampSource::Path(rest.to_string()));
+            state
+                .dependencies
+                .push(BasecampSource::Path(rest.to_string()));
         } else if let Some(rest) = line.strip_prefix("dep:flake=") {
-            state.dependencies.push(BasecampSource::Flake(rest.to_string()));
+            state
+                .dependencies
+                .push(BasecampSource::Flake(rest.to_string()));
         } else if let Some(rest) = line.strip_prefix("source:path=") {
             // Legacy key from pre-split state; migrate into project_sources.
-            state.project_sources.push(BasecampSource::Path(rest.to_string()));
+            state
+                .project_sources
+                .push(BasecampSource::Path(rest.to_string()));
         } else if let Some(rest) = line.strip_prefix("source:flake=") {
             // Legacy key from pre-split state; migrate into project_sources.
-            state.project_sources.push(BasecampSource::Flake(rest.to_string()));
+            state
+                .project_sources
+                .push(BasecampSource::Flake(rest.to_string()));
         }
     }
 

@@ -335,15 +335,9 @@ struct BasecampResetArgs {
 
 #[derive(Debug, clap::Args)]
 struct BasecampInstallArgs {
-    /// Path to a pre-built .lgx file (repeatable; must be a file, not a directory)
-    #[arg(long, value_name = "PATH")]
-    path: Vec<PathBuf>,
-    /// Flake reference producing .lgx, e.g. `./sub#lgx` (repeatable)
-    #[arg(long, value_name = "REF")]
-    flake: Vec<String>,
-    /// Install into a specific profile (default: all seeded profiles)
-    #[arg(long, value_name = "PROFILE")]
-    profile: Option<String>,
+    // `install` takes no source-set flags: source set lives in `basecamp.state`
+    // and is managed by `basecamp modules`. If state is empty on the first
+    // `install`, it transparently invokes `modules` in auto-discover mode.
 }
 
 #[derive(Debug, clap::Args)]
@@ -465,11 +459,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                     flakes: args.flake,
                     show: args.show,
                 },
-                BasecampSubcommand::Install(args) => BasecampAction::Install {
-                    paths: args.path,
-                    flakes: args.flake,
-                    profile: args.profile,
-                },
+                BasecampSubcommand::Install(_) => BasecampAction::Install,
                 BasecampSubcommand::Launch(args) => BasecampAction::Launch {
                     profile: args.profile,
                     no_clean: args.no_clean,
