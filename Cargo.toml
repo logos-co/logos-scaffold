@@ -27,6 +27,8 @@ name = "lgs"
 path = "src/bin/lgs.rs"
 
 [dependencies]
+walkdir = "2"
+hex = "0.4"
 anyhow = "1.0"
 bs58 = "0.5"
 clap = { version = "4.5", features = ["derive"] }
