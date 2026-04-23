@@ -1585,6 +1585,159 @@ fn nix_current_system() -> &'static str {
     }
 }
 
+/// Map the current host's nix system string to the `.lgx` manifest `main`
+/// variant key basecamp resolves against when loading a dev-build plugin.
+/// Returns `None` for platforms we can't map (unknown nix systems).
+pub(crate) fn platform_dev_variant_key() -> Option<&'static str> {
+    match nix_current_system() {
+        "x86_64-linux" => Some("linux-amd64-dev"),
+        "aarch64-linux" => Some("linux-arm64-dev"),
+        "aarch64-darwin" => Some("darwin-arm64-dev"),
+        "x86_64-darwin" => Some("darwin-amd64-dev"),
+        _ => None,
+    }
+}
+
+/// A `modules/<name>/manifest.json` whose `main` object lacks the expected
+/// dev-variant key for the current platform. Basecamp v0.1.1's variant
+/// resolver will silently hang on first click when loading such a plugin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManifestVariantIssue {
+    pub(crate) profile: String,
+    pub(crate) module_name: String,
+    pub(crate) available_variants: Vec<String>,
+}
+
+/// Walk `<profile_dir>/xdg-data/<BASECAMP_XDG_APP_SUBPATH>/modules/*/manifest.json`
+/// and flag modules missing the expected `-dev` variant key. Non-blocking:
+/// callers decide whether to warn or fail based on the returned issues.
+/// Silent on parse errors / missing files (not the check's job to police).
+pub(crate) fn check_manifest_variants(
+    profile_dir: &Path,
+    profile_name: &str,
+    expected_dev_variant: &str,
+) -> Vec<ManifestVariantIssue> {
+    let modules_root = profile_dir
+        .join("xdg-data")
+        .join(BASECAMP_XDG_APP_SUBPATH)
+        .join("modules");
+    let Ok(entries) = fs::read_dir(&modules_root) else {
+        return Vec::new();
+    };
+    let mut issues = Vec::new();
+    for entry in entries.flatten() {
+        let module_dir = entry.path();
+        if !module_dir.is_dir() {
+            continue;
+        }
+        let manifest_path = module_dir.join("manifest.json");
+        let Ok(text) = fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        let Ok(json): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
+            continue;
+        };
+        let name = json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                module_dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("<unknown>")
+                    .to_string()
+            });
+        let main = json.get("main");
+        let available: Vec<String> = match main {
+            Some(serde_json::Value::Object(m)) => m.keys().cloned().collect(),
+            // `main` might be a plain string (single-platform modules) —
+            // not variant-keyed, can't reason about -dev presence.
+            _ => continue,
+        };
+        if !available.is_empty() && !available.iter().any(|k| k.as_str() == expected_dev_variant) {
+            issues.push(ManifestVariantIssue {
+                profile: profile_name.to_string(),
+                module_name: name,
+                available_variants: available,
+            });
+        }
+    }
+    issues
+}
+
+/// Difference between what `basecamp modules` would auto-discover today
+/// and what's captured in `state.sources`. Used by `doctor` to flag stale
+/// or missing captures without running the real capture.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ModuleDriftReport {
+    pub(crate) discovered_not_captured: Vec<BasecampSource>,
+    pub(crate) captured_not_discovered: Vec<BasecampSource>,
+}
+
+impl ModuleDriftReport {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.discovered_not_captured.is_empty() && self.captured_not_discovered.is_empty()
+    }
+}
+
+/// Run the `basecamp modules` auto-discovery algorithm as a dry-run and diff
+/// the result against `state` (union of project_sources + dependencies). Uses
+/// the real `NixLgxProbe` internally — callers that need a fake probe for
+/// testing should call the lower-level helpers directly.
+pub(crate) fn compute_module_drift(project: &Project) -> DynResult<ModuleDriftReport> {
+    let state_path = project.root.join(".scaffold/state/basecamp.state");
+    let state = read_basecamp_state(&state_path).unwrap_or_default();
+
+    let cache_root_first = first_path_component(&project.config.cache_root);
+    let mut skip_subdirs: Vec<&str> = BASECAMP_AUTODISCOVER_SKIP_SUBDIRS.iter().copied().collect();
+    if let Some(c) = cache_root_first.as_deref() {
+        if !skip_subdirs.contains(&c) {
+            skip_subdirs.push(c);
+        }
+    }
+
+    let probe = NixLgxProbe;
+    let discovered_project = resolve_install_sources(
+        &project.root,
+        &[],
+        &[],
+        &probe,
+        &skip_subdirs,
+        "lgx",
+        "lgx-portable",
+    )
+    .unwrap_or_default();
+
+    let overrides = project
+        .config
+        .basecamp
+        .as_ref()
+        .map(|bc| bc.dependencies.clone())
+        .unwrap_or_default();
+    let (discovered_deps, _) = resolve_manifest_dependencies(&discovered_project, &overrides);
+
+    let mut discovered: std::collections::HashSet<BasecampSource> =
+        std::collections::HashSet::new();
+    discovered.extend(discovered_project.iter().cloned());
+    discovered.extend(discovered_deps.iter().cloned());
+
+    let captured: std::collections::HashSet<BasecampSource> =
+        state.all_sources().cloned().collect();
+
+    let mut discovered_not_captured: Vec<BasecampSource> =
+        discovered.difference(&captured).cloned().collect();
+    discovered_not_captured.sort_by_key(flake_ref);
+    let mut captured_not_discovered: Vec<BasecampSource> =
+        captured.difference(&discovered).cloned().collect();
+    captured_not_discovered.sort_by_key(flake_ref);
+
+    Ok(ModuleDriftReport {
+        discovered_not_captured,
+        captured_not_discovered,
+    })
+}
+
 /// Probes a flake ref for the set of package names it exposes under the current system.
 /// Returned list is used to detect `.#lgx` / `.#lgx-portable` in source resolution.
 trait LgxFlakeProbe {
@@ -1707,7 +1860,7 @@ fn classify_flake_dir(
     Ok(())
 }
 
-fn flake_ref(src: &BasecampSource) -> String {
+pub(crate) fn flake_ref(src: &BasecampSource) -> String {
     match src {
         BasecampSource::Path(p) => p.clone(),
         BasecampSource::Flake(f) => f.clone(),

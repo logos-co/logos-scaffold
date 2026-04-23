@@ -5,16 +5,24 @@ use std::process::{Command, Stdio};
 use anyhow::bail;
 
 use super::wallet_support::wallet_password;
+use crate::commands::basecamp::{
+    check_manifest_variants, compute_module_drift, flake_ref as basecamp_flake_ref,
+    platform_dev_variant_key,
+};
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
-use crate::constants::{DEFAULT_LEZ_PIN, SEQUENCER_BIN_REL_PATH, WALLET_BIN_REL_PATH};
+use crate::constants::{
+    BASECAMP_PROFILES_REL, BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB, DEFAULT_LEZ_PIN,
+    SEQUENCER_BIN_REL_PATH, WALLET_BIN_REL_PATH,
+};
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
     check_standalone_support, one_line, print_rows,
 };
+use crate::model::{BasecampSource, Project};
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
 use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo};
 use crate::project::load_project;
-use crate::state::read_localnet_state;
+use crate::state::{read_basecamp_state, read_localnet_state};
 use crate::DynResult;
 
 const STEP_SETUP: &str = "logos-scaffold setup";
@@ -282,6 +290,8 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         }
     }
 
+    push_basecamp_rows(&project, &mut rows);
+
     let summary = DoctorSummary {
         pass: rows
             .iter()
@@ -364,4 +374,269 @@ fn derive_next_steps(rows: &[CheckRow]) -> Vec<String> {
         out.push(STEP_DOCTOR.to_string());
     }
     out
+}
+
+/// Append basecamp-specific doctor rows: captured modules summary (each dep's
+/// flake ref + commit/tag + api.h header paths), manifest variant checks per
+/// seeded profile, and a module-set drift check against auto-discovery.
+///
+/// No-op when `basecamp.state` is absent — the user hasn't set up basecamp.
+fn push_basecamp_rows(project: &Project, rows: &mut Vec<CheckRow>) {
+    let state_path = project.root.join(".scaffold/state/basecamp.state");
+    let Ok(state) = read_basecamp_state(&state_path) else {
+        return; // no state file → basecamp not set up; nothing to report
+    };
+    if state.basecamp_bin.is_empty() && state.lgpm_bin.is_empty() && state.total_sources() == 0 {
+        return;
+    }
+
+    // Captured modules summary — one row per project source, one per dep.
+    // Label each with its flake ref + a parsed tag/commit + any `*.h` header
+    // files found inside the installed alice profile's module dir (if the
+    // module name is inferable and `install` has been run).
+    let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
+    let alice_modules = profiles_root
+        .join(BASECAMP_PROFILE_ALICE)
+        .join("xdg-data")
+        .join(crate::constants::BASECAMP_XDG_APP_SUBPATH)
+        .join("modules");
+
+    for src in &state.project_sources {
+        rows.push(captured_source_row("basecamp module", src, &alice_modules));
+    }
+    for src in &state.dependencies {
+        rows.push(captured_source_row("basecamp dep", src, &alice_modules));
+    }
+
+    // Manifest variant check: each seeded profile's installed modules must
+    // expose the current platform's `-dev` key under manifest `main`.
+    if let Some(expected_dev) = platform_dev_variant_key() {
+        for profile in [BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB] {
+            let profile_dir = profiles_root.join(profile);
+            if !profile_dir.is_dir() {
+                continue;
+            }
+            for issue in check_manifest_variants(&profile_dir, profile, expected_dev) {
+                rows.push(CheckRow {
+                    status: CheckStatus::Warn,
+                    name: format!(
+                        "basecamp variant: {} in profile {}",
+                        issue.module_name, issue.profile
+                    ),
+                    detail: format!(
+                        "main=[{}] missing expected `{}`; plugin will hang on click",
+                        issue.available_variants.join(","),
+                        expected_dev
+                    ),
+                    remediation: Some(format!(
+                        "rebuild `{}` so its manifest.json `main.{}` key is populated \
+                         (upstream logos-module-builder issue); then re-run `basecamp install`",
+                        issue.module_name, expected_dev
+                    )),
+                });
+            }
+        }
+    }
+
+    // Drift: what `basecamp modules` auto-discover would capture today vs.
+    // what state actually records.
+    match compute_module_drift(project) {
+        Ok(drift) if !drift.is_empty() => {
+            for src in &drift.discovered_not_captured {
+                rows.push(CheckRow {
+                    status: CheckStatus::Warn,
+                    name: "basecamp drift: uncaptured".to_string(),
+                    detail: format!(
+                        "discovered `{}` but not captured in basecamp.state",
+                        basecamp_flake_ref(src)
+                    ),
+                    remediation: Some(
+                        "run `logos-scaffold basecamp modules` to refresh capture".to_string(),
+                    ),
+                });
+            }
+            for src in &drift.captured_not_discovered {
+                rows.push(CheckRow {
+                    status: CheckStatus::Warn,
+                    name: "basecamp drift: stale".to_string(),
+                    detail: format!(
+                        "captured `{}` no longer discoverable (may be stale)",
+                        basecamp_flake_ref(src)
+                    ),
+                    remediation: Some(
+                        "run `logos-scaffold basecamp modules` to refresh; \
+                         or `--flake <ref>#lgx` / `--path <file.lgx>` to capture explicitly"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// One doctor row per captured source. Shows the flake ref verbatim plus —
+/// when inferable — a "tag" or "commit" annotation and any `*.h` headers
+/// already installed under alice's profile (so the dev knows where to
+/// `#include <…>` from).
+fn captured_source_row(
+    label: &str,
+    src: &BasecampSource,
+    alice_modules: &std::path::Path,
+) -> CheckRow {
+    let ref_text = basecamp_flake_ref(src);
+    let mut detail = ref_text.clone();
+
+    if let BasecampSource::Flake(flake_ref) = src {
+        if let Some(label) = github_ref_part_label(flake_ref) {
+            detail.push_str(&format!("  ({label})"));
+        }
+        if let Some(module_name) = infer_module_name_from_flake_ref(flake_ref) {
+            let headers = collect_api_headers(alice_modules, &module_name);
+            if !headers.is_empty() {
+                detail.push_str(&format!(
+                    "\n    api headers: {}",
+                    headers
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+    }
+
+    CheckRow {
+        status: CheckStatus::Pass,
+        name: label.to_string(),
+        detail,
+        remediation: None,
+    }
+}
+
+/// Parse a `github:owner/repo/<ref>#attr` flake ref and label the middle
+/// segment as either `tag` (non-hex) or `commit` (≥7 hex chars). Returns
+/// `None` for non-github refs or refs without a ref segment.
+fn github_ref_part_label(flake_ref: &str) -> Option<String> {
+    let rest = flake_ref.strip_prefix("github:")?;
+    let before_frag = rest.split_once('#').map_or(rest, |(b, _)| b);
+    let parts: Vec<&str> = before_frag.split('/').collect();
+    if parts.len() < 3 {
+        return None; // no ref segment (defaulted to HEAD)
+    }
+    let ref_part = parts[2];
+    let looks_like_commit = ref_part.len() >= 7
+        && ref_part.len() <= 40
+        && ref_part.chars().all(|c| c.is_ascii_hexdigit());
+    if looks_like_commit {
+        Some(format!("commit {}", &ref_part[..ref_part.len().min(12)]))
+    } else {
+        Some(format!("tag {ref_part}"))
+    }
+}
+
+/// Extract the likely module name from a flake ref. Uses the repo name's
+/// last `-module` suffix heuristic for `github:logos-co/logos-delivery-module/…#lgx`
+/// → `delivery_module`, or the path's basename for `path:/abs/tictactoe#lgx`
+/// → `tictactoe`. Returns `None` for refs we can't name-map confidently.
+fn infer_module_name_from_flake_ref(flake_ref: &str) -> Option<String> {
+    let before_frag = flake_ref.split_once('#').map_or(flake_ref, |(b, _)| b);
+    if let Some(rest) = before_frag.strip_prefix("github:") {
+        let repo = rest.split('/').nth(1)?;
+        // Strip "logos-" prefix and any version suffix like "/1.0.0" already gone.
+        // Convert dashes to underscores to match module names used in metadata.
+        let trimmed = repo.trim_start_matches("logos-");
+        return Some(trimmed.replace('-', "_"));
+    }
+    if let Some(rest) = before_frag.strip_prefix("path:") {
+        return Some(
+            std::path::Path::new(rest)
+                .file_name()?
+                .to_string_lossy()
+                .replace('-', "_"),
+        );
+    }
+    None
+}
+
+/// Return paths to any `*.h` or `*.hpp` files under
+/// `<alice_modules>/<module_name>/` — useful for dev awareness of which API
+/// headers ship with each installed module. Returns empty if the module
+/// isn't installed yet or the directory has no headers.
+fn collect_api_headers(alice_modules: &std::path::Path, module_name: &str) -> Vec<PathBuf> {
+    let module_dir = alice_modules.join(module_name);
+    if !module_dir.is_dir() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    // Walk one level deep; typical layouts put headers at the top of the
+    // module dir or under an `include/` / `interfaces/` subdir.
+    let candidates = [
+        module_dir.clone(),
+        module_dir.join("include"),
+        module_dir.join("interfaces"),
+    ];
+    for dir in candidates {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                        if ext.eq_ignore_ascii_case("h") || ext.eq_ignore_ascii_case("hpp") {
+                            out.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[cfg(test)]
+mod basecamp_doctor_tests {
+    use super::*;
+
+    #[test]
+    fn github_ref_part_label_recognizes_commit() {
+        assert_eq!(
+            github_ref_part_label("github:owner/repo/a746cdbc521f72ee22c5a4856fd17a9802bb9d69#lgx"),
+            Some("commit a746cdbc521f".to_string())
+        );
+    }
+
+    #[test]
+    fn github_ref_part_label_recognizes_tag() {
+        assert_eq!(
+            github_ref_part_label("github:logos-co/logos-delivery-module/1.0.0#lgx"),
+            Some("tag 1.0.0".to_string())
+        );
+        assert_eq!(
+            github_ref_part_label("github:logos-co/logos-delivery-module/tutorial-v1#lgx"),
+            Some("tag tutorial-v1".to_string())
+        );
+    }
+
+    #[test]
+    fn github_ref_part_label_returns_none_for_non_github() {
+        assert_eq!(github_ref_part_label("path:/abs/sub#lgx"), None);
+        assert_eq!(github_ref_part_label("git+https://example#lgx"), None);
+    }
+
+    #[test]
+    fn infer_module_name_from_github() {
+        assert_eq!(
+            infer_module_name_from_flake_ref("github:logos-co/logos-delivery-module/1.0.0#lgx"),
+            Some("delivery_module".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_module_name_from_path() {
+        assert_eq!(
+            infer_module_name_from_flake_ref("path:/abs/tictactoe-ui-cpp#lgx"),
+            Some("tictactoe_ui_cpp".to_string())
+        );
+    }
 }

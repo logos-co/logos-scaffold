@@ -77,7 +77,7 @@ pub(crate) struct LocalnetState {
     pub(crate) sequencer_pid: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum BasecampSource {
     Path(String),
     Flake(String),
