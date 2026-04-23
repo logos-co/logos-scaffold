@@ -20,14 +20,17 @@ pub(crate) fn cmd_build_shortcut(project_dir: Option<PathBuf>) -> DynResult<()> 
         match project.config.framework.kind.as_str() {
             FRAMEWORK_KIND_DEFAULT => {
                 build_workspace_for_current_project(&cwd)?;
+                build_methods_guests(&cwd)?;
             }
             FRAMEWORK_KIND_LEZ_FRAMEWORK => {
                 build_workspace_for_current_project(&cwd)?;
                 build_idl_for_current_project()?;
                 generate_clients_from_current_idl()?;
+                build_methods_guests(&cwd)?;
             }
             other => {
                 build_workspace_for_current_project(&cwd)?;
+                build_methods_guests(&cwd)?;
                 println!(
                     "Skipping framework-specific build steps for framework kind `{}`",
                     other
@@ -47,4 +50,27 @@ fn build_workspace_for_current_project(cwd: &Path) -> DynResult<()> {
             .arg("--workspace"),
         "cargo build --workspace (project)",
     )
+}
+
+/// Detect and build Risc0 guest binaries in the `methods/` directory.
+///
+/// Risc0 guest crates are intentionally excluded from the main workspace
+/// because they target `riscv32im-risc0-zkvm-elf`. This function detects
+/// whether a `methods/` package exists and compiles it as part of the
+/// standard build pipeline.
+fn build_methods_guests(cwd: &Path) -> DynResult<()> {
+    let methods_manifest = cwd.join("methods").join("Cargo.toml");
+    if methods_manifest.is_file() {
+        println!("Building guest methods...");
+        run_checked(
+            Command::new("cargo")
+                .current_dir(cwd)
+                .arg("build")
+                .arg("--release")
+                .arg("--manifest-path")
+                .arg(&methods_manifest),
+            "cargo build --release --manifest-path methods/Cargo.toml",
+        )?;
+    }
+    Ok(())
 }
