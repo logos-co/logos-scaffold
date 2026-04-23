@@ -16,6 +16,24 @@ This is the contract between a module project and `logos-scaffold basecamp {setu
    - If a flake only exposes `packages.<system>.lgx-portable`, the resolver fails explicitly with a hint — it will not silently fall back. Expose `lgx` or pass `--flake <ref>#lgx-portable` on the command line to opt in.
    - If no flake exposes any `.lgx` attribute, the resolver fails with a generic hint pointing at `--path` / `--flake`.
 
+## Where dependency pins come from
+
+`basecamp modules` (the sole writer of `basecamp.state`) walks each project source's `metadata.json` for `dependencies: [...]`, and for each declared dep name it **resolves a pin through a fallback chain** (first hit wins):
+
+1. **`[basecamp.dependencies]` in `scaffold.toml`.** Explicit per-project override, keyed by module name. The authoritative knob when you know exactly which rev you want.
+   ```toml
+   [basecamp.dependencies]
+   delivery_module = "github:logos-co/logos-delivery-module/1fde1566291fe062b98255003b9166b0261c6081#lgx"
+   ```
+2. **The source's own `flake.lock`.** If the project source that declared the dep also lists an input of the same name in its flake, scaffold reads the locked `github:<owner>/<repo>/<rev>` and rewrites it to `#lgx`. This is the *preferred* path for most projects: whatever rev the module is already building against is, by definition, the rev its IPC clients expect at runtime. Scaffold doesn't second-guess it.
+3. **Scaffold-level `BASECAMP_DEPENDENCIES` default.** A hardcoded best-guess table keyed by module name (currently only `delivery_module`). This is the last-resort safety net for projects that don't carry the dep as a flake input — useful for minimal / learning projects, but prone to going stale as upstream moves.
+4. **Basecamp preinstalls.** Module names basecamp itself ships in its `preinstall/` dir (`capability_module`, `package_manager`, `counter`, `webview_app`, and their `_ui` siblings) are skipped silently — basecamp provides them.
+5. **Unknown — warn and skip.** If nothing resolves the name, scaffold prints a warning that names the declared dep and points you at `[basecamp.dependencies]` or `basecamp modules --flake` to supply it explicitly.
+
+Every captured entry is annotated in the `basecamp modules` output so you can always see *where* a given pin came from — e.g. `[dep `delivery_module` via path:/abs/tictactoe#lgx, pinned by /abs/tictactoe/flake.lock]`. If the annotation surprises you, check (in order) your `scaffold.toml`, the source flake's `flake.lock`, and the scaffold defaults.
+
+Implication for module authors: **declare each runtime dep as a flake input in your module's `flake.nix`**, even if your module doesn't technically build-link against it. It's the cleanest way to give scaffold an authoritative pin and keeps `flake.lock` in sync with what you're actually coding against.
+
 ## Conventions that matter for local development
 
 Multi-flake projects (e.g. a `tictactoe` core plus `tictactoe-ui-cpp` and `tictactoe-ui-qml` sibling flakes) rely on one convention:

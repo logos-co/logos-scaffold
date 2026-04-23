@@ -66,9 +66,20 @@ pub(crate) const DEFAULT_LGPM_FLAKE: &str =
 /// scaffold can derive this table from basecamp's own manifest rather than
 /// carrying an opinion.
 pub(crate) const BASECAMP_DEPENDENCIES: &[(&str, &str)] = &[
+    // `logos-delivery-module/1.0.0` (tutorial-v1 era) predates the `#lgx`
+    // flake-output convention and does NOT expose `packages.<sys>.lgx` — a
+    // cold `basecamp install` against that pin fails at the resolver.
+    //
+    // Pin to the head of `tutorial-v1-compat` on logos-delivery-module
+    // (commit `1fde1566…`, 2026-04-22) — the rev that both `tictactoe` and
+    // `yolo-board-module` use in their own flakes. This is the known-good
+    // default; per-project overrides in `[basecamp.dependencies]` in
+    // `scaffold.toml` take precedence, and `basecamp modules` auto-discovery
+    // prefers any matching input found in the project's own `flake.lock`
+    // over this table (so a project's own pin always wins).
     (
         "delivery_module",
-        "github:logos-co/logos-delivery-module/1.0.0#lgx",
+        "github:logos-co/logos-delivery-module/1fde1566291fe062b98255003b9166b0261c6081#lgx",
     ),
     // Additional companions (storage_module, etc.) added on demand as real
     // projects declare them. Keeping the starter set small avoids surprising

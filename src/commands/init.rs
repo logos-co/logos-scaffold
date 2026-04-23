@@ -69,6 +69,9 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
         "scaffold.toml created at {}. Run '{bin_name} setup' to clone LEZ and build dependencies.",
         scaffold_path.display()
     );
+    println!(
+        "If this project is building modules for basecamp, run '{bin_name} basecamp setup' to pin + build basecamp + lgpm and seed alice/bob profiles."
+    );
 
     Ok(())
 }

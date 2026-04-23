@@ -877,6 +877,15 @@ enum SourceOrigin {
     /// Resolved from a `metadata.json` `dependencies` entry against a
     /// `[basecamp.dependencies]` override in `scaffold.toml`.
     DepOverride { name: String, via: String },
+    /// Resolved from a matching input in the project's own `flake.lock`,
+    /// next to the source that declared the dep in its `metadata.json`.
+    /// The project's flake.lock is the most authoritative pin because
+    /// that's what the dev is actually building against.
+    DepFromProjectLock {
+        name: String,
+        via: String,
+        source_flake: String,
+    },
 }
 
 impl SourceOrigin {
@@ -890,8 +899,43 @@ impl SourceOrigin {
             SourceOrigin::DepOverride { name, via } => {
                 format!("[dep `{name}` via {via}, scaffold.toml override]")
             }
+            SourceOrigin::DepFromProjectLock {
+                name,
+                via,
+                source_flake,
+            } => {
+                format!("[dep `{name}` via {via}, pinned by {source_flake}/flake.lock]")
+            }
         }
     }
+}
+
+/// Given a source flake's local path and a dep name declared in its
+/// `metadata.json`, try to find that name as an input in the sibling
+/// `flake.lock` and return a `github:<owner>/<repo>/<rev>#lgx` ref.
+///
+/// Returns `None` if no local `flake.lock`, no matching input, or the
+/// locked input isn't a github ref we can reconstruct. Non-fatal: callers
+/// fall back to the next precedence layer.
+fn resolve_dep_from_project_flake_lock(source_flake_path: &Path, dep_name: &str) -> Option<String> {
+    let lock_path = source_flake_path.join("flake.lock");
+    let text = fs::read_to_string(&lock_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let root = json.pointer("/nodes/root/inputs")?.as_object()?;
+    // The root `inputs` object is a mapping of declared-input-name → node-id.
+    // The node-id is typically the same as the input name but may be
+    // suffixed with `_N` when multiple inputs share a name. Match on the
+    // declared input name, not the node key.
+    let node_id = root.get(dep_name)?.as_str()?;
+    let locked = json.pointer(&format!("/nodes/{node_id}/locked"))?;
+    let ty = locked.get("type")?.as_str()?;
+    if ty != "github" {
+        return None;
+    }
+    let owner = locked.get("owner")?.as_str()?;
+    let repo = locked.get("repo")?.as_str()?;
+    let rev = locked.get("rev")?.as_str()?;
+    Some(format!("github:{owner}/{repo}/{rev}#lgx"))
 }
 
 /// Capture the modules + dependencies set into `basecamp.state`. Sole writer of
@@ -1086,21 +1130,28 @@ fn resolve_manifest_dependencies(
     project_sources: &[BasecampSource],
     overrides: &std::collections::BTreeMap<String, String>,
 ) -> (Vec<BasecampSource>, Vec<SourceOrigin>) {
-    // Union of all dep names across project sources, with which source they came
-    // from (first one wins for the "via" annotation).
-    let mut declared: std::collections::BTreeMap<String, String> =
+    // Union of all dep names across project sources, with which source flake
+    // ref they came from (for the "via" annotation) AND the source's local
+    // path (used to consult that source's own flake.lock for a pin).
+    let mut declared: std::collections::BTreeMap<String, (String, Option<PathBuf>)> =
         std::collections::BTreeMap::new();
     for src in project_sources {
         let via = flake_ref(src);
+        let local_path = match src {
+            BasecampSource::Flake(f) => flake_path_prefix(f).map(PathBuf::from),
+            BasecampSource::Path(_) => None,
+        };
         for dep_name in read_source_metadata_dependencies(src) {
-            declared.entry(dep_name).or_insert_with(|| via.clone());
+            declared
+                .entry(dep_name)
+                .or_insert_with(|| (via.clone(), local_path.clone()));
         }
     }
 
     let mut out_sources: Vec<BasecampSource> = Vec::new();
     let mut out_origins: Vec<SourceOrigin> = Vec::new();
 
-    for (name, via) in declared {
+    for (name, (via, local_path)) in declared {
         // Skip project-internal deps: if another project source's metadata
         // `name` matches this dep, it's already captured as a project source.
         if project_sources.iter().any(|src| {
@@ -1120,7 +1171,7 @@ fn resolve_manifest_dependencies(
             continue;
         }
 
-        // 1. Project override wins.
+        // 1. Project override in scaffold.toml wins (explicit user intent).
         if let Some(flake_ref) = overrides.get(&name) {
             out_sources.push(BasecampSource::Flake(flake_ref.clone()));
             out_origins.push(SourceOrigin::DepOverride {
@@ -1129,7 +1180,23 @@ fn resolve_manifest_dependencies(
             });
             continue;
         }
-        // 2. Scaffold default pin.
+        // 2. Project's own flake.lock input with the same name — prefer the
+        //    pin the project is already building against. This is the
+        //    authoritative source and sidesteps scaffold-default staleness
+        //    (e.g. when an upstream tag predates the `#lgx` convention).
+        if let Some(path) = &local_path {
+            if let Some(resolved) = resolve_dep_from_project_flake_lock(path, &name) {
+                out_sources.push(BasecampSource::Flake(resolved));
+                out_origins.push(SourceOrigin::DepFromProjectLock {
+                    name: name.clone(),
+                    via: via.clone(),
+                    source_flake: path.display().to_string(),
+                });
+                continue;
+            }
+        }
+        // 3. Scaffold default pin — last-resort, may be stale for projects
+        //    that don't declare the dep in their flake.
         if let Some((_, flake_ref)) = BASECAMP_DEPENDENCIES.iter().find(|(n, _)| *n == name) {
             out_sources.push(BasecampSource::Flake((*flake_ref).to_string()));
             out_origins.push(SourceOrigin::DepDefault {
@@ -1138,15 +1205,16 @@ fn resolve_manifest_dependencies(
             });
             continue;
         }
-        // 3. Basecamp preinstalls it — no-op.
+        // 4. Basecamp preinstalls it — no-op.
         if BASECAMP_PREINSTALLED_MODULES.iter().any(|m| *m == name) {
             continue;
         }
-        // 4. Unknown: warn and skip.
+        // 5. Unknown: warn and skip.
         eprintln!(
-            "warning: dep `{name}` declared by `{via}` is not pinned in scaffold defaults \
-             or `[basecamp.dependencies]` and is not a preinstalled basecamp module; \
-             skipping. Add it to `[basecamp.dependencies]` in scaffold.toml or \
+            "warning: dep `{name}` declared by `{via}` is not pinned in scaffold defaults, \
+             not in `[basecamp.dependencies]`, not in the source's flake.lock, and is not a \
+             preinstalled basecamp module; skipping. Add it to `[basecamp.dependencies]` in \
+             scaffold.toml, declare it as a flake input of the source, or run \
              `basecamp modules --flake <ref>#lgx` to capture explicitly."
         );
     }
