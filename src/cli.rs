@@ -284,6 +284,10 @@ struct BasecampArgs {
 enum BasecampSubcommand {
     #[command(about = "Fetch, build, and seed pinned basecamp + lgpm + alice/bob profiles")]
     Setup,
+    #[command(
+        about = "Capture the set of modules + runtime dependencies to install; auto-discovers or takes explicit --flake/--path"
+    )]
+    Modules(BasecampModulesArgs),
     #[command(about = "Build the project's .lgx and install it into basecamp profile(s)")]
     Install(BasecampInstallArgs),
     #[command(about = "Launch basecamp for a named profile with clean-slate semantics")]
@@ -297,6 +301,19 @@ enum BasecampSubcommand {
     BuildPortable(BasecampBuildPortableArgs),
     #[command(about = "Manage basecamp profiles")]
     Profile(BasecampProfileArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampModulesArgs {
+    /// Path to a pre-built .lgx file to capture as a project source (repeatable)
+    #[arg(long, value_name = "PATH")]
+    path: Vec<PathBuf>,
+    /// Flake reference producing .lgx to capture as a project source, e.g. `./sub#lgx` (repeatable)
+    #[arg(long, value_name = "REF")]
+    flake: Vec<String>,
+    /// Print the currently captured set and exit without mutating state
+    #[arg(long)]
+    show: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -443,6 +460,11 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         Some(Commands::Basecamp(args)) => {
             let action = match args.command {
                 BasecampSubcommand::Setup => BasecampAction::Setup,
+                BasecampSubcommand::Modules(args) => BasecampAction::Modules {
+                    paths: args.path,
+                    flakes: args.flake,
+                    show: args.show,
+                },
                 BasecampSubcommand::Install(args) => BasecampAction::Install {
                     paths: args.path,
                     flakes: args.flake,

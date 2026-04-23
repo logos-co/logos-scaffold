@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context};
 
 use crate::constants::{
-    BASECAMP_AUTODISCOVER_SKIP_SUBDIRS, BASECAMP_PROFILES_REL, BASECAMP_PROFILE_ALICE,
-    BASECAMP_PROFILE_BOB, BASECAMP_URL, BASECAMP_XDG_APP_SUBPATH, DEFAULT_BASECAMP_PIN,
-    DEFAULT_LGPM_FLAKE,
+    BASECAMP_AUTODISCOVER_SKIP_SUBDIRS, BASECAMP_DEPENDENCIES, BASECAMP_PREINSTALLED_MODULES,
+    BASECAMP_PROFILES_REL, BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB, BASECAMP_URL,
+    BASECAMP_XDG_APP_SUBPATH, DEFAULT_BASECAMP_PIN, DEFAULT_LGPM_FLAKE,
 };
 use crate::model::{BasecampSource, BasecampState, Project, RepoRef};
 use crate::process::run_checked;
@@ -25,6 +25,11 @@ use crate::DynResult;
 #[allow(dead_code)] // Fields wired up in later phases
 pub(crate) enum BasecampAction {
     Setup,
+    Modules {
+        paths: Vec<PathBuf>,
+        flakes: Vec<String>,
+        show: bool,
+    },
     Install {
         paths: Vec<PathBuf>,
         flakes: Vec<String>,
@@ -53,6 +58,11 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
 
     match action {
         BasecampAction::Setup => cmd_basecamp_setup(project),
+        BasecampAction::Modules {
+            paths,
+            flakes,
+            show,
+        } => cmd_basecamp_modules(project, paths, flakes, show, &NixLgxProbe),
         BasecampAction::Install {
             paths,
             flakes,
@@ -800,6 +810,296 @@ fn clear_basecamp_sources(state_path: &Path) -> DynResult<()> {
     state.project_sources.clear();
     state.dependencies.clear();
     write_basecamp_state(state_path, &state)
+}
+
+/// Annotation attached to a captured source for the "captured modules:" printout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SourceOrigin {
+    /// Discovered by walking the project's root or immediate sub-flake(s).
+    AutoDiscovered,
+    /// Supplied by the user via `--flake` or `--path`.
+    Explicit,
+    /// Resolved from a `metadata.json` `dependencies` entry against the
+    /// scaffold-level default pin table.
+    DepDefault { name: String, via: String },
+    /// Resolved from a `metadata.json` `dependencies` entry against a
+    /// `[basecamp.dependencies]` override in `scaffold.toml`.
+    DepOverride { name: String, via: String },
+}
+
+impl SourceOrigin {
+    fn annotation(&self) -> String {
+        match self {
+            SourceOrigin::AutoDiscovered => "[auto-discovered]".to_string(),
+            SourceOrigin::Explicit => "[explicit]".to_string(),
+            SourceOrigin::DepDefault { name, via } => {
+                format!("[dep `{name}` via {via}, scaffold default]")
+            }
+            SourceOrigin::DepOverride { name, via } => {
+                format!("[dep `{name}` via {via}, scaffold.toml override]")
+            }
+        }
+    }
+}
+
+/// Capture the modules + dependencies set into `basecamp.state`. Sole writer of
+/// `state.project_sources` and `state.dependencies`. `install` / `build-portable`
+/// / `launch` only read state — they never discover on their own.
+///
+/// Three modes:
+/// - `--show`: read-only; print both lists labeled.
+/// - Explicit (non-empty `paths` or `flakes`): `project_sources` = exactly
+///   those args; `dependencies` re-resolved from the explicit sources' manifests.
+/// - Auto (default, no args): walk project flakes; resolve manifest deps.
+fn cmd_basecamp_modules(
+    project: Project,
+    paths: Vec<PathBuf>,
+    flakes: Vec<String>,
+    show: bool,
+    probe: &dyn LgxFlakeProbe,
+) -> DynResult<()> {
+    let state_path = project.root.join(".scaffold/state/basecamp.state");
+    let existing = read_basecamp_state(&state_path).unwrap_or_default();
+
+    if show {
+        print_modules_list(
+            "captured modules",
+            &existing.project_sources,
+            &existing.dependencies,
+            &[],
+        );
+        return Ok(());
+    }
+
+    let explicit = !paths.is_empty() || !flakes.is_empty();
+
+    let flakes: Vec<String> = flakes
+        .into_iter()
+        .map(|f| normalize_flake_ref(&project.root, &f))
+        .collect();
+
+    // Resolve project sources: explicit args bypass discovery; otherwise walk
+    // project flakes per existing rules.
+    let (project_sources, project_origins): (Vec<BasecampSource>, Vec<SourceOrigin>) = if explicit {
+        let mut out = Vec::new();
+        let mut origins = Vec::new();
+        for p in &paths {
+            out.push(BasecampSource::Path(p.display().to_string()));
+            origins.push(SourceOrigin::Explicit);
+        }
+        for f in &flakes {
+            out.push(BasecampSource::Flake(f.clone()));
+            origins.push(SourceOrigin::Explicit);
+        }
+        (out, origins)
+    } else {
+        let cache_root_first = first_path_component(&project.config.cache_root);
+        let mut skip_subdirs: Vec<&str> =
+            BASECAMP_AUTODISCOVER_SKIP_SUBDIRS.iter().copied().collect();
+        if let Some(c) = cache_root_first.as_deref() {
+            if !skip_subdirs.contains(&c) {
+                skip_subdirs.push(c);
+            }
+        }
+        let discovered = resolve_install_sources(
+            &project.root,
+            &[],
+            &[],
+            probe,
+            &skip_subdirs,
+            "lgx",
+            "lgx-portable",
+        )?;
+        let origins = vec![SourceOrigin::AutoDiscovered; discovered.len()];
+        (discovered, origins)
+    };
+
+    // Resolve manifest-declared runtime dependencies. Walks each project source's
+    // local metadata.json (no nix build) and resolves declared dep names against:
+    //   1. `[basecamp.dependencies]` per-project override (wins)
+    //   2. `BASECAMP_DEPENDENCIES` scaffold default
+    //   3. `BASECAMP_PREINSTALLED_MODULES` — skip silently (basecamp provides)
+    //   4. unknown — warn, skip.
+    let dep_overrides = project
+        .config
+        .basecamp
+        .as_ref()
+        .map(|bc| bc.dependencies.clone())
+        .unwrap_or_default();
+    let (dependencies, dep_origins) =
+        resolve_manifest_dependencies(&project_sources, &dep_overrides);
+
+    // Print the "previous modules (for reference)" block so reverting is copy-paste.
+    print_modules_list(
+        "previous modules (for reference)",
+        &existing.project_sources,
+        &existing.dependencies,
+        &[],
+    );
+
+    let new_state = BasecampState {
+        project_sources: project_sources.clone(),
+        dependencies: dependencies.clone(),
+        ..existing
+    };
+    write_basecamp_state(&state_path, &new_state)?;
+
+    // Print the new set with annotations.
+    let mut annotations: Vec<SourceOrigin> = project_origins.clone();
+    annotations.extend(dep_origins.iter().cloned());
+    print_modules_list(
+        "captured modules",
+        &project_sources,
+        &dependencies,
+        &annotations,
+    );
+
+    Ok(())
+}
+
+fn print_modules_list(
+    header: &str,
+    project_sources: &[BasecampSource],
+    dependencies: &[BasecampSource],
+    annotations: &[SourceOrigin],
+) {
+    println!("{header}:");
+    if project_sources.is_empty() && dependencies.is_empty() {
+        println!("  (none)");
+        return;
+    }
+    println!("  project_sources:");
+    if project_sources.is_empty() {
+        println!("    (none)");
+    } else {
+        for (i, src) in project_sources.iter().enumerate() {
+            let note = annotations
+                .get(i)
+                .map(|o| format!(" {}", o.annotation()))
+                .unwrap_or_default();
+            println!("    {}{}", flake_ref(src), note);
+        }
+    }
+    println!("  dependencies:");
+    if dependencies.is_empty() {
+        println!("    (none)");
+    } else {
+        let offset = project_sources.len();
+        for (i, src) in dependencies.iter().enumerate() {
+            let note = annotations
+                .get(offset + i)
+                .map(|o| format!(" {}", o.annotation()))
+                .unwrap_or_default();
+            println!("    {}{}", flake_ref(src), note);
+        }
+    }
+}
+
+/// Read `metadata.json` from a flake source's local filesystem path and
+/// collect its `dependencies: [...]` array. Returns empty for remote flakes
+/// (no local path to read) or path-sources (`.lgx` files are build artefacts,
+/// not source directories).
+fn read_source_metadata_dependencies(src: &BasecampSource) -> Vec<String> {
+    let BasecampSource::Flake(flake_ref) = src else {
+        return Vec::new();
+    };
+    let Some(local_path) = flake_path_prefix(flake_ref) else {
+        return Vec::new(); // github:, git+, http(s):, etc. — no local walk
+    };
+    let metadata_path = Path::new(local_path).join("metadata.json");
+    let Ok(text) = fs::read_to_string(&metadata_path) else {
+        return Vec::new();
+    };
+    let Ok(json): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
+        eprintln!(
+            "warning: could not parse {} as JSON; skipping manifest deps",
+            metadata_path.display()
+        );
+        return Vec::new();
+    };
+    json.get("dependencies")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Walk each project source's `metadata.json`, union the declared dep names,
+/// resolve each against overrides → defaults → preinstalled → unknown.
+/// Returns `(resolved_sources, per-source origins)` in a stable (sorted) order.
+fn resolve_manifest_dependencies(
+    project_sources: &[BasecampSource],
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> (Vec<BasecampSource>, Vec<SourceOrigin>) {
+    // Union of all dep names across project sources, with which source they came
+    // from (first one wins for the "via" annotation).
+    let mut declared: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for src in project_sources {
+        let via = flake_ref(src);
+        for dep_name in read_source_metadata_dependencies(src) {
+            declared.entry(dep_name).or_insert_with(|| via.clone());
+        }
+    }
+
+    let mut out_sources: Vec<BasecampSource> = Vec::new();
+    let mut out_origins: Vec<SourceOrigin> = Vec::new();
+
+    for (name, via) in declared {
+        // Skip project-internal deps: if another project source's metadata
+        // `name` matches this dep, it's already captured as a project source.
+        if project_sources.iter().any(|src| {
+            let flake_ref = match src {
+                BasecampSource::Flake(f) => f,
+                BasecampSource::Path(_) => return false,
+            };
+            if let Some(local) = flake_path_prefix(flake_ref) {
+                if let Ok(text) = fs::read_to_string(Path::new(local).join("metadata.json")) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                        return json.get("name").and_then(|v| v.as_str()) == Some(&name);
+                    }
+                }
+            }
+            false
+        }) {
+            continue;
+        }
+
+        // 1. Project override wins.
+        if let Some(flake_ref) = overrides.get(&name) {
+            out_sources.push(BasecampSource::Flake(flake_ref.clone()));
+            out_origins.push(SourceOrigin::DepOverride {
+                name: name.clone(),
+                via: via.clone(),
+            });
+            continue;
+        }
+        // 2. Scaffold default pin.
+        if let Some((_, flake_ref)) = BASECAMP_DEPENDENCIES.iter().find(|(n, _)| *n == name) {
+            out_sources.push(BasecampSource::Flake((*flake_ref).to_string()));
+            out_origins.push(SourceOrigin::DepDefault {
+                name: name.clone(),
+                via: via.clone(),
+            });
+            continue;
+        }
+        // 3. Basecamp preinstalls it — no-op.
+        if BASECAMP_PREINSTALLED_MODULES.iter().any(|m| *m == name) {
+            continue;
+        }
+        // 4. Unknown: warn and skip.
+        eprintln!(
+            "warning: dep `{name}` declared by `{via}` is not pinned in scaffold defaults \
+             or `[basecamp.dependencies]` and is not a preinstalled basecamp module; \
+             skipping. Add it to `[basecamp.dependencies]` in scaffold.toml or \
+             `basecamp modules --flake <ref>#lgx` to capture explicitly."
+        );
+    }
+
+    (out_sources, out_origins)
 }
 
 fn cmd_basecamp_install(
@@ -2198,5 +2498,149 @@ mod tests {
             loaded.project_sources.is_empty() && loaded.dependencies.is_empty(),
             "both project_sources and dependencies must be cleared"
         );
+    }
+
+    // ---- `basecamp modules` helpers (manifest walking + dep resolution) ----
+
+    fn seed_module_metadata(dir: &Path, name: &str, deps: &[&str]) {
+        let metadata = serde_json::json!({
+            "name": name,
+            "version": "1.0.0",
+            "type": "core",
+            "main": "plugin",
+            "dependencies": deps,
+        });
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("metadata.json"), metadata.to_string()).unwrap();
+    }
+
+    #[test]
+    fn read_source_metadata_dependencies_parses_array() {
+        let tmp = tempdir().expect("tempdir");
+        seed_module_metadata(tmp.path(), "mymod", &["delivery_module", "storage_module"]);
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let deps = read_source_metadata_dependencies(&src);
+        assert_eq!(
+            deps,
+            vec!["delivery_module".to_string(), "storage_module".to_string()]
+        );
+    }
+
+    #[test]
+    fn read_source_metadata_dependencies_returns_empty_for_missing_metadata() {
+        let tmp = tempdir().expect("tempdir");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        assert!(read_source_metadata_dependencies(&src).is_empty());
+    }
+
+    #[test]
+    fn read_source_metadata_dependencies_returns_empty_for_path_sources() {
+        let src = BasecampSource::Path("/abs/prebuilt.lgx".to_string());
+        assert!(read_source_metadata_dependencies(&src).is_empty());
+    }
+
+    #[test]
+    fn read_source_metadata_dependencies_returns_empty_for_remote_flakes() {
+        let src = BasecampSource::Flake("github:foo/bar#lgx".to_string());
+        assert!(read_source_metadata_dependencies(&src).is_empty());
+    }
+
+    #[test]
+    fn resolve_manifest_dependencies_uses_project_override_over_default() {
+        let tmp = tempdir().expect("tempdir");
+        seed_module_metadata(tmp.path(), "mymod", &["delivery_module"]);
+        let project = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert(
+            "delivery_module".to_string(),
+            "github:custom/delivery-fork#lgx".to_string(),
+        );
+
+        let (deps, origins) = resolve_manifest_dependencies(&[project], &overrides);
+        assert_eq!(
+            deps,
+            vec![BasecampSource::Flake(
+                "github:custom/delivery-fork#lgx".to_string()
+            )]
+        );
+        assert!(matches!(origins[0], SourceOrigin::DepOverride { .. }));
+    }
+
+    #[test]
+    fn resolve_manifest_dependencies_falls_back_to_scaffold_default() {
+        let tmp = tempdir().expect("tempdir");
+        seed_module_metadata(tmp.path(), "mymod", &["delivery_module"]);
+        let project = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+
+        let overrides = std::collections::BTreeMap::new();
+        let (deps, origins) = resolve_manifest_dependencies(&[project], &overrides);
+        assert_eq!(deps.len(), 1);
+        // Scaffold default for delivery_module (see constants::BASECAMP_DEPENDENCIES).
+        match &deps[0] {
+            BasecampSource::Flake(f) => assert!(
+                f.contains("logos-delivery-module"),
+                "expected scaffold default delivery ref, got {f}"
+            ),
+            _ => panic!("expected Flake"),
+        }
+        assert!(matches!(origins[0], SourceOrigin::DepDefault { .. }));
+    }
+
+    #[test]
+    fn resolve_manifest_dependencies_silently_skips_preinstalled_modules() {
+        let tmp = tempdir().expect("tempdir");
+        // `capability_module` is preinstalled by basecamp; must not be captured.
+        seed_module_metadata(
+            tmp.path(),
+            "mymod",
+            &["capability_module", "package_manager"],
+        );
+        let project = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let (deps, origins) =
+            resolve_manifest_dependencies(&[project], &std::collections::BTreeMap::new());
+        assert!(deps.is_empty(), "preinstalled modules must not be captured");
+        assert!(origins.is_empty());
+    }
+
+    #[test]
+    fn resolve_manifest_dependencies_skips_project_internal_deps() {
+        // Two sibling project sources where one declares a dep on the other.
+        let tmp = tempdir().expect("tempdir");
+        let core = tmp.path().join("core");
+        let ui = tmp.path().join("ui");
+        seed_module_metadata(&core, "core", &[]);
+        seed_module_metadata(&ui, "ui", &["core"]);
+
+        let project = vec![
+            BasecampSource::Flake(format!("path:{}#lgx", core.display())),
+            BasecampSource::Flake(format!("path:{}#lgx", ui.display())),
+        ];
+
+        let (deps, _) = resolve_manifest_dependencies(&project, &std::collections::BTreeMap::new());
+        assert!(
+            deps.is_empty(),
+            "project-internal deps should not produce external captures"
+        );
+    }
+
+    #[test]
+    fn source_origin_annotations_render_distinctly() {
+        assert_eq!(SourceOrigin::Explicit.annotation(), "[explicit]");
+        assert_eq!(
+            SourceOrigin::AutoDiscovered.annotation(),
+            "[auto-discovered]"
+        );
+        let def = SourceOrigin::DepDefault {
+            name: "delivery_module".to_string(),
+            via: "path:/abs/ui#lgx".to_string(),
+        };
+        assert!(def.annotation().contains("delivery_module"));
+        assert!(def.annotation().contains("scaffold default"));
+        let over = SourceOrigin::DepOverride {
+            name: "delivery_module".to_string(),
+            via: "path:/abs/ui#lgx".to_string(),
+        };
+        assert!(over.annotation().contains("scaffold.toml override"));
     }
 }
