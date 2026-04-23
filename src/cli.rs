@@ -299,8 +299,18 @@ enum BasecampSubcommand {
         about = "Build the project's .#lgx-portable artefacts for hand-loading into a basecamp AppImage"
     )]
     BuildPortable(BasecampBuildPortableArgs),
+    #[command(
+        about = "Basecamp-specific doctor: captured modules, manifest variants, and state drift"
+    )]
+    Doctor(BasecampDoctorArgs),
     #[command(about = "Manage basecamp profiles")]
     Profile(BasecampProfileArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampDoctorArgs {
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -465,6 +475,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                     dry_run: args.dry_run,
                 },
                 BasecampSubcommand::BuildPortable(_) => BasecampAction::BuildPortable,
+                BasecampSubcommand::Doctor(args) => BasecampAction::Doctor { json: args.json },
                 BasecampSubcommand::Profile(args) => match args.command {
                     BasecampProfileSubcommand::List(args) => {
                         BasecampAction::ProfileList { json: args.json }

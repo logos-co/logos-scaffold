@@ -46,6 +46,11 @@ pub(crate) enum BasecampAction {
     /// `#lgx-portable`). `state.dependencies` is ignored — the target AppImage
     /// provides those. No CLI source flags.
     BuildPortable,
+    /// Basecamp-specific doctor: captured modules summary, manifest variant
+    /// check per seeded profile, and drift between auto-discovery and state.
+    Doctor {
+        json: bool,
+    },
     ProfileList {
         json: bool,
     },
@@ -69,6 +74,7 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
         }
         BasecampAction::Reset { dry_run } => cmd_basecamp_reset(project, dry_run),
         BasecampAction::BuildPortable => cmd_basecamp_build_portable(project),
+        BasecampAction::Doctor { json } => cmd_basecamp_doctor(project, json),
         // Phase 5 stub: load_project() above is intentional so "outside project"
         // errors precede "not implemented" — future implementer must preserve that order.
         BasecampAction::ProfileList { .. } => bail!("basecamp profile list is not yet implemented"),
@@ -250,6 +256,31 @@ fn cmd_basecamp_launch(project: Project, profile: String, no_clean: bool) -> Dyn
             &profiles_root,
             &[profile.clone()],
         )?;
+    }
+
+    // Variant pre-flight: warn if any installed module is missing the current
+    // platform's `<plat>-dev` manifest.json `main` key. Basecamp v0.1.1's
+    // variant resolver silently hangs on first click when loading such a
+    // plugin, so catch it before the user ever clicks. Non-blocking: we
+    // still exec basecamp regardless — the dev may want to click around
+    // anyway.
+    if let Some(expected_dev) = platform_dev_variant_key() {
+        let issues = check_manifest_variants(&profile_dir, &profile, expected_dev);
+        let module_count = count_installed_modules(&profile_dir);
+        if issues.is_empty() {
+            println!(
+                "launch: profile {profile} has {module_count} module(s); all {expected_dev} variants present ✓"
+            );
+        } else {
+            let names: Vec<String> = issues.iter().map(|i| i.module_name.clone()).collect();
+            println!(
+                "launch: profile {profile} has {module_count} module(s); \
+                 {} missing {expected_dev} variant ({}); \
+                 run `logos-scaffold doctor` for details — plugins will hang on click.",
+                issues.len(),
+                names.join(", ")
+            );
+        }
     }
 
     let env = launch_env(&profile_dir, &profile);
@@ -1608,6 +1639,19 @@ pub(crate) struct ManifestVariantIssue {
     pub(crate) available_variants: Vec<String>,
 }
 
+/// Count installed modules under `<profile_dir>/xdg-data/<BASECAMP_XDG_APP_SUBPATH>/modules/`.
+/// Returns 0 if the dir doesn't exist yet.
+pub(crate) fn count_installed_modules(profile_dir: &Path) -> usize {
+    let modules_root = profile_dir
+        .join("xdg-data")
+        .join(BASECAMP_XDG_APP_SUBPATH)
+        .join("modules");
+    let Ok(entries) = fs::read_dir(&modules_root) else {
+        return 0;
+    };
+    entries.flatten().filter(|e| e.path().is_dir()).count()
+}
+
 /// Walk `<profile_dir>/xdg-data/<BASECAMP_XDG_APP_SUBPATH>/modules/*/manifest.json`
 /// and flag modules missing the expected `-dev` variant key. Non-blocking:
 /// callers decide whether to warn or fail based on the returned issues.
@@ -1736,6 +1780,247 @@ pub(crate) fn compute_module_drift(project: &Project) -> DynResult<ModuleDriftRe
         discovered_not_captured,
         captured_not_discovered,
     })
+}
+
+/// `basecamp doctor` entry point. Builds a scaffold `DoctorReport` containing
+/// only basecamp-specific rows (captured modules summary, manifest variant
+/// check, module-set drift) and prints/serializes it via the shared doctor
+/// formatting helpers.
+///
+/// Intentionally separate from top-level `logos-scaffold doctor` so basecamp
+/// remains a self-contained subcommand surface. A follow-up PR may merge the
+/// rows into the global doctor once the core basecamp feature has landed.
+fn cmd_basecamp_doctor(project: Project, as_json: bool) -> DynResult<()> {
+    use crate::commands::doctor::{finalize_report, print_report};
+    use crate::model::CheckStatus;
+
+    if as_json {
+        crate::process::set_command_echo(false);
+    }
+
+    let mut rows = Vec::new();
+    push_basecamp_doctor_rows(&project, &mut rows);
+
+    // If there are no rows at all, state is absent or empty — emit a single
+    // Pass row so the output is never confusingly blank.
+    if rows.is_empty() {
+        rows.push(crate::model::CheckRow {
+            status: CheckStatus::Pass,
+            name: "basecamp state".to_string(),
+            detail: "not set up yet (no basecamp.state)".to_string(),
+            remediation: Some("run `logos-scaffold basecamp setup`".to_string()),
+        });
+    }
+
+    let report = finalize_report(rows);
+
+    if as_json {
+        crate::process::set_command_echo(true);
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_report(&report);
+    }
+
+    if report.summary.fail > 0 {
+        bail!("basecamp doctor reported FAIL checks");
+    }
+    Ok(())
+}
+
+/// Build the basecamp-specific doctor rows: captured modules summary (each
+/// source's flake ref + commit/tag + installed api headers), manifest variant
+/// checks per seeded profile, and a module-set drift check against
+/// auto-discovery. No-op when `basecamp.state` is absent.
+fn push_basecamp_doctor_rows(project: &Project, rows: &mut Vec<crate::model::CheckRow>) {
+    use crate::model::{CheckRow, CheckStatus};
+
+    let state_path = project.root.join(".scaffold/state/basecamp.state");
+    let Ok(state) = read_basecamp_state(&state_path) else {
+        return;
+    };
+    if state.basecamp_bin.is_empty() && state.lgpm_bin.is_empty() && state.total_sources() == 0 {
+        return;
+    }
+
+    let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
+    let alice_modules = profiles_root
+        .join(BASECAMP_PROFILE_ALICE)
+        .join("xdg-data")
+        .join(BASECAMP_XDG_APP_SUBPATH)
+        .join("modules");
+
+    for src in &state.project_sources {
+        rows.push(captured_source_row("basecamp module", src, &alice_modules));
+    }
+    for src in &state.dependencies {
+        rows.push(captured_source_row("basecamp dep", src, &alice_modules));
+    }
+
+    if let Some(expected_dev) = platform_dev_variant_key() {
+        for profile in [BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB] {
+            let profile_dir = profiles_root.join(profile);
+            if !profile_dir.is_dir() {
+                continue;
+            }
+            for issue in check_manifest_variants(&profile_dir, profile, expected_dev) {
+                rows.push(CheckRow {
+                    status: CheckStatus::Warn,
+                    name: format!(
+                        "basecamp variant: {} in profile {}",
+                        issue.module_name, issue.profile
+                    ),
+                    detail: format!(
+                        "main=[{}] missing expected `{}`; plugin will hang on click",
+                        issue.available_variants.join(","),
+                        expected_dev
+                    ),
+                    remediation: Some(format!(
+                        "rebuild `{}` so its manifest.json `main.{}` key is populated \
+                         (upstream logos-module-builder issue); then re-run `basecamp install`",
+                        issue.module_name, expected_dev
+                    )),
+                });
+            }
+        }
+    }
+
+    match compute_module_drift(project) {
+        Ok(drift) if !drift.is_empty() => {
+            for src in &drift.discovered_not_captured {
+                rows.push(CheckRow {
+                    status: CheckStatus::Warn,
+                    name: "basecamp drift: uncaptured".to_string(),
+                    detail: format!(
+                        "discovered `{}` but not captured in basecamp.state",
+                        flake_ref(src)
+                    ),
+                    remediation: Some(
+                        "run `logos-scaffold basecamp modules` to refresh capture".to_string(),
+                    ),
+                });
+            }
+            for src in &drift.captured_not_discovered {
+                rows.push(CheckRow {
+                    status: CheckStatus::Warn,
+                    name: "basecamp drift: stale".to_string(),
+                    detail: format!(
+                        "captured `{}` no longer discoverable (may be stale)",
+                        flake_ref(src)
+                    ),
+                    remediation: Some(
+                        "run `logos-scaffold basecamp modules` to refresh; \
+                         or `--flake <ref>#lgx` / `--path <file.lgx>` to capture explicitly"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// One doctor row per captured source. Shows the flake ref verbatim plus a
+/// tag/commit annotation for github refs and any `*.h` / `*.hpp` headers
+/// already installed under alice's profile.
+fn captured_source_row(
+    label: &str,
+    src: &BasecampSource,
+    alice_modules: &Path,
+) -> crate::model::CheckRow {
+    use crate::model::{CheckRow, CheckStatus};
+    let ref_text = flake_ref(src);
+    let mut detail = ref_text.clone();
+
+    if let BasecampSource::Flake(flake_ref) = src {
+        if let Some(label) = github_ref_part_label(flake_ref) {
+            detail.push_str(&format!("  ({label})"));
+        }
+        if let Some(module_name) = infer_module_name_from_flake_ref(flake_ref) {
+            let headers = collect_api_headers(alice_modules, &module_name);
+            if !headers.is_empty() {
+                detail.push_str(&format!(
+                    "\n    api headers: {}",
+                    headers
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+    }
+
+    CheckRow {
+        status: CheckStatus::Pass,
+        name: label.to_string(),
+        detail,
+        remediation: None,
+    }
+}
+
+fn github_ref_part_label(flake_ref: &str) -> Option<String> {
+    let rest = flake_ref.strip_prefix("github:")?;
+    let before_frag = rest.split_once('#').map_or(rest, |(b, _)| b);
+    let parts: Vec<&str> = before_frag.split('/').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let ref_part = parts[2];
+    let looks_like_commit = ref_part.len() >= 7
+        && ref_part.len() <= 40
+        && ref_part.chars().all(|c| c.is_ascii_hexdigit());
+    if looks_like_commit {
+        Some(format!("commit {}", &ref_part[..ref_part.len().min(12)]))
+    } else {
+        Some(format!("tag {ref_part}"))
+    }
+}
+
+fn infer_module_name_from_flake_ref(flake_ref: &str) -> Option<String> {
+    let before_frag = flake_ref.split_once('#').map_or(flake_ref, |(b, _)| b);
+    if let Some(rest) = before_frag.strip_prefix("github:") {
+        let repo = rest.split('/').nth(1)?;
+        let trimmed = repo.trim_start_matches("logos-");
+        return Some(trimmed.replace('-', "_"));
+    }
+    if let Some(rest) = before_frag.strip_prefix("path:") {
+        return Some(
+            Path::new(rest)
+                .file_name()?
+                .to_string_lossy()
+                .replace('-', "_"),
+        );
+    }
+    None
+}
+
+fn collect_api_headers(alice_modules: &Path, module_name: &str) -> Vec<PathBuf> {
+    let module_dir = alice_modules.join(module_name);
+    if !module_dir.is_dir() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let candidates = [
+        module_dir.clone(),
+        module_dir.join("include"),
+        module_dir.join("interfaces"),
+    ];
+    for dir in candidates {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                        if ext.eq_ignore_ascii_case("h") || ext.eq_ignore_ascii_case("hpp") {
+                            out.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// Probes a flake ref for the set of package names it exposes under the current system.
@@ -2789,6 +3074,50 @@ mod tests {
         assert_eq!(
             swap_flake_attr("path:/abs", "lgx", "lgx-portable"),
             "path:/abs"
+        );
+    }
+
+    // ---- doctor helpers (github_ref_part_label, infer_module_name_from_flake_ref) ----
+
+    #[test]
+    fn github_ref_part_label_recognizes_commit() {
+        assert_eq!(
+            github_ref_part_label("github:owner/repo/a746cdbc521f72ee22c5a4856fd17a9802bb9d69#lgx"),
+            Some("commit a746cdbc521f".to_string())
+        );
+    }
+
+    #[test]
+    fn github_ref_part_label_recognizes_tag() {
+        assert_eq!(
+            github_ref_part_label("github:logos-co/logos-delivery-module/1.0.0#lgx"),
+            Some("tag 1.0.0".to_string())
+        );
+        assert_eq!(
+            github_ref_part_label("github:logos-co/logos-delivery-module/tutorial-v1#lgx"),
+            Some("tag tutorial-v1".to_string())
+        );
+    }
+
+    #[test]
+    fn github_ref_part_label_returns_none_for_non_github() {
+        assert_eq!(github_ref_part_label("path:/abs/sub#lgx"), None);
+        assert_eq!(github_ref_part_label("git+https://example#lgx"), None);
+    }
+
+    #[test]
+    fn infer_module_name_from_github() {
+        assert_eq!(
+            infer_module_name_from_flake_ref("github:logos-co/logos-delivery-module/1.0.0#lgx"),
+            Some("delivery_module".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_module_name_from_path() {
+        assert_eq!(
+            infer_module_name_from_flake_ref("path:/abs/tictactoe-ui-cpp#lgx"),
+            Some("tictactoe_ui_cpp".to_string())
         );
     }
 
