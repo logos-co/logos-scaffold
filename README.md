@@ -72,8 +72,12 @@ logos-scaffold wallet default set <address-ref>
 logos-scaffold wallet default set --address <address-ref>
 logos-scaffold wallet -- <wallet-command...>
 logos-scaffold basecamp setup
-logos-scaffold basecamp install [--path PATH]... [--flake REF]... [--profile NAME]
+logos-scaffold basecamp modules [--path PATH]... [--flake REF]... [--show]
+logos-scaffold basecamp install [--print-output]
 logos-scaffold basecamp launch <profile> [--no-clean]
+logos-scaffold basecamp reset [--dry-run]
+logos-scaffold basecamp build-portable
+logos-scaffold basecamp doctor [--json]
 logos-scaffold doctor [--json]
 logos-scaffold report [--out PATH] [--tail N]
 logos-scaffold completions <bash|zsh>
@@ -93,11 +97,13 @@ logos-scaffold help
 - `wallet topup` checks account state first (`wallet account get --account-id ...`), runs `wallet auth-transfer init --account-id ...` only when the destination is uninitialized, then performs Piñata faucet claim (`wallet pinata claim --to ...`). If address is omitted, scaffold uses project default wallet from `.scaffold/state/wallet.state`.
 - `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.
 - `wallet -- ...` forwards raw wallet CLI arguments to the project-local wallet binary while preserving project wallet environment.
-- `basecamp setup` pins basecamp + `lgpm`, builds both, and seeds per-profile XDG directories for `alice` and `bob` under `.scaffold/basecamp/profiles/`.
-- `basecamp install` resolves the project's `.lgx` sources (auto-discovers `packages.<system>.lgx` from the root flake or immediate sub-flakes), builds each via `nix build`, and installs them into every seeded profile via `lgpm`. Project requirements are documented in [docs/basecamp-module-requirements.md](./docs/basecamp-module-requirements.md); pass `--path`/`--flake` to override auto-discovery.
-- `basecamp launch <profile>` scrubs the profile's data/cache, replays `install` to rebuild against current sources, assigns per-profile ports, and execs `basecamp` with the profile's XDG environment. Pass `--no-clean` to skip the scrub.
+- `basecamp setup` pins basecamp + `lgpm`, builds both (logged to `.scaffold/logs/<timestamp>-setup-*.log`), and seeds per-profile XDG directories for `alice` and `bob` under `.scaffold/basecamp/profiles/`.
+- `basecamp modules` is the sole writer of the captured module + dependency set (`basecamp.state`). Zero-arg runs full auto-discovery: walks project flakes (root `.#lgx` first, else immediate sub-flakes), reads each source's `metadata.json` for declared `dependencies`, and resolves each dep name against the scaffold-level `BASECAMP_DEPENDENCIES` pin table (or `[basecamp.dependencies]` in `scaffold.toml`). `--flake <ref>` / `--path <file>` captures the given set explicitly as project sources (manifest deps still resolved). `--show` prints the current capture without mutating. Always prints the previous set before overwriting so reverting is copy-paste. Project contract: see [docs/basecamp-module-requirements.md](./docs/basecamp-module-requirements.md).
+- `basecamp install` is pure replay: builds every captured source (dependencies first, then project modules — fail-fast on a broken companion pin) and installs them into both `alice` and `bob` via `lgpm`. No source-set flags. If the state is empty on first call it transparently invokes `basecamp modules` in auto-discover mode, prints what was captured, and proceeds. Each nix build logs to `.scaffold/logs/<timestamp>-install.log` with a one-line progress status (duration on both success and failure); `--print-output` (or `LOGOS_SCAFFOLD_PRINT_OUTPUT=1`) opts back into streaming nix output directly for CI.
+- `basecamp launch <profile>` scrubs the profile's data/cache, replays captured modules, assigns per-profile ports, and execs `basecamp` with the profile's XDG environment. Before exec, prints a one-line variant-check summary of installed modules so the freeze-on-first-click case (upstream manifest variant mismatch) is visible. Pass `--no-clean` to skip the scrub.
 - `basecamp reset` kills any live basecamp tracked in `launch.state`, wipes `.scaffold/basecamp/profiles/`, clears recorded sources in `basecamp.state` (preserving the pinned basecamp + lgpm binaries), and re-seeds empty alice/bob profiles. Pass `--dry-run` to print the action plan without touching anything.
-- `basecamp build-portable` builds the project's `.#lgx-portable` artefacts for hand-loading into a basecamp AppImage. Uses the same auto-discovery and `--path` / `--flake` overrides as `install`, but targets the `lgx-portable` flake output. Profile trees and `basecamp.state` are untouched; `nix build` uses its default symlink layout (`./result-lgx-portable` next to the flake), and the command prints the absolute store paths for the built artefacts so you can copy them into your AppImage yourself.
+- `basecamp build-portable` rebuilds the project's `project_sources` with attr-swapped `#lgx-portable` for hand-loading into a basecamp AppImage. Zero-arg: sources come from state (managed via `basecamp modules`). Captured dependencies are intentionally skipped — the target AppImage provides its own release companion modules via its Package Manager catalog. `nix build` uses its default symlink layout (`./result-lgx-portable` next to each flake); the command prints the absolute store paths so you can copy them into the AppImage yourself.
+- `basecamp doctor` emits a basecamp-specific health report: captured modules summary (each source's flake ref, parsed tag/commit annotation for github refs, and any API headers already installed in alice's profile), manifest variant check per seeded profile (flags modules whose `main` is missing the current-platform `-dev` key — the freeze-on-first-click failure mode), and module-set drift between auto-discovery and captured state. `--json` for machine-readable output.
 - `doctor` prints actionable checks and next steps; `--json` is for CI/machine parsing.
 - `report` creates a `.tar.gz` diagnostics bundle for GitHub issues using strict allowlist collection with redaction and explicit skip reporting.
 - `completions <shell>` prints a shell completion script to stdout. Supported shells: `bash`, `zsh`. The generated script covers both `lgs` and `logos-scaffold`.
