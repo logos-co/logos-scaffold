@@ -50,10 +50,10 @@ pub(crate) fn write_basecamp_state(path: &Path, state: &BasecampState) -> DynRes
     check_state_value("pin", &state.pin)?;
     check_state_value("basecamp_bin", &state.basecamp_bin)?;
     check_state_value("lgpm_bin", &state.lgpm_bin)?;
-    for source in &state.sources {
+    for source in state.project_sources.iter().chain(state.dependencies.iter()) {
         let (key, value) = match source {
-            BasecampSource::Path(p) => ("source:path", p.as_str()),
-            BasecampSource::Flake(f) => ("source:flake", f.as_str()),
+            BasecampSource::Path(p) => ("project:path", p.as_str()),
+            BasecampSource::Flake(f) => ("project:flake", f.as_str()),
         };
         check_state_value(key, value)?;
     }
@@ -68,10 +68,16 @@ pub(crate) fn write_basecamp_state(path: &Path, state: &BasecampState) -> DynRes
     if !state.lgpm_bin.is_empty() {
         content.push_str(&format!("lgpm_bin={}\n", state.lgpm_bin));
     }
-    for source in &state.sources {
+    for source in &state.project_sources {
         match source {
-            BasecampSource::Path(p) => content.push_str(&format!("source:path={p}\n")),
-            BasecampSource::Flake(f) => content.push_str(&format!("source:flake={f}\n")),
+            BasecampSource::Path(p) => content.push_str(&format!("project:path={p}\n")),
+            BasecampSource::Flake(f) => content.push_str(&format!("project:flake={f}\n")),
+        }
+    }
+    for source in &state.dependencies {
+        match source {
+            BasecampSource::Path(p) => content.push_str(&format!("dep:path={p}\n")),
+            BasecampSource::Flake(f) => content.push_str(&format!("dep:flake={f}\n")),
         }
     }
     write_text(path, &content)
@@ -104,10 +110,20 @@ pub(crate) fn read_basecamp_state(path: &Path) -> DynResult<BasecampState> {
             state.basecamp_bin = rest.to_string();
         } else if let Some(rest) = line.strip_prefix("lgpm_bin=") {
             state.lgpm_bin = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("project:path=") {
+            state.project_sources.push(BasecampSource::Path(rest.to_string()));
+        } else if let Some(rest) = line.strip_prefix("project:flake=") {
+            state.project_sources.push(BasecampSource::Flake(rest.to_string()));
+        } else if let Some(rest) = line.strip_prefix("dep:path=") {
+            state.dependencies.push(BasecampSource::Path(rest.to_string()));
+        } else if let Some(rest) = line.strip_prefix("dep:flake=") {
+            state.dependencies.push(BasecampSource::Flake(rest.to_string()));
         } else if let Some(rest) = line.strip_prefix("source:path=") {
-            state.sources.push(BasecampSource::Path(rest.to_string()));
+            // Legacy key from pre-split state; migrate into project_sources.
+            state.project_sources.push(BasecampSource::Path(rest.to_string()));
         } else if let Some(rest) = line.strip_prefix("source:flake=") {
-            state.sources.push(BasecampSource::Flake(rest.to_string()));
+            // Legacy key from pre-split state; migrate into project_sources.
+            state.project_sources.push(BasecampSource::Flake(rest.to_string()));
         }
     }
 
@@ -141,11 +157,13 @@ mod tests {
             pin: "deadbeef".to_string(),
             basecamp_bin: "/nix/store/abc/bin/basecamp".to_string(),
             lgpm_bin: "/nix/store/def/bin/lgpm".to_string(),
-            sources: vec![
-                BasecampSource::Flake(".#lgx".to_string()),
-                BasecampSource::Flake("./tictactoe#lgx".to_string()),
+            project_sources: vec![
+                BasecampSource::Flake("path:/abs/tictactoe#lgx".to_string()),
                 BasecampSource::Path("/abs/path/to/foo.lgx".to_string()),
             ],
+            dependencies: vec![BasecampSource::Flake(
+                "github:logos-co/logos-delivery-module/1.0.0#lgx".to_string(),
+            )],
         };
 
         write_basecamp_state(&path, &state).expect("write");
@@ -154,7 +172,8 @@ mod tests {
         assert_eq!(loaded.pin, state.pin);
         assert_eq!(loaded.basecamp_bin, state.basecamp_bin);
         assert_eq!(loaded.lgpm_bin, state.lgpm_bin);
-        assert_eq!(loaded.sources, state.sources);
+        assert_eq!(loaded.project_sources, state.project_sources);
+        assert_eq!(loaded.dependencies, state.dependencies);
     }
 
     #[test]
@@ -166,17 +185,20 @@ mod tests {
             pin: "sha1".to_string(),
             basecamp_bin: String::new(),
             lgpm_bin: String::new(),
-            sources: vec![],
+            project_sources: vec![],
+            dependencies: vec![],
         };
 
         write_basecamp_state(&path, &state).expect("write");
         let content = fs::read_to_string(&path).expect("read raw");
         assert!(!content.contains("basecamp_bin="));
-        assert!(!content.contains("source:"));
+        assert!(!content.contains("project:"));
+        assert!(!content.contains("dep:"));
 
         let loaded = read_basecamp_state(&path).expect("read");
         assert_eq!(loaded.pin, "sha1");
-        assert!(loaded.sources.is_empty());
+        assert!(loaded.project_sources.is_empty());
+        assert!(loaded.dependencies.is_empty());
     }
 
     #[test]
@@ -187,17 +209,60 @@ mod tests {
             pin: "sha1".to_string(),
             basecamp_bin: "/bin/bc".to_string(),
             lgpm_bin: "/bin/lgpm".to_string(),
-            sources: vec![BasecampSource::Flake("a\nb#lgx".to_string())],
+            project_sources: vec![BasecampSource::Flake("a\nb#lgx".to_string())],
+            dependencies: vec![],
         };
         let err = write_basecamp_state(&path, &state).unwrap_err();
         let msg = format!("{err}");
         assert!(
-            msg.contains("newline") && msg.contains("source:flake"),
+            msg.contains("newline") && msg.contains("project:flake"),
             "expected newline-rejection error, got: {msg}"
         );
         assert!(
             !path.exists(),
             "state file must not be written on validation failure"
         );
+    }
+
+    #[test]
+    fn basecamp_state_accepts_legacy_source_keys_as_project_sources() {
+        // Pre-split state files have `source:flake=` / `source:path=`.
+        // Preserve backward-compat: treat them as project_sources on read.
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("basecamp.state");
+        fs::write(
+            &path,
+            "pin=abc\nsource:flake=path:/p#lgx\nsource:path=/m.lgx\n",
+        )
+        .unwrap();
+        let loaded = read_basecamp_state(&path).expect("read legacy");
+        assert_eq!(loaded.pin, "abc");
+        assert_eq!(
+            loaded.project_sources,
+            vec![
+                BasecampSource::Flake("path:/p#lgx".to_string()),
+                BasecampSource::Path("/m.lgx".to_string()),
+            ]
+        );
+        assert!(loaded.dependencies.is_empty());
+    }
+
+    #[test]
+    fn basecamp_state_separates_project_and_dep_lines() {
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("basecamp.state");
+        let state = BasecampState {
+            pin: "abc".to_string(),
+            basecamp_bin: String::new(),
+            lgpm_bin: String::new(),
+            project_sources: vec![BasecampSource::Flake("path:/p#lgx".to_string())],
+            dependencies: vec![BasecampSource::Flake(
+                "github:logos-co/logos-delivery-module/1.0.0#lgx".to_string(),
+            )],
+        };
+        write_basecamp_state(&path, &state).expect("write");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("project:flake=path:/p#lgx"));
+        assert!(content.contains("dep:flake=github:logos-co/logos-delivery-module/1.0.0#lgx"));
     }
 }

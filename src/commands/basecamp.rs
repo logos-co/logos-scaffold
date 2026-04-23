@@ -117,7 +117,8 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
         pin: bc.pin.clone(),
         basecamp_bin: basecamp_bin.display().to_string(),
         lgpm_bin: lgpm_bin.display().to_string(),
-        sources: existing.sources,
+        project_sources: existing.project_sources,
+        dependencies: existing.dependencies,
     };
     write_basecamp_state(&state_path, &state)?;
 
@@ -699,7 +700,7 @@ fn cmd_basecamp_reset(project: Project, dry_run: bool) -> DynResult<()> {
         }
     }
 
-    for line in plan_reset_lines(&live, &profiles_root, state.sources.len(), &seed_names) {
+    for line in plan_reset_lines(&live, &profiles_root, state.total_sources(), &seed_names) {
         println!("{line}");
     }
 
@@ -796,7 +797,8 @@ fn remove_profiles_root(project_root: &Path) -> DynResult<()> {
 fn clear_basecamp_sources(state_path: &Path) -> DynResult<()> {
     let mut state = read_basecamp_state(state_path)
         .with_context(|| format!("read {}", state_path.display()))?;
-    state.sources.clear();
+    state.project_sources.clear();
+    state.dependencies.clear();
     write_basecamp_state(state_path, &state)
 }
 
@@ -870,7 +872,7 @@ fn cmd_basecamp_install(
     // freshly-resolved list. Appending would let stale refs linger and be replayed
     // by `launch`, causing wasted rebuilds and, when two refs target the same flake
     // dir, overwrites in the profile install tree.
-    let prev_count = state.sources.len();
+    let prev_count = state.total_sources();
     println!(
         "resolved {} source(s); replacing previous {} recorded source(s)",
         sources.len(),
@@ -879,8 +881,13 @@ fn cmd_basecamp_install(
     for src in &sources {
         println!("  - {}", flake_ref(src));
     }
+    // NOTE: pre-modules-command transition — explicit `install --flake/--path`
+    // writes everything as project_sources. The upcoming `basecamp modules`
+    // command will split properly based on manifest walking. Remove this
+    // transitional assignment when modules lands.
     let new_state = BasecampState {
-        sources: sources.clone(),
+        project_sources: sources.clone(),
+        dependencies: Vec::new(),
         ..state.clone()
     };
     write_basecamp_state(&state_path, &new_state)?;
@@ -1132,7 +1139,10 @@ fn run_lgpm_install(
 }
 
 /// Used by launch replay: build lgx files from state-recorded sources and hand
-/// them to lgpm for the given profile(s). No-op if `state.sources` is empty.
+/// them to lgpm for the given profile(s). No-op if state has no captured
+/// sources. Dependencies are built and installed *before* project sources so a
+/// broken companion pin surfaces before we invest nix build time on the dev's
+/// own modules.
 fn install_sources_into_profiles(
     state: &BasecampState,
     project_root: &Path,
@@ -1140,12 +1150,13 @@ fn install_sources_into_profiles(
     profiles_root: &Path,
     profiles: &[String],
 ) -> DynResult<()> {
-    if state.sources.is_empty() {
+    if state.total_sources() == 0 {
         return Ok(());
     }
     let lgx_cache = project_root.join(cache_root).join("basecamp/lgx-links");
     fs::create_dir_all(&lgx_cache).with_context(|| format!("create {}", lgx_cache.display()))?;
-    let lgx_files = collect_lgx_files(&state.sources, &lgx_cache)?;
+    let all: Vec<BasecampSource> = state.all_sources().cloned().collect();
+    let lgx_files = collect_lgx_files(&all, &lgx_cache)?;
     run_lgpm_install(&state.lgpm_bin, profiles_root, profiles, &lgx_files, false)
 }
 
@@ -2167,10 +2178,13 @@ mod tests {
             pin: "deadbeef".to_string(),
             basecamp_bin: "/nix/store/a/bin/basecamp".to_string(),
             lgpm_bin: "/nix/store/b/bin/lgpm".to_string(),
-            sources: vec![
-                BasecampSource::Flake("./tictactoe#lgx".to_string()),
+            project_sources: vec![
+                BasecampSource::Flake("path:/abs/tictactoe#lgx".to_string()),
                 BasecampSource::Path("/mod.lgx".to_string()),
             ],
+            dependencies: vec![BasecampSource::Flake(
+                "github:logos-co/logos-delivery-module/1.0.0#lgx".to_string(),
+            )],
         };
         write_basecamp_state(&path, &original).expect("seed state");
 
@@ -2180,6 +2194,9 @@ mod tests {
         assert_eq!(loaded.pin, "deadbeef");
         assert_eq!(loaded.basecamp_bin, "/nix/store/a/bin/basecamp");
         assert_eq!(loaded.lgpm_bin, "/nix/store/b/bin/lgpm");
-        assert!(loaded.sources.is_empty(), "sources must be cleared");
+        assert!(
+            loaded.project_sources.is_empty() && loaded.dependencies.is_empty(),
+            "both project_sources and dependencies must be cleared"
+        );
     }
 }
