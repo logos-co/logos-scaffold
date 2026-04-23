@@ -43,6 +43,14 @@ pub(crate) struct BasecampConfig {
     pub(crate) lgpm_flake: String,
     pub(crate) port_base: u16,
     pub(crate) port_stride: u16,
+    /// Per-project overrides for runtime companion dependency pins. Keyed by
+    /// module name (matches `metadata.json` `dependencies` entries). Takes
+    /// precedence over scaffold-level `BASECAMP_DEPENDENCIES` defaults.
+    ///
+    /// Parsed from `[basecamp.dependencies]` in `scaffold.toml`. Empty when
+    /// omitted. Insertion order is stable to keep diagnostics reproducible
+    /// (serialized back sorted by key on write).
+    pub(crate) dependencies: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for BasecampConfig {
@@ -53,6 +61,7 @@ impl Default for BasecampConfig {
             lgpm_flake: String::new(),
             port_base: 60000,
             port_stride: 10,
+            dependencies: std::collections::BTreeMap::new(),
         }
     }
 }

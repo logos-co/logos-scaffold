@@ -36,6 +36,8 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     let mut basecamp_lgpm_flake = String::new();
     let mut basecamp_port_base: u16 = 60000;
     let mut basecamp_port_stride: u16 = 10;
+    let mut basecamp_dependencies: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -112,6 +114,12 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     })?;
                 }
             }
+            "basecamp.dependencies" => {
+                basecamp_seen = true;
+                if !key.is_empty() {
+                    basecamp_dependencies.insert(key.to_string(), value);
+                }
+            }
             "localnet" => {
                 if key == "port" {
                     if !value.is_empty() {
@@ -166,6 +174,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
             lgpm_flake: basecamp_lgpm_flake,
             port_base: basecamp_port_base,
             port_stride: basecamp_port_stride,
+            dependencies: basecamp_dependencies,
         })
     } else {
         None
@@ -224,6 +233,16 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
             bc.port_base,
             bc.port_stride,
         ));
+        if !bc.dependencies.is_empty() {
+            out.push_str("\n[basecamp.dependencies]\n");
+            for (name, flake_ref) in &bc.dependencies {
+                out.push_str(&format!(
+                    "{} = \"{}\"\n",
+                    escape_toml_string(name),
+                    escape_toml_string(flake_ref),
+                ));
+            }
+        }
     }
 
     out
@@ -337,6 +356,7 @@ pin = "deadbeef"
             lgpm_flake: "github:logos-co/lgpm#lgpm".to_string(),
             port_base: 61000,
             port_stride: 20,
+            dependencies: std::collections::BTreeMap::new(),
         });
 
         let serialized = serialize_config(&cfg);
@@ -349,6 +369,68 @@ pin = "deadbeef"
         assert_eq!(bc.lgpm_flake, "github:logos-co/lgpm#lgpm");
         assert_eq!(bc.port_base, 61000);
         assert_eq!(bc.port_stride, 20);
+        assert!(bc.dependencies.is_empty());
+    }
+
+    #[test]
+    fn basecamp_dependencies_section_roundtrips() {
+        let mut cfg = base_config();
+        let mut deps = std::collections::BTreeMap::new();
+        deps.insert(
+            "delivery_module".to_string(),
+            "github:logos-co/logos-delivery-module/1.1.0#lgx".to_string(),
+        );
+        deps.insert(
+            "storage_module".to_string(),
+            "github:logos-co/logos-storage-module/abcdef#lgx".to_string(),
+        );
+        cfg.basecamp = Some(BasecampConfig {
+            pin: "deadbeef".to_string(),
+            source: "https://example/basecamp".to_string(),
+            lgpm_flake: String::new(),
+            port_base: 60000,
+            port_stride: 10,
+            dependencies: deps.clone(),
+        });
+
+        let serialized = serialize_config(&cfg);
+        assert!(
+            serialized.contains("[basecamp.dependencies]"),
+            "expected [basecamp.dependencies] section in:\n{serialized}"
+        );
+        assert!(serialized.contains("delivery_module ="));
+        assert!(serialized.contains("storage_module ="));
+
+        let parsed = parse_config(&serialized).expect("parse");
+        let bc = parsed.basecamp.expect("basecamp present");
+        assert_eq!(bc.dependencies, deps);
+    }
+
+    #[test]
+    fn basecamp_dependencies_section_alone_implies_basecamp_seen() {
+        // A project that only sets [basecamp.dependencies] (no [basecamp] pins)
+        // should still round-trip with a BasecampConfig containing the deps.
+        let text = r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "u"
+source = "s"
+path = "p"
+pin = "q"
+
+[basecamp.dependencies]
+delivery_module = "github:logos-co/logos-delivery-module/1.0.0#lgx"
+"#;
+        let parsed = parse_config(text).expect("parse");
+        let bc = parsed
+            .basecamp
+            .expect("basecamp section should be synthesized");
+        assert_eq!(
+            bc.dependencies.get("delivery_module").map(|s| s.as_str()),
+            Some("github:logos-co/logos-delivery-module/1.0.0#lgx")
+        );
     }
 
     #[test]

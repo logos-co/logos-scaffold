@@ -47,3 +47,47 @@ pub(crate) const BASECAMP_XDG_APP_SUBPATH: &str = "Logos/LogosBasecampDev";
 /// emitting hashes (or lgpm gains a compatibility mode).
 pub(crate) const DEFAULT_LGPM_FLAKE: &str =
     "github:logos-co/logos-package-manager/e5c25989861f4487c3dc8c7b3bc0062bcbc3221f#cli";
+
+#[allow(dead_code)] // Consumed by the upcoming `basecamp modules` command.
+/// Scaffold-level default pins for runtime companion modules that basecamp
+/// v0.1.1 does NOT preinstall (listed in the Package Manager UI catalog but
+/// shipped as portable-only, so dev basecamp can't load them). When
+/// `basecamp modules` auto-discovery walks a project's `metadata.json` and
+/// finds a dep in this table, it captures the pinned flake ref into
+/// `state.dependencies` so `install` builds and installs the dev variant.
+///
+/// Keyed by the module name as it appears in `metadata.json` `dependencies`.
+/// Paired conceptually with `DEFAULT_BASECAMP_PIN` — when basecamp bumps, revisit
+/// these pins to stay ABI-compatible. Per-project overrides go in
+/// `[basecamp.dependencies]` in `scaffold.toml`.
+///
+/// See the upstream issue tracking a proper `logos-modules` release pin:
+/// <https://github.com/logos-co/logos-basecamp/issues/167>. Once that lands
+/// scaffold can derive this table from basecamp's own manifest rather than
+/// carrying an opinion.
+pub(crate) const BASECAMP_DEPENDENCIES: &[(&str, &str)] = &[
+    (
+        "delivery_module",
+        "github:logos-co/logos-delivery-module/1.0.0#lgx",
+    ),
+    // Additional companions (storage_module, etc.) added on demand as real
+    // projects declare them. Keeping the starter set small avoids surprising
+    // users with unnecessary companion builds.
+];
+
+#[allow(dead_code)] // Consumed by the upcoming `basecamp modules` command.
+/// Modules that basecamp v0.1.1 preinstalls on first launch (from its
+/// `preinstall/` dir). These must NEVER be captured as dependencies by the
+/// auto-discovery walk — basecamp provides them itself.
+///
+/// Kept in sync with `<basecamp>/preinstall/*.lgx` manually. Inspect the nix
+/// build output to verify this list stays accurate when bumping the basecamp pin.
+pub(crate) const BASECAMP_PREINSTALLED_MODULES: &[&str] = &[
+    "capability_module",
+    "package_manager",
+    "package_manager_ui",
+    "counter",
+    "counter_qml",
+    "webview_app",
+    "basecamp_main_ui",
+];
