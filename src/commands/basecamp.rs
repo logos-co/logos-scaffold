@@ -42,10 +42,10 @@ pub(crate) enum BasecampAction {
     Reset {
         dry_run: bool,
     },
-    BuildPortable {
-        paths: Vec<PathBuf>,
-        flakes: Vec<String>,
-    },
+    /// Attr-swap replay on `state.project_sources` only (`#lgx` →
+    /// `#lgx-portable`). `state.dependencies` is ignored — the target AppImage
+    /// provides those. No CLI source flags.
+    BuildPortable,
     ProfileList {
         json: bool,
     },
@@ -68,9 +68,7 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
             cmd_basecamp_launch(project, profile, no_clean)
         }
         BasecampAction::Reset { dry_run } => cmd_basecamp_reset(project, dry_run),
-        BasecampAction::BuildPortable { paths, flakes } => {
-            cmd_basecamp_build_portable(project, paths, flakes, &NixLgxProbe)
-        }
+        BasecampAction::BuildPortable => cmd_basecamp_build_portable(project),
         // Phase 5 stub: load_project() above is intentional so "outside project"
         // errors precede "not implemented" — future implementer must preserve that order.
         BasecampAction::ProfileList { .. } => bail!("basecamp profile list is not yet implemented"),
@@ -536,43 +534,53 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
     false
 }
 
-fn cmd_basecamp_build_portable(
-    project: Project,
-    paths: Vec<PathBuf>,
-    flakes: Vec<String>,
-    probe: &dyn LgxFlakeProbe,
-) -> DynResult<()> {
-    let cache_root_first = first_path_component(&project.config.cache_root);
-    let mut skip_subdirs: Vec<&str> = BASECAMP_AUTODISCOVER_SKIP_SUBDIRS.iter().copied().collect();
-    if let Some(c) = cache_root_first.as_deref() {
-        if !skip_subdirs.contains(&c) {
-            skip_subdirs.push(c);
-        }
+/// Build portable `.lgx` artefacts for hand-loading into a basecamp AppImage.
+///
+/// Operates on `state.project_sources` only, with each flake entry's `#lgx`
+/// attribute swapped to `#lgx-portable`. `state.dependencies` is intentionally
+/// ignored — the target AppImage provides its own (release/portable) copies
+/// of companion modules via its in-app Package Manager catalog.
+///
+/// No CLI source flags: the source set lives in `state`, managed by
+/// `basecamp modules`. If you want to produce a portable variant of something
+/// that isn't a project source, `basecamp modules --flake <ref>#lgx` it first,
+/// run `build-portable`, then revert with another `modules` call.
+fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
+    let state_path = project.root.join(".scaffold/state/basecamp.state");
+    let state = read_basecamp_state(&state_path).unwrap_or_default();
+
+    if state.project_sources.is_empty() {
+        bail!(
+            "no project modules captured in state; run `basecamp modules` \
+             first (auto-discover) or `basecamp modules --flake <ref>#lgx \
+             --path <file.lgx>` to capture explicitly. `build-portable` \
+             operates on captured project sources only — it never discovers."
+        );
     }
 
-    let flakes: Vec<String> = flakes
-        .into_iter()
-        .map(|f| normalize_flake_ref(&project.root, &f))
+    // Rewrite each project source: attr-swap `#lgx` → `#lgx-portable` on
+    // flake refs; pass Path sources through unchanged (they're pre-built).
+    let portable_sources: Vec<BasecampSource> = state
+        .project_sources
+        .iter()
+        .map(|src| match src {
+            BasecampSource::Path(p) => BasecampSource::Path(p.clone()),
+            BasecampSource::Flake(f) => {
+                BasecampSource::Flake(swap_flake_attr(f, "lgx", "lgx-portable"))
+            }
+        })
         .collect();
 
-    let sources = resolve_install_sources(
-        &project.root,
-        &paths,
-        &flakes,
-        probe,
-        &skip_subdirs,
-        "lgx-portable",
-        "lgx",
-    )?;
-
     let mut outputs: Vec<PathBuf> = Vec::new();
-    for src in &sources {
+    for src in &portable_sources {
         match src {
             BasecampSource::Path(p) => {
                 outputs.push(build_portable_resolve_path(Path::new(p))?);
             }
             BasecampSource::Flake(flake_ref) => {
-                let overrides = resolve_sibling_overrides(src, &sources, flake_ref);
+                // Sibling overrides still computed against the post-swap set
+                // so path-sibling inputs resolve locally like they do at install.
+                let overrides = resolve_sibling_overrides(src, &portable_sources, flake_ref);
                 let inv = build_portable_nix_invocation(flake_ref, &overrides);
                 outputs.extend(run_build_portable_nix(&project.root, flake_ref, &inv)?);
             }
@@ -584,6 +592,18 @@ fn cmd_basecamp_build_portable(
         println!("  {}", out.display());
     }
     Ok(())
+}
+
+/// Swap the attribute suffix on a flake ref: `path:/abs#lgx` → `path:/abs#lgx-portable`.
+/// If the ref's attr differs from `expected`, the ref is returned unchanged
+/// (trust the user; they explicitly pinned a non-default attr via
+/// `basecamp modules --flake <ref>#<other>`).
+fn swap_flake_attr(flake_ref: &str, expected: &str, replacement: &str) -> String {
+    match flake_ref.rsplit_once('#') {
+        Some((base, attr)) if attr == expected => format!("{base}#{replacement}"),
+        Some((_, _)) => flake_ref.to_string(),
+        None => flake_ref.to_string(),
+    }
 }
 
 /// Command-line arguments (after `nix`) plus an optional working-directory
@@ -2588,6 +2608,34 @@ mod tests {
         assert!(
             deps.is_empty(),
             "project-internal deps should not produce external captures"
+        );
+    }
+
+    #[test]
+    fn swap_flake_attr_rewrites_matching_suffix() {
+        assert_eq!(
+            swap_flake_attr("path:/abs/foo#lgx", "lgx", "lgx-portable"),
+            "path:/abs/foo#lgx-portable"
+        );
+        assert_eq!(
+            swap_flake_attr(
+                "github:logos-co/logos-delivery-module/1.0.0#lgx",
+                "lgx",
+                "lgx-portable"
+            ),
+            "github:logos-co/logos-delivery-module/1.0.0#lgx-portable"
+        );
+    }
+
+    #[test]
+    fn swap_flake_attr_leaves_non_matching_attr_untouched() {
+        assert_eq!(
+            swap_flake_attr("path:/abs#lgx-dev", "lgx", "lgx-portable"),
+            "path:/abs#lgx-dev"
+        );
+        assert_eq!(
+            swap_flake_attr("path:/abs", "lgx", "lgx-portable"),
+            "path:/abs"
         );
     }
 

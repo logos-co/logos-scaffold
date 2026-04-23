@@ -318,12 +318,9 @@ struct BasecampModulesArgs {
 
 #[derive(Debug, clap::Args)]
 struct BasecampBuildPortableArgs {
-    /// Path to a pre-built .lgx file (repeatable; must be a file, not a directory)
-    #[arg(long, value_name = "PATH")]
-    path: Vec<PathBuf>,
-    /// Flake reference producing .lgx-portable, e.g. `./sub#lgx-portable` (repeatable)
-    #[arg(long, value_name = "REF")]
-    flake: Vec<String>,
+    // `build-portable` takes no CLI source flags: it attr-swaps
+    // `state.project_sources` (`#lgx` → `#lgx-portable`) and builds that.
+    // `state.dependencies` are ignored — the target AppImage provides them.
 }
 
 #[derive(Debug, clap::Args)]
@@ -467,10 +464,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 BasecampSubcommand::Reset(args) => BasecampAction::Reset {
                     dry_run: args.dry_run,
                 },
-                BasecampSubcommand::BuildPortable(args) => BasecampAction::BuildPortable {
-                    paths: args.path,
-                    flakes: args.flake,
-                },
+                BasecampSubcommand::BuildPortable(_) => BasecampAction::BuildPortable,
                 BasecampSubcommand::Profile(args) => match args.command {
                     BasecampProfileSubcommand::List(args) => {
                         BasecampAction::ProfileList { json: args.json }

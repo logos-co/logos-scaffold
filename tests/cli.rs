@@ -1509,17 +1509,30 @@ fn basecamp_install_outside_project_errors() {
 
 #[test]
 fn basecamp_build_portable_outside_project_errors() {
-    // Also validates that `build-portable` is a registered subcommand and that
-    // `--path` / `--flake` parse; outside-project check runs first.
+    // `build-portable` takes no source-set flags; the outside-project check
+    // runs first regardless.
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "build-portable"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
+fn basecamp_build_portable_rejects_flake_flag() {
+    // `--flake` was removed from build-portable; source set lives in state,
+    // managed by `basecamp modules`. Clap must reject the flag.
     let temp = tempdir().expect("tempdir");
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
         .args(["basecamp", "build-portable", "--flake", ".#lgx-portable"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "This command must be run inside a logos-scaffold project.",
-        ));
+        .stderr(predicate::str::contains("--flake"));
 }
 
 #[test]
@@ -1536,11 +1549,10 @@ fn basecamp_build_portable_rejects_dry_run_flag() {
 }
 
 #[test]
-fn basecamp_build_portable_inside_empty_project_emits_generic_hint() {
-    // Inside a scaffold project with no flake.nix and no --path/--flake args,
-    // the resolver must fail with the generic "no .lgx sources found" hint
-    // pointing at both CLI escape hatches. Validates end-to-end wiring to the
-    // resolver without needing a real nix build.
+fn basecamp_build_portable_inside_empty_project_emits_hint_to_capture_first() {
+    // With state.project_sources empty, build-portable must refuse cleanly
+    // and point the user at `basecamp modules` (it never auto-discovers on
+    // its own; that's modules' job).
     let temp = tempdir().expect("tempdir");
     fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
         .expect("write scaffold.toml");
@@ -1550,8 +1562,7 @@ fn basecamp_build_portable_inside_empty_project_emits_generic_hint() {
         .args(["basecamp", "build-portable"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no `.lgx` sources found"))
-        .stderr(predicate::str::contains("lgx-portable"));
+        .stderr(predicate::str::contains("basecamp modules"));
 }
 
 #[test]
