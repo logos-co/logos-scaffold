@@ -15,7 +15,7 @@ use crate::constants::{
     BASECAMP_XDG_APP_SUBPATH, DEFAULT_BASECAMP_PIN, DEFAULT_LGPM_FLAKE,
 };
 use crate::model::{BasecampSource, BasecampState, Project, RepoRef};
-use crate::process::run_checked;
+use crate::process::{derive_log_path, rotate_logs, run_checked, run_logged, set_print_output};
 use crate::project::{load_project, save_project_config};
 use crate::repo::{sync_repo_to_pin, RepoSyncOptions};
 use crate::state::{read_basecamp_state, write_basecamp_state};
@@ -34,7 +34,9 @@ pub(crate) enum BasecampAction {
     /// first). No source-set flags — use `basecamp modules` to change what's
     /// captured. If state is empty, transparently invokes `modules` in
     /// auto-discover mode and proceeds.
-    Install,
+    Install {
+        print_output: bool,
+    },
     Launch {
         profile: String,
         no_clean: bool,
@@ -68,7 +70,12 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
             flakes,
             show,
         } => cmd_basecamp_modules(project, paths, flakes, show, &NixLgxProbe),
-        BasecampAction::Install => cmd_basecamp_install(project, &NixLgxProbe),
+        BasecampAction::Install { print_output } => {
+            if print_output {
+                set_print_output(true);
+            }
+            cmd_basecamp_install(project, &NixLgxProbe)
+        }
         BasecampAction::Launch { profile, no_clean } => {
             cmd_basecamp_launch(project, profile, no_clean)
         }
@@ -111,8 +118,8 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
     fs::create_dir_all(&pin_artifacts)
         .with_context(|| format!("create {}", pin_artifacts.display()))?;
 
-    let basecamp_bin = build_basecamp_app(&basecamp_repo_path, &pin_artifacts)?;
-    let lgpm_bin = build_lgpm(&pin_artifacts, bc.lgpm_flake.as_str())?;
+    let basecamp_bin = build_basecamp_app(&project.root, &basecamp_repo_path, &pin_artifacts)?;
+    let lgpm_bin = build_lgpm(&project.root, &pin_artifacts, bc.lgpm_flake.as_str())?;
 
     let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
     let seeded = seed_profiles(
@@ -139,37 +146,35 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
     Ok(())
 }
 
-fn build_basecamp_app(repo: &Path, out_dir: &Path) -> DynResult<PathBuf> {
-    println!("building basecamp");
+fn build_basecamp_app(project_root: &Path, repo: &Path, out_dir: &Path) -> DynResult<PathBuf> {
     let link = out_dir.join("app-result");
-    run_checked(
-        Command::new("nix")
-            .current_dir(repo)
-            .arg("build")
-            .arg(".#app")
-            .arg("--out-link")
-            .arg(&link),
-        "nix build .#app (basecamp)",
-    )?;
+    let log = derive_log_path(project_root, "setup-basecamp");
+    let mut cmd = Command::new("nix");
+    cmd.current_dir(repo)
+        .arg("build")
+        .arg(".#app")
+        .arg("--out-link")
+        .arg(&link);
+    run_logged(&mut cmd, "building basecamp", &log)?;
+    rotate_logs(project_root, "setup-basecamp", 10);
     resolve_basecamp_binary(&link)
 }
 
-fn build_lgpm(out_dir: &Path, override_flake: &str) -> DynResult<PathBuf> {
-    println!("building lgpm");
+fn build_lgpm(project_root: &Path, out_dir: &Path, override_flake: &str) -> DynResult<PathBuf> {
     let link = out_dir.join("lgpm-result");
     let flake_ref = if override_flake.is_empty() {
         DEFAULT_LGPM_FLAKE.to_string()
     } else {
         override_flake.to_string()
     };
-    run_checked(
-        Command::new("nix")
-            .arg("build")
-            .arg(&flake_ref)
-            .arg("--out-link")
-            .arg(&link),
-        &format!("nix build {flake_ref} (lgpm)"),
-    )?;
+    let log = derive_log_path(project_root, "setup-lgpm");
+    let mut cmd = Command::new("nix");
+    cmd.arg("build")
+        .arg(&flake_ref)
+        .arg("--out-link")
+        .arg(&link);
+    run_logged(&mut cmd, &format!("building lgpm ({flake_ref})"), &log)?;
+    rotate_logs(project_root, "setup-lgpm", 10);
     Ok(link.join("bin/lgpm"))
 }
 
@@ -1210,7 +1215,7 @@ fn cmd_basecamp_install(project: Project, probe: &dyn LgxFlakeProbe) -> DynResul
         println!("  - {}", flake_ref(src));
     }
 
-    let lgx_files = collect_lgx_files(&ordered, &lgx_cache)?;
+    let lgx_files = collect_lgx_files(&project.root, &ordered, &lgx_cache)?;
     if lgx_files.is_empty() {
         bail!("no .lgx files produced by the captured sources");
     }
@@ -1234,7 +1239,11 @@ fn cmd_basecamp_install(project: Project, probe: &dyn LgxFlakeProbe) -> DynResul
 /// branch from the network. Assumes the developer's layout matches flake input
 /// names to sibling directory names (the scaffold convention for multi-flake
 /// module repos).
-fn collect_lgx_files(sources: &[BasecampSource], lgx_cache: &Path) -> DynResult<Vec<PathBuf>> {
+fn collect_lgx_files(
+    project_root: &Path,
+    sources: &[BasecampSource],
+    lgx_cache: &Path,
+) -> DynResult<Vec<PathBuf>> {
     let mut out = Vec::new();
     for src in sources {
         let overrides = match src {
@@ -1243,7 +1252,12 @@ fn collect_lgx_files(sources: &[BasecampSource], lgx_cache: &Path) -> DynResult<
             }
             BasecampSource::Path(_) => Vec::new(),
         };
-        out.extend(materialize_lgx_files(src, lgx_cache, &overrides)?);
+        out.extend(materialize_lgx_files(
+            project_root,
+            src,
+            lgx_cache,
+            &overrides,
+        )?);
     }
     Ok(out)
 }
@@ -1474,7 +1488,7 @@ fn install_sources_into_profiles(
     let lgx_cache = project_root.join(cache_root).join("basecamp/lgx-links");
     fs::create_dir_all(&lgx_cache).with_context(|| format!("create {}", lgx_cache.display()))?;
     let all: Vec<BasecampSource> = state.all_sources().cloned().collect();
-    let lgx_files = collect_lgx_files(&all, &lgx_cache)?;
+    let lgx_files = collect_lgx_files(project_root, &all, &lgx_cache)?;
     run_lgpm_install(&state.lgpm_bin, profiles_root, profiles, &lgx_files, false)
 }
 
@@ -1500,6 +1514,7 @@ fn lgpm_install_args(
 /// For `Path`, expects a single `.lgx` file — directories are rejected.
 /// For `Flake`, runs `nix build <ref>` and collects `*.lgx` at the build result root.
 fn materialize_lgx_files(
+    project_root: &Path,
     src: &BasecampSource,
     cache: &Path,
     overrides: &[(String, String)],
@@ -1514,14 +1529,15 @@ fn materialize_lgx_files(
         }
         BasecampSource::Flake(flake_ref) => {
             let link = cache.join(flake_out_link_name(flake_ref));
-            println!("building {flake_ref}");
             let mut cmd = Command::new("nix");
             cmd.arg("build").arg(flake_ref);
             for (name, value) in overrides {
                 cmd.arg("--override-input").arg(name).arg(value);
             }
             cmd.arg("--out-link").arg(&link);
-            run_checked(&mut cmd, &format!("nix build {flake_ref}"))?;
+            let log = derive_log_path(project_root, "install");
+            run_logged(&mut cmd, &format!("building {flake_ref}"), &log)?;
+            rotate_logs(project_root, "install", 10);
             list_lgx(&link)
         }
     }

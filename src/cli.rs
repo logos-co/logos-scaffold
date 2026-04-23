@@ -345,6 +345,11 @@ struct BasecampInstallArgs {
     // `install` takes no source-set flags: source set lives in `basecamp.state`
     // and is managed by `basecamp modules`. If state is empty on the first
     // `install`, it transparently invokes `modules` in auto-discover mode.
+    /// Stream nix output directly to the terminal instead of logging to
+    /// `.scaffold/logs/<ts>-install.log` and printing a one-line status.
+    /// Equivalent to `LOGOS_SCAFFOLD_PRINT_OUTPUT=1`. Useful for CI.
+    #[arg(long)]
+    print_output: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -466,7 +471,9 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                     flakes: args.flake,
                     show: args.show,
                 },
-                BasecampSubcommand::Install(_) => BasecampAction::Install,
+                BasecampSubcommand::Install(args) => BasecampAction::Install {
+                    print_output: args.print_output,
+                },
                 BasecampSubcommand::Launch(args) => BasecampAction::Launch {
                     profile: args.profile,
                     no_clean: args.no_clean,
