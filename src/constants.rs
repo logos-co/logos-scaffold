@@ -48,13 +48,12 @@ pub(crate) const BASECAMP_XDG_APP_SUBPATH: &str = "Logos/LogosBasecampDev";
 pub(crate) const DEFAULT_LGPM_FLAKE: &str =
     "github:logos-co/logos-package-manager/e5c25989861f4487c3dc8c7b3bc0062bcbc3221f#cli";
 
-#[allow(dead_code)] // Consumed by the upcoming `basecamp modules` command.
 /// Scaffold-level default pins for runtime companion modules that basecamp
 /// v0.1.1 does NOT preinstall (listed in the Package Manager UI catalog but
 /// shipped as portable-only, so dev basecamp can't load them). When
 /// `basecamp modules` auto-discovery walks a project's `metadata.json` and
 /// finds a dep in this table, it captures the pinned flake ref into
-/// `state.dependencies` so `install` builds and installs the dev variant.
+/// `[basecamp.modules]` so `install` builds and installs the dev variant.
 ///
 /// Keyed by the module name as it appears in `metadata.json` `dependencies`.
 /// Paired conceptually with `DEFAULT_BASECAMP_PIN` — when basecamp bumps, revisit
@@ -86,7 +85,6 @@ pub(crate) const BASECAMP_DEPENDENCIES: &[(&str, &str)] = &[
     // users with unnecessary companion builds.
 ];
 
-#[allow(dead_code)] // Consumed by the upcoming `basecamp modules` command.
 /// Modules that basecamp v0.1.1 preinstalls on first launch (from its
 /// `preinstall/` dir). These must NEVER be captured as dependencies by the
 /// auto-discovery walk — basecamp provides them itself.
