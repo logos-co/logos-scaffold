@@ -13,7 +13,7 @@ use crate::doctor_checks::{
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
 use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo};
-use crate::project::load_project;
+use crate::project::{load_project, resolve_cache_root};
 use crate::state::read_localnet_state;
 use crate::DynResult;
 
@@ -108,6 +108,18 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     });
 
     rows.push(check_standalone_support(&lez));
+
+    let (resolved_cache_root, cache_root_source) = resolve_cache_root(&project)?;
+    rows.push(CheckRow {
+        status: CheckStatus::Pass,
+        name: "cache root".to_string(),
+        detail: format!(
+            "{} (from {})",
+            resolved_cache_root.display(),
+            cache_root_source.label()
+        ),
+        remediation: None,
+    });
 
     rows.push(check_path(
         "sequencer binary",

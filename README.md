@@ -56,8 +56,8 @@ Keep that runbook updated whenever first-class commands, templates, or supported
 All commands below also work under the `lgs` alias (e.g. `lgs setup`).
 
 ```bash
-logos-scaffold create <name> [--vendor-deps] [--lez-path PATH] [--cache-root PATH]
-logos-scaffold new <name> [--vendor-deps] [--lez-path PATH] [--cache-root PATH]
+logos-scaffold create <name> [--vendor-deps] [--lez-path PATH]
+logos-scaffold new <name> [--vendor-deps] [--lez-path PATH]
 logos-scaffold init
 logos-scaffold setup
 logos-scaffold build [project-path]

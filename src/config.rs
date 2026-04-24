@@ -150,7 +150,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         }
     }
 
-    if version.is_empty() || cache_root.is_empty() {
+    if version.is_empty() {
         bail!("invalid scaffold.toml: missing [scaffold] keys");
     }
 
@@ -238,10 +238,25 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 }
 
 pub(crate) fn serialize_config(cfg: &Config) -> String {
+    let cache_root_line = if cfg.cache_root.is_empty() {
+        // Documentation block for the default (unset) case. Keeping it in
+        // scaffold.toml means devs discover the override without reading docs.
+        "# cache_root: directory for scaffold's build/repo caches.\n\
+         # Resolution order when resolving at runtime:\n\
+         #   1. LOGOS_SCAFFOLD_CACHE_ROOT env var\n\
+         #   2. cache_root below (uncomment to pin)\n\
+         #   3. $XDG_CACHE_HOME/logos-scaffold\n\
+         #   4. $HOME/.cache/logos-scaffold\n\
+         # Relative values resolve against this file's directory.\n\
+         # cache_root = \".scaffold/cache\"\n"
+            .to_string()
+    } else {
+        format!("cache_root = \"{}\"\n", escape_toml_string(&cfg.cache_root))
+    };
     let mut out = format!(
-        "[scaffold]\nversion = \"{}\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
+        "[scaffold]\nversion = \"{}\"\n{}\n[repos.lez]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
         escape_toml_string(&cfg.version),
-        escape_toml_string(&cfg.cache_root),
+        cache_root_line,
         escape_toml_string(&cfg.lez.url),
         escape_toml_string(&cfg.lez.source),
         escape_toml_string(&cfg.lez.path),

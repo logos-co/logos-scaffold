@@ -29,8 +29,8 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
         );
     }
 
-    let cache_root = default_cache_root()?;
-    let lez_path = cache_root
+    let (bootstrap_cache, _) = default_cache_root()?;
+    let lez_path = bootstrap_cache
         .join("repos/lez")
         .join(DEFAULT_LEZ_PIN)
         .display()
@@ -38,7 +38,7 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
 
     let cfg = Config {
         version: VERSION.to_string(),
-        cache_root: cache_root.display().to_string(),
+        cache_root: String::new(),
         lez: RepoRef {
             url: LEZ_URL.to_string(),
             source: LEZ_URL.to_string(),
@@ -98,6 +98,29 @@ mod tests {
         assert_eq!(cfg.wallet_home_dir, ".scaffold/wallet");
         assert_eq!(cfg.localnet.port, 3040);
         assert!(cfg.localnet.risc0_dev_mode);
+    }
+
+    #[test]
+    fn init_does_not_persist_cache_root() {
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        cmd_init_at(target, "lgs").expect("init");
+
+        let text = fs::read_to_string(target.join("scaffold.toml")).expect("read scaffold.toml");
+        let has_active_cache_root = text
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains("cache_root"));
+        assert!(
+            !has_active_cache_root,
+            "scaffold.toml should not pin cache_root by default; got:\n{text}"
+        );
+
+        let cfg = parse_config(&text).expect("parse scaffold.toml");
+        assert!(
+            cfg.cache_root.is_empty(),
+            "parsed cache_root should be empty; got {:?}",
+            cfg.cache_root
+        );
     }
 
     #[test]

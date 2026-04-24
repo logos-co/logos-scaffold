@@ -16,7 +16,7 @@ use crate::constants::{
 };
 use crate::model::{BasecampSource, BasecampState, ModuleEntry, ModuleRole, Project, RepoRef};
 use crate::process::{derive_log_path, run_checked, run_logged, set_print_output};
-use crate::project::{load_project, save_project_config};
+use crate::project::{load_project, resolve_cache_root, save_project_config};
 use crate::repo::{sync_repo_to_pin, RepoSyncOptions};
 use crate::state::{read_basecamp_state, write_basecamp_state};
 use crate::DynResult;
@@ -120,7 +120,7 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
         bc.pin = DEFAULT_BASECAMP_PIN.to_string();
     }
 
-    let cache_root = project.root.join(&project.config.cache_root);
+    let (cache_root, _) = resolve_cache_root(&project)?;
     let basecamp_repo_path = cache_root.join("repos/basecamp").join(&bc.pin);
 
     println!("cloning basecamp at {}", &bc.pin);
@@ -272,10 +272,11 @@ fn cmd_basecamp_launch(project: Project, profile: String, no_clean: bool) -> Dyn
         // Re-seed after scrub: scrub removed xdg-data + xdg-cache; put their
         // module/plugin subtrees back before lgpm writes into them.
         seed_profiles(&profiles_root, &[profile.as_str()])?;
+        let (cache_root, _) = resolve_cache_root(&project)?;
         install_sources_into_profiles(
             &project,
             &state,
-            &project.config.cache_root,
+            &cache_root,
             &profiles_root,
             &[profile.clone()],
         )?;
@@ -1470,7 +1471,7 @@ fn cmd_basecamp_install(project: Project, probe: &dyn LgxFlakeProbe) -> DynResul
         project
     };
 
-    let cache_root = project.root.join(&project.config.cache_root);
+    let (cache_root, _) = resolve_cache_root(&project)?;
     let lgx_cache = cache_root.join("basecamp/lgx-links");
     fs::create_dir_all(&lgx_cache).with_context(|| format!("create {}", lgx_cache.display()))?;
 
@@ -1764,7 +1765,7 @@ fn run_lgpm_install(
 fn install_sources_into_profiles(
     project: &Project,
     state: &BasecampState,
-    cache_root: &str,
+    cache_root: &Path,
     profiles_root: &Path,
     profiles: &[String],
 ) -> DynResult<()> {
@@ -1772,7 +1773,7 @@ fn install_sources_into_profiles(
     if ordered.is_empty() {
         return Ok(());
     }
-    let lgx_cache = project.root.join(cache_root).join("basecamp/lgx-links");
+    let lgx_cache = cache_root.join("basecamp/lgx-links");
     fs::create_dir_all(&lgx_cache).with_context(|| format!("create {}", lgx_cache.display()))?;
     let lgx_files = collect_lgx_files(&project.root, &ordered, &lgx_cache)?;
     run_lgpm_install(&state.lgpm_bin, profiles_root, profiles, &lgx_files, false)
