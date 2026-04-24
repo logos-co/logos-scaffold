@@ -3948,6 +3948,48 @@ mod tests {
     }
 
     #[test]
+    fn resolve_manifest_dependencies_tolerates_mutual_cycle() {
+        // Two project sources that each declare the other as a metadata.json
+        // dependency. The resolver must not recurse indefinitely: each module
+        // is already in `captured` as a project source, so the "already keyed"
+        // check silently skips the cross-references. Produces no new deps,
+        // completes in bounded time, no stack overflow.
+        let tmp_a = tempdir().expect("tempdir a");
+        seed_module_metadata(tmp_a.path(), "a_mod", &["b_mod"]);
+        let src_a = BasecampSource::Flake(format!("path:{}#lgx", tmp_a.path().display()));
+
+        let tmp_b = tempdir().expect("tempdir b");
+        seed_module_metadata(tmp_b.path(), "b_mod", &["a_mod"]);
+        let src_b = BasecampSource::Flake(format!("path:{}#lgx", tmp_b.path().display()));
+
+        // Both modules have already been captured as project sources (the
+        // normal capture flow keys them into `captured` before dep walking).
+        let mut captured = std::collections::BTreeMap::new();
+        captured.insert(
+            "a_mod".to_string(),
+            ModuleEntry {
+                flake: format!("path:{}#lgx", tmp_a.path().display()),
+                role: ModuleRole::Project,
+            },
+        );
+        captured.insert(
+            "b_mod".to_string(),
+            ModuleEntry {
+                flake: format!("path:{}#lgx", tmp_b.path().display()),
+                role: ModuleRole::Project,
+            },
+        );
+
+        let new_entries =
+            resolve_manifest_dependencies(&[src_a, src_b], &captured).expect("no error on cycle");
+        assert!(
+            new_entries.is_empty(),
+            "mutual cycle between already-captured projects must not produce dep entries, got {:?}",
+            new_entries
+        );
+    }
+
+    #[test]
     fn github_flake_ref_rev_extracts_middle_segment() {
         assert_eq!(
             github_flake_ref_rev("github:logos-co/logos-delivery-module/1fde1566#lgx"),
