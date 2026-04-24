@@ -1107,20 +1107,17 @@ pub(crate) fn derive_module_name(
                 })?;
                 let json: serde_json::Value = serde_json::from_str(&text)
                     .with_context(|| format!("parse {}", metadata_path.display()))?;
-                let name = json
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "{} missing `name` field required for module identity",
-                            metadata_path.display()
-                        )
-                    })?
-                    .to_string();
+                let raw = json.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{} missing `name` field required for module identity",
+                        metadata_path.display()
+                    )
+                })?;
+                let name = normalize_and_validate_module_name(raw, &metadata_path.display())?;
                 return Ok((name, None));
             }
             // Non-path flake (github:, git+, …) — guess from the ref itself.
-            let inferred = guess_name_from_github_ref(flake_ref).unwrap_or_else(|| {
+            let raw = guess_name_from_github_ref(flake_ref).unwrap_or_else(|| {
                 // Last-ditch: use whatever is after the final '/' before '#'
                 let before_frag = flake_ref
                     .split_once('#')
@@ -1131,6 +1128,7 @@ pub(crate) fn derive_module_name(
                     .unwrap_or(before_frag)
                     .replace('-', "_")
             });
+            let inferred = normalize_and_validate_module_name(&raw, flake_ref)?;
             Ok((
                 inferred.clone(),
                 Some(AssumptionNote {
@@ -1145,17 +1143,16 @@ pub(crate) fn derive_module_name(
             if let Some(metadata_path) = &sibling_metadata {
                 if let Ok(text) = fs::read_to_string(metadata_path) {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(name) = json.get("name").and_then(|v| v.as_str()) {
-                            return Ok((name.to_string(), None));
+                        if let Some(raw) = json.get("name").and_then(|v| v.as_str()) {
+                            let name =
+                                normalize_and_validate_module_name(raw, &metadata_path.display())?;
+                            return Ok((name, None));
                         }
                     }
                 }
             }
-            let stem = pb
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+            let raw = pb.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+            let stem = normalize_and_validate_module_name(raw, p)?;
             Ok((
                 stem.clone(),
                 Some(AssumptionNote {
@@ -1165,6 +1162,33 @@ pub(crate) fn derive_module_name(
             ))
         }
     }
+}
+
+/// Lowercase `raw` and confirm it matches the TOML bare-key charset scaffold
+/// uses for `[basecamp.modules.<name>]` section headers — `[a-z0-9_-]` with a
+/// non-dash first character. Guards against section-header injection through
+/// `metadata.json`'s `name` or a github-slug derivation when that name flows
+/// into the serialized scaffold.toml.
+fn normalize_and_validate_module_name(
+    raw: &str,
+    source: &dyn std::fmt::Display,
+) -> DynResult<String> {
+    let normalized = raw.to_lowercase();
+    let first_ok = normalized
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    let rest_ok = normalized
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !first_ok || !rest_ok {
+        bail!(
+            "invalid module name `{raw}` from {source}: must match [a-z0-9_-] with a \
+             non-dash first character (case is normalized). Edit the source's metadata.json \
+             `name` field, or hand-edit `[basecamp.modules]` in scaffold.toml."
+        );
+    }
+    Ok(normalized)
 }
 
 /// Format the user-facing note printed once per heuristic guess. Names the
@@ -1184,7 +1208,14 @@ fn guess_name_from_github_ref(flake_ref: &str) -> Option<String> {
     let rest = flake_ref.strip_prefix("github:")?;
     let before_frag = rest.split_once('#').map_or(rest, |(b, _)| b);
     let repo = before_frag.split('/').nth(1)?;
-    Some(repo.trim_start_matches("logos-").replace('-', "_"))
+    // Case-insensitive prefix strip so `Logos-Foo` and `logos-foo` normalize
+    // the same way. `normalize_and_validate_module_name` lowercases after.
+    let stripped = if repo.len() >= 6 && repo[..6].eq_ignore_ascii_case("logos-") {
+        &repo[6..]
+    } else {
+        repo
+    };
+    Some(stripped.replace('-', "_"))
 }
 
 /// Read `metadata.json` from a flake source's local filesystem path and
@@ -4139,6 +4170,103 @@ role = "dependency"
         let (name, note) = derive_module_name(&src).expect("derive ok");
         assert_eq!(name, "claw_module");
         assert!(note.is_some());
+    }
+
+    #[test]
+    fn derive_module_name_lowercases_mixed_case_metadata_name() {
+        let tmp = tempdir().expect("tempdir");
+        write_metadata(tmp.path(), "TicTacToe");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let (name, _) = derive_module_name(&src).expect("derive ok");
+        assert_eq!(name, "tictactoe", "name must be lowercased");
+    }
+
+    #[test]
+    fn derive_module_name_lowercases_github_derivation() {
+        let src = BasecampSource::Flake("github:logos-co/Logos-Foo/abc#lgx".to_string());
+        let (name, note) = derive_module_name(&src).expect("derive ok");
+        assert_eq!(name, "foo");
+        assert_eq!(
+            note.expect("note").inferred_name,
+            "foo",
+            "assumption note reports the normalized name, not the raw slug"
+        );
+    }
+
+    #[test]
+    fn derive_module_name_rejects_section_header_injection() {
+        let tmp = tempdir().expect("tempdir");
+        write_metadata(
+            tmp.path(),
+            // Section-header injection attempt — `]`, `[`, `\n` all forbidden.
+            "x]\\n[basecamp.modules.evil",
+        );
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let err = derive_module_name(&src).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("module name") || msg.contains("invalid"),
+            "error should flag the invalid name: {msg}"
+        );
+    }
+
+    #[test]
+    fn derive_module_name_rejects_real_newline_in_metadata_name() {
+        let tmp = tempdir().expect("tempdir");
+        // JSON string with an embedded real newline (serde_json parses \n as newline).
+        fs::write(
+            tmp.path().join("metadata.json"),
+            "{\"name\": \"evil\\n[basecamp.modules.attacker\", \"dependencies\": []}",
+        )
+        .expect("write metadata");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let err = derive_module_name(&src).unwrap_err();
+        assert!(err.to_string().contains("module name"), "{err}");
+    }
+
+    #[test]
+    fn derive_module_name_rejects_path_traversal_name() {
+        let tmp = tempdir().expect("tempdir");
+        write_metadata(tmp.path(), "../evil");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let err = derive_module_name(&src).unwrap_err();
+        assert!(err.to_string().contains("module name"), "{err}");
+    }
+
+    #[test]
+    fn derive_module_name_rejects_path_separator_name() {
+        let tmp = tempdir().expect("tempdir");
+        write_metadata(tmp.path(), "a/b");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let err = derive_module_name(&src).unwrap_err();
+        assert!(err.to_string().contains("module name"), "{err}");
+    }
+
+    #[test]
+    fn derive_module_name_rejects_leading_dash() {
+        let tmp = tempdir().expect("tempdir");
+        write_metadata(tmp.path(), "-x");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let err = derive_module_name(&src).unwrap_err();
+        assert!(err.to_string().contains("module name"), "{err}");
+    }
+
+    #[test]
+    fn derive_module_name_rejects_whitespace_in_name() {
+        let tmp = tempdir().expect("tempdir");
+        write_metadata(tmp.path(), "has space");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let err = derive_module_name(&src).unwrap_err();
+        assert!(err.to_string().contains("module name"), "{err}");
+    }
+
+    #[test]
+    fn derive_module_name_accepts_valid_snake_case() {
+        let tmp = tempdir().expect("tempdir");
+        write_metadata(tmp.path(), "tictactoe_solo_ai");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let (name, _) = derive_module_name(&src).expect("derive ok");
+        assert_eq!(name, "tictactoe_solo_ai");
     }
 
     #[test]
