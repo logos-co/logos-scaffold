@@ -58,8 +58,21 @@ pub(crate) fn set_print_output(enabled: bool) {
 pub(crate) fn print_output_enabled() -> bool {
     PRINT_OUTPUT.load(Ordering::Relaxed)
         || std::env::var_os("LOGOS_SCAFFOLD_PRINT_OUTPUT")
-            .map(|v| v != "0" && v != "")
+            .as_deref()
+            .map(is_truthy_env_value)
             .unwrap_or(false)
+}
+
+/// Accept only `1` or `true` (case-insensitive). Rejects `0`, empty,
+/// `false`, `no`, `yes`, `on`, and anything else — so
+/// `LOGOS_SCAFFOLD_PRINT_OUTPUT=false` doesn't surprisingly enable
+/// streaming.
+fn is_truthy_env_value(v: &std::ffi::OsStr) -> bool {
+    match v.to_str() {
+        Some("1") => true,
+        Some(s) => s.eq_ignore_ascii_case("true"),
+        None => false,
+    }
 }
 
 /// Run a subprocess with captured output and a single progress line. The
@@ -276,7 +289,14 @@ pub(crate) fn rotate_logs(project_root: &Path, command: &str, keep: usize) {
 fn fmt_duration(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {
-        format!("{}.{:01}s", secs, d.subsec_millis() / 100)
+        // Integer half-up rounding to deciseconds: 499ms → 0.5s, 949ms →
+        // 0.9s, 950ms → 1.0s. (Floating-point `{:.1}` is unreliable here —
+        // 0.95f32 actually stores as 0.9499…, formatting to "0.9".)
+        let ms = d.subsec_millis();
+        let deci_total = secs * 10 + (u64::from(ms) + 50) / 100;
+        let whole = deci_total / 10;
+        let deci = deci_total % 10;
+        format!("{whole}.{deci}s")
     } else {
         let m = secs / 60;
         let s = secs % 60;
@@ -339,9 +359,35 @@ mod logged_tests {
     }
 
     #[test]
+    fn fmt_duration_rounds_instead_of_truncating() {
+        // R-S2: previously we floored via `subsec_millis() / 100`, so 499ms
+        // rendered as "0.4s" (floor of 4.99 → 4). Round to nearest decisecond.
+        assert_eq!(fmt_duration(std::time::Duration::from_millis(499)), "0.5s");
+        assert_eq!(fmt_duration(std::time::Duration::from_millis(949)), "0.9s");
+        assert_eq!(fmt_duration(std::time::Duration::from_millis(950)), "1.0s");
+    }
+
+    #[test]
     fn fmt_duration_minutes() {
         assert_eq!(fmt_duration(std::time::Duration::from_secs(65)), "1m05s");
         assert_eq!(fmt_duration(std::time::Duration::from_secs(3601)), "60m01s");
+    }
+
+    #[test]
+    fn is_truthy_env_value_accepts_only_one_and_true() {
+        use std::ffi::OsStr;
+        // R-S1: previously "any non-empty, non-zero value" was truthy, so
+        // `LOGOS_SCAFFOLD_PRINT_OUTPUT=false` surprisingly enabled streaming.
+        assert!(is_truthy_env_value(OsStr::new("1")));
+        assert!(is_truthy_env_value(OsStr::new("true")));
+        assert!(is_truthy_env_value(OsStr::new("TRUE")));
+        assert!(is_truthy_env_value(OsStr::new("True")));
+        assert!(!is_truthy_env_value(OsStr::new("0")));
+        assert!(!is_truthy_env_value(OsStr::new("")));
+        assert!(!is_truthy_env_value(OsStr::new("false")));
+        assert!(!is_truthy_env_value(OsStr::new("no")));
+        assert!(!is_truthy_env_value(OsStr::new("yes")));
+        assert!(!is_truthy_env_value(OsStr::new("on")));
     }
 
     #[test]
