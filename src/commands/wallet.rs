@@ -69,8 +69,8 @@ fn cmd_wallet_list(project: &crate::model::Project, long: bool, json: bool) -> D
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            println!("{}", serde_json::json!({ "error": stderr.trim() }));
-            return Ok(());
+            eprintln!("{}", serde_json::json!({ "error": stderr.trim() }));
+            bail!("wallet account list failed");
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -109,6 +109,17 @@ fn cmd_wallet_proxy(project: &crate::model::Project, args: &[String]) -> DynResu
         .context("wallet passthrough command failed")?;
 
     Ok(())
+}
+
+/// In JSON mode, progress messages go to stderr so stdout stays valid JSON.
+macro_rules! progress {
+    ($json:expr, $($arg:tt)*) => {
+        if $json {
+            eprintln!($($arg)*);
+        } else {
+            println!($($arg)*);
+        }
+    };
 }
 
 fn cmd_wallet_topup(
@@ -202,7 +213,7 @@ fn cmd_wallet_topup(
                 );
             }
             if is_already_initialized_failure(&combined) {
-                println!("wallet topup preflight: destination already initialized; continuing");
+                progress!(json, "wallet topup preflight: destination already initialized; continuing");
             } else {
                 bail!("wallet topup failed while initializing destination wallet: {summary}");
             }
