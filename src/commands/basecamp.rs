@@ -3133,6 +3133,145 @@ mod tests {
         fs::write(dir.join("metadata.json"), metadata.to_string()).unwrap();
     }
 
+    fn write_flake_lock(dir: &Path, text: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("flake.lock"), text).unwrap();
+    }
+
+    #[test]
+    fn resolve_dep_from_project_flake_lock_returns_github_ref_for_plain_input() {
+        let tmp = tempdir().expect("tempdir");
+        write_flake_lock(
+            tmp.path(),
+            r#"{
+  "nodes": {
+    "root": { "inputs": { "delivery_module": "delivery_module" } },
+    "delivery_module": {
+      "locked": {
+        "type": "github",
+        "owner": "logos-co",
+        "repo": "logos-delivery-module",
+        "rev": "abc123"
+      }
+    }
+  }
+}"#,
+        );
+        let got = resolve_dep_from_project_flake_lock(tmp.path(), "delivery_module");
+        assert_eq!(
+            got.as_deref(),
+            Some("github:logos-co/logos-delivery-module/abc123#lgx")
+        );
+    }
+
+    #[test]
+    fn resolve_dep_from_project_flake_lock_returns_none_for_follows_array_input() {
+        // Nix emits `"inputs": { "shared": ["foo", "bar"] }` when a flake
+        // declares `inputs.shared.follows = "foo/bar"`. That value is an
+        // array, not a string node-id — resolver must return None.
+        let tmp = tempdir().expect("tempdir");
+        write_flake_lock(
+            tmp.path(),
+            r#"{
+  "nodes": {
+    "root": { "inputs": { "shared": ["foo", "bar"] } }
+  }
+}"#,
+        );
+        assert_eq!(
+            resolve_dep_from_project_flake_lock(tmp.path(), "shared"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_dep_from_project_flake_lock_returns_none_for_non_github_locked_type() {
+        let tmp = tempdir().expect("tempdir");
+        write_flake_lock(
+            tmp.path(),
+            r#"{
+  "nodes": {
+    "root": { "inputs": { "local_lib": "local_lib" } },
+    "local_lib": {
+      "locked": { "type": "path", "path": "/abs/local_lib" }
+    }
+  }
+}"#,
+        );
+        assert_eq!(
+            resolve_dep_from_project_flake_lock(tmp.path(), "local_lib"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_dep_from_project_flake_lock_returns_none_when_input_missing() {
+        let tmp = tempdir().expect("tempdir");
+        write_flake_lock(
+            tmp.path(),
+            r#"{
+  "nodes": {
+    "root": { "inputs": { "other": "other" } },
+    "other": {
+      "locked": { "type": "github", "owner": "x", "repo": "y", "rev": "z" }
+    }
+  }
+}"#,
+        );
+        assert_eq!(
+            resolve_dep_from_project_flake_lock(tmp.path(), "delivery_module"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_dep_from_project_flake_lock_returns_none_when_file_missing() {
+        let tmp = tempdir().expect("tempdir");
+        // No flake.lock written at all.
+        assert_eq!(
+            resolve_dep_from_project_flake_lock(tmp.path(), "delivery_module"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_dep_from_project_flake_lock_returns_none_for_malformed_json() {
+        let tmp = tempdir().expect("tempdir");
+        write_flake_lock(tmp.path(), "{ this is not valid json");
+        assert_eq!(
+            resolve_dep_from_project_flake_lock(tmp.path(), "delivery_module"),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_dep_from_project_flake_lock_follows_suffixed_node_id() {
+        // When two inputs share a name, nix renames the second to `<name>_2`
+        // and the root inputs entry points at that suffixed node-id. The
+        // declared input name (the root inputs key) is still the plain name.
+        let tmp = tempdir().expect("tempdir");
+        write_flake_lock(
+            tmp.path(),
+            r#"{
+  "nodes": {
+    "root": { "inputs": { "delivery_module": "delivery_module_2" } },
+    "delivery_module_2": {
+      "locked": {
+        "type": "github",
+        "owner": "logos-co",
+        "repo": "logos-delivery-module",
+        "rev": "def456"
+      }
+    }
+  }
+}"#,
+        );
+        assert_eq!(
+            resolve_dep_from_project_flake_lock(tmp.path(), "delivery_module").as_deref(),
+            Some("github:logos-co/logos-delivery-module/def456#lgx")
+        );
+    }
+
     #[test]
     fn read_source_metadata_dependencies_parses_array() {
         let tmp = tempdir().expect("tempdir");
