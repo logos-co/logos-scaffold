@@ -36,6 +36,23 @@ pub(crate) struct Config {
     pub(crate) basecamp: Option<BasecampConfig>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ModuleRole {
+    /// Module the developer is building and shipping. `build-portable` operates
+    /// only on these (attr-swap to `#lgx-portable`).
+    Project,
+    /// Runtime companion resolved from another source's `metadata.json`
+    /// `dependencies` array or declared explicitly by the developer.
+    /// `build-portable` skips these — the target AppImage provides its own.
+    Dependency,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModuleEntry {
+    pub(crate) flake: String,
+    pub(crate) role: ModuleRole,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct BasecampConfig {
     pub(crate) pin: String,
@@ -43,13 +60,15 @@ pub(crate) struct BasecampConfig {
     pub(crate) lgpm_flake: String,
     pub(crate) port_base: u16,
     pub(crate) port_stride: u16,
-    /// Per-project overrides for runtime companion dependency pins. Keyed by
-    /// module name (matches `metadata.json` `dependencies` entries). Takes
-    /// precedence over scaffold-level `BASECAMP_DEPENDENCIES` defaults.
-    ///
-    /// Parsed from `[basecamp.dependencies]` in `scaffold.toml`. Empty when
-    /// omitted. Insertion order is stable to keep diagnostics reproducible
-    /// (serialized back sorted by key on write).
+    /// Captured module set keyed by `module_name` (matches `metadata.json`
+    /// `name` for the declaring source, and `dependencies` entries for
+    /// anything that references it). Parsed from `[basecamp.modules.<name>]`
+    /// sub-sections. Sole source of truth for what `install` / `launch` build.
+    pub(crate) modules: std::collections::BTreeMap<String, ModuleEntry>,
+    /// Legacy per-project dep-override table. Parsed from
+    /// `[basecamp.dependencies]`. Being phased out in favour of
+    /// `[basecamp.modules.<name>]` entries with `role = "dependency"`; kept
+    /// during the v0.4 transition until the dep-resolver migrates off it.
     pub(crate) dependencies: std::collections::BTreeMap<String, String>,
 }
 
@@ -61,6 +80,7 @@ impl Default for BasecampConfig {
             lgpm_flake: String::new(),
             port_base: 60000,
             port_stride: 10,
+            modules: std::collections::BTreeMap::new(),
             dependencies: std::collections::BTreeMap::new(),
         }
     }
