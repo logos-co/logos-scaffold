@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{anyhow, bail};
 
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
-use crate::model::{BasecampSource, BasecampState, LocalnetState};
+use crate::model::{BasecampState, LocalnetState};
 use crate::DynResult;
 
 pub(crate) fn write_text(path: &Path, text: &str) -> DynResult<()> {
@@ -50,18 +50,11 @@ pub(crate) fn write_basecamp_state(path: &Path, state: &BasecampState) -> DynRes
     check_state_value("pin", &state.pin)?;
     check_state_value("basecamp_bin", &state.basecamp_bin)?;
     check_state_value("lgpm_bin", &state.lgpm_bin)?;
-    for source in state
-        .project_sources
-        .iter()
-        .chain(state.dependencies.iter())
-    {
-        let (key, value) = match source {
-            BasecampSource::Path(p) => ("project:path", p.as_str()),
-            BasecampSource::Flake(f) => ("project:flake", f.as_str()),
-        };
-        check_state_value(key, value)?;
-    }
 
+    // Source lines are no longer part of the state file — the captured module
+    // set lives in `[basecamp.modules.*]` in scaffold.toml (v0.4). Any
+    // residual `project_sources` / `dependencies` values on the struct are
+    // intentionally ignored here; the fields are removed in Phase 3.
     let mut content = String::new();
     if !state.pin.is_empty() {
         content.push_str(&format!("pin={}\n", state.pin));
@@ -71,18 +64,6 @@ pub(crate) fn write_basecamp_state(path: &Path, state: &BasecampState) -> DynRes
     }
     if !state.lgpm_bin.is_empty() {
         content.push_str(&format!("lgpm_bin={}\n", state.lgpm_bin));
-    }
-    for source in &state.project_sources {
-        match source {
-            BasecampSource::Path(p) => content.push_str(&format!("project:path={p}\n")),
-            BasecampSource::Flake(f) => content.push_str(&format!("project:flake={f}\n")),
-        }
-    }
-    for source in &state.dependencies {
-        match source {
-            BasecampSource::Path(p) => content.push_str(&format!("dep:path={p}\n")),
-            BasecampSource::Flake(f) => content.push_str(&format!("dep:flake={f}\n")),
-        }
     }
     write_text(path, &content)
 }
@@ -114,33 +95,10 @@ pub(crate) fn read_basecamp_state(path: &Path) -> DynResult<BasecampState> {
             state.basecamp_bin = rest.to_string();
         } else if let Some(rest) = line.strip_prefix("lgpm_bin=") {
             state.lgpm_bin = rest.to_string();
-        } else if let Some(rest) = line.strip_prefix("project:path=") {
-            state
-                .project_sources
-                .push(BasecampSource::Path(rest.to_string()));
-        } else if let Some(rest) = line.strip_prefix("project:flake=") {
-            state
-                .project_sources
-                .push(BasecampSource::Flake(rest.to_string()));
-        } else if let Some(rest) = line.strip_prefix("dep:path=") {
-            state
-                .dependencies
-                .push(BasecampSource::Path(rest.to_string()));
-        } else if let Some(rest) = line.strip_prefix("dep:flake=") {
-            state
-                .dependencies
-                .push(BasecampSource::Flake(rest.to_string()));
-        } else if let Some(rest) = line.strip_prefix("source:path=") {
-            // Legacy key from pre-split state; migrate into project_sources.
-            state
-                .project_sources
-                .push(BasecampSource::Path(rest.to_string()));
-        } else if let Some(rest) = line.strip_prefix("source:flake=") {
-            // Legacy key from pre-split state; migrate into project_sources.
-            state
-                .project_sources
-                .push(BasecampSource::Flake(rest.to_string()));
         }
+        // Any other key (legacy `project:*`, `dep:*`, `source:*` lines from
+        // in-PR iterations) is silently ignored. The captured module set is
+        // now sourced from scaffold.toml's `[basecamp.modules.*]` section.
     }
 
     Ok(state)
@@ -162,10 +120,11 @@ pub(crate) fn prepare_wallet_home(lez_repo: &Path, wallet_home: &Path) -> DynRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::BasecampSource;
     use tempfile::tempdir;
 
     #[test]
-    fn basecamp_state_roundtrips_all_fields() {
+    fn basecamp_state_roundtrips_pin_artifacts() {
         let tmp = tempdir().expect("tempdir");
         let path = tmp.path().join("basecamp.state");
 
@@ -173,13 +132,8 @@ mod tests {
             pin: "deadbeef".to_string(),
             basecamp_bin: "/nix/store/abc/bin/basecamp".to_string(),
             lgpm_bin: "/nix/store/def/bin/lgpm".to_string(),
-            project_sources: vec![
-                BasecampSource::Flake("path:/abs/tictactoe#lgx".to_string()),
-                BasecampSource::Path("/abs/path/to/foo.lgx".to_string()),
-            ],
-            dependencies: vec![BasecampSource::Flake(
-                "github:logos-co/logos-delivery-module/1.0.0#lgx".to_string(),
-            )],
+            project_sources: vec![],
+            dependencies: vec![],
         };
 
         write_basecamp_state(&path, &state).expect("write");
@@ -188,12 +142,10 @@ mod tests {
         assert_eq!(loaded.pin, state.pin);
         assert_eq!(loaded.basecamp_bin, state.basecamp_bin);
         assert_eq!(loaded.lgpm_bin, state.lgpm_bin);
-        assert_eq!(loaded.project_sources, state.project_sources);
-        assert_eq!(loaded.dependencies, state.dependencies);
     }
 
     #[test]
-    fn basecamp_state_handles_empty_sources_and_partial_fields() {
+    fn basecamp_state_empty_writes_expected_minimum() {
         let tmp = tempdir().expect("tempdir");
         let path = tmp.path().join("basecamp.state");
 
@@ -207,69 +159,23 @@ mod tests {
 
         write_basecamp_state(&path, &state).expect("write");
         let content = fs::read_to_string(&path).expect("read raw");
-        assert!(!content.contains("basecamp_bin="));
-        assert!(!content.contains("project:"));
-        assert!(!content.contains("dep:"));
+        assert_eq!(content, "pin=sha1\n");
 
         let loaded = read_basecamp_state(&path).expect("read");
         assert_eq!(loaded.pin, "sha1");
-        assert!(loaded.project_sources.is_empty());
-        assert!(loaded.dependencies.is_empty());
     }
 
     #[test]
-    fn basecamp_state_rejects_newline_in_source_value() {
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("basecamp.state");
-        let state = BasecampState {
-            pin: "sha1".to_string(),
-            basecamp_bin: "/bin/bc".to_string(),
-            lgpm_bin: "/bin/lgpm".to_string(),
-            project_sources: vec![BasecampSource::Flake("a\nb#lgx".to_string())],
-            dependencies: vec![],
-        };
-        let err = write_basecamp_state(&path, &state).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("newline") && msg.contains("project:flake"),
-            "expected newline-rejection error, got: {msg}"
-        );
-        assert!(
-            !path.exists(),
-            "state file must not be written on validation failure"
-        );
-    }
-
-    #[test]
-    fn basecamp_state_accepts_legacy_source_keys_as_project_sources() {
-        // Pre-split state files have `source:flake=` / `source:path=`.
-        // Preserve backward-compat: treat them as project_sources on read.
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("basecamp.state");
-        fs::write(
-            &path,
-            "pin=abc\nsource:flake=path:/p#lgx\nsource:path=/m.lgx\n",
-        )
-        .unwrap();
-        let loaded = read_basecamp_state(&path).expect("read legacy");
-        assert_eq!(loaded.pin, "abc");
-        assert_eq!(
-            loaded.project_sources,
-            vec![
-                BasecampSource::Flake("path:/p#lgx".to_string()),
-                BasecampSource::Path("/m.lgx".to_string()),
-            ]
-        );
-        assert!(loaded.dependencies.is_empty());
-    }
-
-    #[test]
-    fn basecamp_state_separates_project_and_dep_lines() {
+    fn basecamp_state_writer_omits_source_lines_even_when_struct_has_them() {
+        // Source lines moved out of basecamp.state into [basecamp.modules] in
+        // scaffold.toml (v0.4). The writer ignores any residual struct fields
+        // during the Phase 2 transition; the fields themselves are removed
+        // in Phase 3 when readers migrate.
         let tmp = tempdir().expect("tempdir");
         let path = tmp.path().join("basecamp.state");
         let state = BasecampState {
             pin: "abc".to_string(),
-            basecamp_bin: String::new(),
+            basecamp_bin: "/bin/bc".to_string(),
             lgpm_bin: String::new(),
             project_sources: vec![BasecampSource::Flake("path:/p#lgx".to_string())],
             dependencies: vec![BasecampSource::Flake(
@@ -278,7 +184,30 @@ mod tests {
         };
         write_basecamp_state(&path, &state).expect("write");
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("project:flake=path:/p#lgx"));
-        assert!(content.contains("dep:flake=github:logos-co/logos-delivery-module/1.0.0#lgx"));
+        assert!(
+            !content.contains("project:") && !content.contains("dep:"),
+            "writer must not emit source lines, got:\n{content}"
+        );
+    }
+
+    #[test]
+    fn basecamp_state_reader_ignores_legacy_source_lines() {
+        // State files written by earlier in-PR iterations carried
+        // `project:flake=` / `dep:flake=` / `source:flake=` lines. Reader
+        // must tolerate (ignore) them rather than error out, so an in-flight
+        // working copy upgrading past this commit doesn't see a crash.
+        let tmp = tempdir().expect("tempdir");
+        let path = tmp.path().join("basecamp.state");
+        fs::write(
+            &path,
+            "pin=abc\nproject:flake=path:/p#lgx\ndep:flake=github:x/y/z#lgx\nsource:path=/m.lgx\n",
+        )
+        .unwrap();
+        let loaded = read_basecamp_state(&path).expect("read legacy");
+        assert_eq!(loaded.pin, "abc");
+        // Phase 2 keeps the struct fields; they are populated empty because
+        // the reader no longer parses source lines.
+        assert!(loaded.project_sources.is_empty());
+        assert!(loaded.dependencies.is_empty());
     }
 }
