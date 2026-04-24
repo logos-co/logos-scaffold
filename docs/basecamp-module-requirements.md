@@ -16,23 +16,49 @@ This is the contract between a module project and `logos-scaffold basecamp {setu
    - If a flake only exposes `packages.<system>.lgx-portable`, the resolver fails explicitly with a hint — it will not silently fall back. Expose `lgx` or pass `--flake <ref>#lgx-portable` on the command line to opt in.
    - If no flake exposes any `.lgx` attribute, the resolver fails with a generic hint pointing at `--path` / `--flake`.
 
-## Where dependency pins come from
+## The captured module set — `[basecamp.modules]` in scaffold.toml
 
-`basecamp modules` (the sole writer of `basecamp.state`) walks each project source's `metadata.json` for `dependencies: [...]`, and for each declared dep name it **resolves a pin through a fallback chain** (first hit wins):
+The set of modules that `basecamp install` / `launch` / `build-portable` will act on lives in `scaffold.toml` as one sub-section per module, keyed by `module_name`:
 
-1. **`[basecamp.dependencies]` in `scaffold.toml`.** Explicit per-project override, keyed by module name. The authoritative knob when you know exactly which rev you want.
-   ```toml
-   [basecamp.dependencies]
-   delivery_module = "github:logos-co/logos-delivery-module/1fde1566291fe062b98255003b9166b0261c6081#lgx"
-   ```
-2. **The source's own `flake.lock`.** If the project source that declared the dep also lists an input of the same name in its flake, scaffold reads the locked `github:<owner>/<repo>/<rev>` and rewrites it to `#lgx`. This is the *preferred* path for most projects: whatever rev the module is already building against is, by definition, the rev its IPC clients expect at runtime. Scaffold doesn't second-guess it.
-3. **Scaffold-level `BASECAMP_DEPENDENCIES` default.** A hardcoded best-guess table keyed by module name (currently only `delivery_module`). This is the last-resort safety net for projects that don't carry the dep as a flake input — useful for minimal / learning projects, but prone to going stale as upstream moves.
-4. **Basecamp preinstalls.** Module names basecamp itself ships in its `preinstall/` dir (`capability_module`, `package_manager`, `counter`, `webview_app`, and their `_ui` siblings) are skipped silently — basecamp provides them.
-5. **Unknown — warn and skip.** If nothing resolves the name, scaffold prints a warning that names the declared dep and points you at `[basecamp.dependencies]` or `basecamp modules --flake` to supply it explicitly.
+```toml
+[basecamp.modules.tictactoe]
+flake = "path:/abs/tictactoe#lgx"
+role = "project"
 
-Every captured entry is annotated in the `basecamp modules` output so you can always see *where* a given pin came from — e.g. `[dep `delivery_module` via path:/abs/tictactoe#lgx, pinned by /abs/tictactoe/flake.lock]`. If the annotation surprises you, check (in order) your `scaffold.toml`, the source flake's `flake.lock`, and the scaffold defaults.
+[basecamp.modules.delivery_module]
+flake = "github:logos-co/logos-delivery-module/1fde1566291fe062b98255003b9166b0261c6081#lgx"
+role = "dependency"
+```
 
-Implication for module authors: **declare each runtime dep as a flake input in your module's `flake.nix`**, even if your module doesn't technically build-link against it. It's the cleanest way to give scaffold an authoritative pin and keeps `flake.lock` in sync with what you're actually coding against.
+- **`module_name` is the key** and matches the identifier used in other sources' `metadata.json` `dependencies` array. For `tictactoe_ui`'s manifest to declare `"dependencies": ["tictactoe", "delivery_module"]`, both names must appear as keys here.
+- **`role = "project"`** — a module the developer is building locally. `build-portable` attr-swaps these to `#lgx-portable`.
+- **`role = "dependency"`** — a runtime companion. `install` / `launch` load them into the profile; `build-portable` skips them (the target AppImage provides its own).
+
+`basecamp modules` is the sole writer of this section. The file stays human-editable — if you disagree with a generated entry, edit it directly.
+
+### How entries get populated
+
+On every `basecamp modules` run (explicit `--flake` / `--path` args or auto-discovery), scaffold derives `module_name` for each source:
+
+- **`path:` flake refs** → read `<path>/metadata.json.name`. Exact, no guessing.
+- **`.lgx` file paths** → read the sibling `metadata.json` if present; otherwise fall back to the filename stem and print a one-line assumption note.
+- **`github:` / other remote refs** → derive from the repo slug (strip `logos-` prefix, `-` → `_`) and print a one-line assumption note:
+  ```
+  note: flake `github:logos-co/logos-storage-module/abc#lgx` — assumed module_name = `storage_module`. If wrong, edit `[basecamp.modules]` in scaffold.toml.
+  ```
+  Edit the TOML if the guess is wrong — `basecamp modules` is **idempotent**: existing keys are never overwritten on re-run.
+
+Then for each project source's declared `dependencies`, scaffold resolves a flake ref for any name not already in `[basecamp.modules]`:
+
+1. **Already keyed in `[basecamp.modules]`** (any role) → no-op. Whatever you have wins.
+2. **Basecamp preinstalls** (`capability_module`, `package_manager`, `counter`, `webview_app`, and their `_ui` siblings) → silent skip, basecamp ships them.
+3. **Declaring source's own `flake.lock`** → if the project source declares an input with the same name, scaffold reads the locked `github:<owner>/<repo>/<rev>` and rewrites to `#lgx`. Preferred path for most projects: whatever rev the module is already building against is, by definition, the rev its IPC clients expect at runtime.
+4. **Scaffold-default `BASECAMP_DEPENDENCIES`** → a hardcoded table keyed by module name (currently only `delivery_module`). Last-resort safety net for projects that don't carry the dep as a flake input.
+5. **Unresolved** → `basecamp modules` **fails with a targeted error** naming the dep and both user-side fixes (capture as a project source, or add an explicit `[basecamp.modules.<name>]` entry with `role = "dependency"`). No silent drop.
+
+Resolved deps are inserted into `[basecamp.modules]` with `role = "dependency"`. Re-running `basecamp modules` against the same sources is byte-identical.
+
+Implication for module authors: **declare each runtime dep as a flake input in your module's `flake.nix`**, even if your module doesn't technically build-link against it. It's the cleanest way to give scaffold an authoritative pin (step 3 above) without hitting the scaffold default.
 
 ## Conventions that matter for local development
 
@@ -88,18 +114,28 @@ This is a limitation of the current tutorial-era `logos-module-builder` scaffold
 
 ## Explicit escape hatch
 
-If the resolver doesn't do what you want, pass explicit sources to `basecamp install`:
+If auto-discovery doesn't capture what you want, name the sources explicitly on `basecamp modules`:
 
 ```bash
-# Pre-built .lgx files
-logos-scaffold basecamp install --path ./dist/my-module.lgx
+# Pre-built .lgx file
+logos-scaffold basecamp modules --path ./dist/my-module.lgx
 
-# Arbitrary flake refs (including portable variant, remote refs, non-standard attrs)
-logos-scaffold basecamp install --flake .#lgx-portable
-logos-scaffold basecamp install --flake github:me/my-module#lgx
+# Arbitrary flake refs (remote refs, non-standard attrs)
+logos-scaffold basecamp modules --flake github:me/my-module#lgx
+logos-scaffold basecamp modules --flake .#some-alt-attr
 ```
 
-Explicit sources win over auto-discovery entirely — no root or sub-flake probing happens when `--path` or `--flake` is present.
+Explicit sources skip root / sub-flake probing entirely. The entries land in `[basecamp.modules]` exactly as specified, `role = "project"`; re-run `basecamp modules` with different args to replace or extend. `basecamp install` then replays whatever the table captures.
+
+To override a single dependency pin without capturing it as a project source, edit `scaffold.toml` directly:
+
+```toml
+[basecamp.modules.delivery_module]
+flake = "github:myfork/logos-delivery-module/abc123#lgx"
+role = "dependency"
+```
+
+`basecamp modules` preserves the entry on every subsequent run — user intent wins over derived pins.
 
 ## AppImage testing via `build-portable`
 
