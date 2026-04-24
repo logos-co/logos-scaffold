@@ -1598,7 +1598,6 @@ fn basecamp_help_carries_docs_breadcrumb() {
         "modules",
         "install",
         "launch",
-        "reset",
         "build-portable",
         "doctor",
     ] {
@@ -1716,128 +1715,19 @@ fn basecamp_build_portable_inside_empty_project_emits_hint_to_capture_first() {
 }
 
 #[test]
-fn basecamp_reset_outside_project_errors() {
-    // Also validates that `reset` is a registered subcommand and `--dry-run`
-    // parses; outside-project check runs before the handler so the stub vs.
-    // implemented distinction doesn't matter here.
-    let temp = tempdir().expect("tempdir");
+fn basecamp_reset_subcommand_does_not_exist() {
+    // `basecamp reset` was removed pending a correctness rework: its profile
+    // wipe could segfault an externally-launched basecamp, and the
+    // capture-clear step was redundant with `install` overriding modules.
+    // If someone re-adds it, they should land the safety fixes at the same
+    // time (see prior branch for prior implementation and spec notes).
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
-        .current_dir(temp.path())
-        .args(["basecamp", "reset", "--dry-run"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "This command must be run inside a logos-scaffold project.",
-        ));
-}
-
-#[test]
-fn basecamp_reset_before_setup_emits_hint() {
-    let temp = tempdir().expect("tempdir");
-    fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
-        .expect("write scaffold.toml");
-
-    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
-        .current_dir(temp.path())
         .args(["basecamp", "reset"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "basecamp not set up yet; run: logos-scaffold basecamp setup",
+        .stderr(predicate::str::contains("unrecognized subcommand").or(
+            predicate::str::contains("error: unrecognized").or(predicate::str::contains("Usage:")),
         ));
-}
-
-#[cfg(unix)]
-#[test]
-fn basecamp_reset_dry_run_is_non_destructive() {
-    // Seed a project as if `setup` + `install` had already run: scaffold.toml,
-    // basecamp.state with populated sources, and a sentinel file under one
-    // profile's xdg-data tree. `reset --dry-run` must leave all of it alone.
-    let temp = tempdir().expect("tempdir");
-    let root = temp.path();
-    fs::write(root.join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML).expect("write scaffold.toml");
-
-    let state_dir = root.join(".scaffold/state");
-    fs::create_dir_all(&state_dir).unwrap();
-    fs::write(
-        state_dir.join("basecamp.state"),
-        "pin=deadbeef\nbasecamp_bin=/nonexistent/bin/basecamp\nlgpm_bin=/nonexistent/bin/lgpm\nsource:flake=./sub#lgx\n",
-    )
-    .expect("seed basecamp.state");
-
-    let sentinel = root.join(".scaffold/basecamp/profiles/alice/xdg-data/sentinel.txt");
-    fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
-    fs::write(&sentinel, b"do-not-delete-on-dry-run").unwrap();
-
-    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
-        .current_dir(root)
-        .args(["basecamp", "reset", "--dry-run"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("reset plan:"))
-        .stdout(predicate::str::contains("rm -rf"));
-
-    assert!(sentinel.exists(), "dry-run must not delete profile data");
-    let state_text = fs::read_to_string(state_dir.join("basecamp.state")).unwrap();
-    assert!(
-        state_text.contains("source:flake=./sub#lgx"),
-        "dry-run must not clear recorded sources"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn basecamp_reset_wipes_profiles_and_clears_captured_modules() {
-    let temp = tempdir().expect("tempdir");
-    let root = temp.path();
-    let scaffold_with_modules = format!(
-        "{MINIMAL_SCAFFOLD_TOML}\n\
-         [basecamp.modules.tictactoe]\nflake = \"path:/abs/tictactoe#lgx\"\nrole = \"project\"\n\
-         [basecamp.modules.delivery_module]\nflake = \"github:logos-co/logos-delivery-module/abc#lgx\"\nrole = \"dependency\"\n"
-    );
-    fs::write(root.join("scaffold.toml"), &scaffold_with_modules).expect("write scaffold.toml");
-
-    let state_dir = root.join(".scaffold/state");
-    fs::create_dir_all(&state_dir).unwrap();
-    fs::write(
-        state_dir.join("basecamp.state"),
-        "pin=deadbeef\nbasecamp_bin=/nonexistent/bin/basecamp\nlgpm_bin=/nonexistent/bin/lgpm\n",
-    )
-    .expect("seed basecamp.state");
-
-    let junk = root.join(".scaffold/basecamp/profiles/alice/xdg-data/stale-module.bin");
-    fs::create_dir_all(junk.parent().unwrap()).unwrap();
-    fs::write(&junk, b"old module").unwrap();
-
-    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
-        .current_dir(root)
-        .args(["basecamp", "reset"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("reset complete"));
-
-    assert!(!junk.exists(), "stale module file must be gone");
-
-    let alice_dir = root.join(".scaffold/basecamp/profiles/alice");
-    let bob_dir = root.join(".scaffold/basecamp/profiles/bob");
-    assert!(alice_dir.is_dir(), "alice must be re-seeded");
-    assert!(bob_dir.is_dir(), "bob must be re-seeded");
-
-    let scaffold_text = fs::read_to_string(root.join("scaffold.toml")).unwrap();
-    assert!(
-        !scaffold_text.contains("[basecamp.modules."),
-        "captured modules must be cleared from scaffold.toml, got:\n{scaffold_text}"
-    );
-
-    let state_text = fs::read_to_string(state_dir.join("basecamp.state")).unwrap();
-    assert!(
-        state_text.contains("basecamp_bin=/nonexistent/bin/basecamp"),
-        "basecamp_bin must be preserved, got:\n{state_text}"
-    );
-    assert!(
-        state_text.contains("lgpm_bin=/nonexistent/bin/lgpm"),
-        "lgpm_bin must be preserved, got:\n{state_text}"
-    );
 }
 
 #[test]

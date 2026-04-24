@@ -332,10 +332,6 @@ enum BasecampSubcommand {
     )]
     Launch(BasecampLaunchArgs),
     #[command(
-        about = "Kill any live basecamp, wipe profiles, clear recorded sources, re-seed. See `basecamp docs` for project requirements."
-    )]
-    Reset(BasecampResetArgs),
-    #[command(
         name = "build-portable",
         about = "Build the project's .#lgx-portable artefacts for hand-loading into a basecamp AppImage. See `basecamp docs` for project requirements."
     )]
@@ -374,13 +370,6 @@ struct BasecampBuildPortableArgs {
     // `build-portable` takes no CLI source flags: it attr-swaps
     // `state.project_sources` (`#lgx` → `#lgx-portable`) and builds that.
     // `state.dependencies` are ignored — the target AppImage provides them.
-}
-
-#[derive(Debug, clap::Args)]
-struct BasecampResetArgs {
-    /// Print the action plan but do not kill, delete, or write anything
-    #[arg(long)]
-    dry_run: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -501,9 +490,6 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 BasecampSubcommand::Launch(args) => BasecampAction::Launch {
                     profile: args.profile,
                     no_clean: args.no_clean,
-                },
-                BasecampSubcommand::Reset(args) => BasecampAction::Reset {
-                    dry_run: args.dry_run,
                 },
                 BasecampSubcommand::BuildPortable(_) => BasecampAction::BuildPortable,
                 BasecampSubcommand::Doctor(args) => BasecampAction::Doctor { json: args.json },

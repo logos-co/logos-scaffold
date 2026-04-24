@@ -34,17 +34,6 @@ wallet interaction settings used by deploy and interact commands.
 Env files are familiar and automation-friendly,
 but require strict handling to avoid credential leakage.
 
-## Reset is Full Teardown with Re-Seed
-
-Reverting a project's basecamp state cleanly needs to be a single command rather than
-a sequence of shell tricks. `basecamp reset` kills any live basecamp, removes the
-entire `.scaffold/basecamp/profiles/` tree, clears recorded sources from
-`basecamp.state`, and re-seeds empty `alice`/`bob` profiles in the same run. Pinned
-basecamp + lgpm binaries are preserved so the expensive `setup` step is not re-run.
-Re-seeding in-line avoids a two-command reset+setup dance; the tradeoff is that
-`reset` always leaves the project in the specific "seeded, no modules" state, not a
-pure teardown.
-
 ## Portable Artefact Build is Separate from Install
 
 The `.#lgx-portable` output exists to load into a released basecamp AppImage — a

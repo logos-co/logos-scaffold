@@ -41,9 +41,6 @@ pub(crate) enum BasecampAction {
         profile: String,
         no_clean: bool,
     },
-    Reset {
-        dry_run: bool,
-    },
     /// Attr-swap replay on `state.project_sources` only (`#lgx` →
     /// `#lgx-portable`). `state.dependencies` is ignored — the target AppImage
     /// provides those. No CLI source flags.
@@ -87,7 +84,6 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
         BasecampAction::Launch { profile, no_clean } => {
             cmd_basecamp_launch(project, profile, no_clean)
         }
-        BasecampAction::Reset { dry_run } => cmd_basecamp_reset(project, dry_run),
         BasecampAction::BuildPortable => cmd_basecamp_build_portable(project),
         BasecampAction::Doctor { json } => cmd_basecamp_doctor(project, json),
         // Handled above via early return (project-context-free).
@@ -884,122 +880,6 @@ fn run_build_portable_nix(
         }
     }
     Ok(results)
-}
-
-fn cmd_basecamp_reset(mut project: Project, dry_run: bool) -> DynResult<()> {
-    let state_path = project.root.join(".scaffold/state/basecamp.state");
-    let state = match read_basecamp_state(&state_path).ok() {
-        Some(s) if !s.basecamp_bin.is_empty() => s,
-        _ => bail!("basecamp not set up yet; run: logos-scaffold basecamp setup"),
-    };
-
-    let expected_comm = basecamp_comm_name(&state.basecamp_bin);
-    let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
-    let seed_names = [BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB];
-
-    let mut live: Vec<(String, u32, String)> = Vec::new();
-    for name in &seed_names {
-        let launch_state = profiles_root.join(name).join("launch.state");
-        if let Some(pid) = read_launch_pid(&launch_state) {
-            if pid_comm_matches(pid, &expected_comm) {
-                live.push(((*name).to_string(), pid, expected_comm.clone()));
-            }
-        }
-    }
-
-    let module_count = total_captured_modules(&project);
-    for line in plan_reset_lines(&live, &profiles_root, module_count, &seed_names) {
-        println!("{line}");
-    }
-
-    if dry_run {
-        return Ok(());
-    }
-
-    // Log each step so a mid-flight failure is legible: the user can tell
-    // from stdout exactly which stage completed and which errored.
-    if !live.is_empty() {
-        println!("killing {} live basecamp process(es)", live.len());
-        for (_profile, pid, comm) in &live {
-            kill_process_tree(*pid, comm);
-        }
-    }
-    println!("wiping {}", profiles_root.display());
-    remove_profiles_root(&project.root)?;
-    println!("clearing captured modules");
-    if let Some(bc) = project.config.basecamp.as_mut() {
-        bc.modules.clear();
-    }
-    save_project_config(&project)?;
-    println!("re-seeding profiles: {}", seed_names.join(", "));
-    seed_profiles(&profiles_root, &seed_names)?;
-
-    println!("reset complete; run `basecamp install` to install modules");
-    Ok(())
-}
-
-fn plan_reset_lines(
-    live: &[(String, u32, String)],
-    profiles_root: &Path,
-    module_count: usize,
-    seed_profile_names: &[&str],
-) -> Vec<String> {
-    let mut out = vec!["reset plan:".to_string()];
-    if live.is_empty() {
-        out.push("  kill: none (no live basecamp tracked)".to_string());
-    } else {
-        for (profile, pid, comm) in live {
-            out.push(format!(
-                "  kill pid {pid} (profile: {profile}, comm: {comm})"
-            ));
-        }
-    }
-    out.push(format!("  rm -rf {}", profiles_root.display()));
-    out.push(format!(
-        "  clear [basecamp.modules] in scaffold.toml ({module_count} captured)"
-    ));
-    out.push(format!(
-        "  re-seed profiles: {}",
-        seed_profile_names.join(", ")
-    ));
-    out
-}
-
-/// Remove `<project_root>/.scaffold/basecamp/profiles/` idempotently, refusing
-/// to follow any symlink that would escape `.scaffold/basecamp/`. The profiles
-/// path is a constant, so the safety check is defense-in-depth against a hostile
-/// or mistaken symlink.
-fn remove_profiles_root(project_root: &Path) -> DynResult<()> {
-    let profiles_root = project_root.join(BASECAMP_PROFILES_REL);
-    if !profiles_root.exists() && !profiles_root.is_symlink() {
-        return Ok(());
-    }
-    let scaffold_basecamp = project_root.join(".scaffold/basecamp");
-    fs::create_dir_all(&scaffold_basecamp)
-        .with_context(|| format!("create {}", scaffold_basecamp.display()))?;
-    let canon_base = scaffold_basecamp
-        .canonicalize()
-        .with_context(|| format!("canonicalize {}", scaffold_basecamp.display()))?;
-    let canon_profiles = canonicalize_under(&profiles_root)?;
-    if !canon_profiles.starts_with(&canon_base) {
-        bail!(
-            "refusing to remove {} — resolves outside {}",
-            canon_profiles.display(),
-            canon_base.display()
-        );
-    }
-    // Pass the canonical path to `remove_dir_all` so a TOCTOU symlink swap
-    // between the check above and the removal can't redirect us to a path
-    // outside the safe root. If `profiles_root` itself was a symlink (its
-    // target was verified above to be under `canon_base`), the target is
-    // now gone — clean up the dangling link afterwards.
-    fs::remove_dir_all(&canon_profiles)
-        .with_context(|| format!("remove {}", canon_profiles.display()))?;
-    if profiles_root.is_symlink() {
-        fs::remove_file(&profiles_root)
-            .with_context(|| format!("remove symlink {}", profiles_root.display()))?;
-    }
-    Ok(())
 }
 
 /// Extract the rev / tag segment from a `github:owner/repo/<ref>#…` flake
@@ -3202,112 +3082,6 @@ mod tests {
         assert!(
             sentinel.exists(),
             "second seed must not scrub existing contents"
-        );
-    }
-
-    // ---- reset helpers ----
-
-    #[test]
-    fn plan_reset_lines_snapshot() {
-        let tmp = tempdir().expect("tempdir");
-        let profiles_root = tmp.path().join(BASECAMP_PROFILES_REL);
-        let live = vec![
-            ("alice".to_string(), 1234u32, "logos-basecamp".to_string()),
-            ("bob".to_string(), 5678u32, "logos-basecamp".to_string()),
-        ];
-        let lines = plan_reset_lines(&live, &profiles_root, 3, &["alice", "bob"]);
-        let joined = lines.join("\n");
-        assert!(
-            joined.contains("reset plan:"),
-            "plan must lead with `reset plan:`, got:\n{joined}"
-        );
-        assert!(
-            joined.contains("kill pid 1234 (profile: alice"),
-            "missing alice kill line in:\n{joined}"
-        );
-        assert!(
-            joined.contains("kill pid 5678 (profile: bob"),
-            "missing bob kill line in:\n{joined}"
-        );
-        assert!(
-            joined.contains(&format!("rm -rf {}", profiles_root.display())),
-            "missing rm line for {} in:\n{joined}",
-            profiles_root.display()
-        );
-        assert!(
-            joined.contains("clear [basecamp.modules] in scaffold.toml (3 captured)"),
-            "missing modules-clear line in:\n{joined}"
-        );
-        assert!(
-            joined.contains("re-seed profiles: alice, bob"),
-            "missing re-seed line in:\n{joined}"
-        );
-    }
-
-    #[test]
-    fn plan_reset_lines_shows_no_kills_when_none_live() {
-        let tmp = tempdir().expect("tempdir");
-        let profiles_root = tmp.path().join(BASECAMP_PROFILES_REL);
-        let lines = plan_reset_lines(&[], &profiles_root, 0, &["alice", "bob"]);
-        let joined = lines.join("\n");
-        assert!(
-            joined.contains("kill: none"),
-            "empty kill list must be explicit, got:\n{joined}"
-        );
-        assert!(
-            joined.contains("clear [basecamp.modules] in scaffold.toml (0 captured)"),
-            "zero-modules count must still be printed for transparency, got:\n{joined}"
-        );
-    }
-
-    #[test]
-    fn remove_profiles_root_succeeds_on_missing_dir() {
-        let tmp = tempdir().expect("tempdir");
-        let project_root = tmp.path();
-        // .scaffold/basecamp/profiles/ absent — must be a no-op.
-        remove_profiles_root(project_root).expect("idempotent on missing dir");
-        assert!(!project_root.join(BASECAMP_PROFILES_REL).exists());
-    }
-
-    #[test]
-    fn remove_profiles_root_wipes_existing_tree() {
-        let tmp = tempdir().expect("tempdir");
-        let project_root = tmp.path();
-        let profiles_root = project_root.join(BASECAMP_PROFILES_REL);
-        let inner = profiles_root.join("alice/xdg-data/junk");
-        fs::create_dir_all(&inner).unwrap();
-        fs::write(inner.join("file.txt"), b"contents").unwrap();
-
-        remove_profiles_root(project_root).expect("remove");
-        assert!(!profiles_root.exists(), "profiles root must be gone");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remove_profiles_root_refuses_symlink_escape() {
-        // If .scaffold/basecamp/profiles/ is a symlink pointing outside the
-        // project, the safety guard must refuse rather than follow it.
-        let tmp = tempdir().expect("tempdir");
-        let project_root = tmp.path();
-        let scaffold_dir = project_root.join(".scaffold/basecamp");
-        fs::create_dir_all(&scaffold_dir).unwrap();
-
-        let outside = tempdir().expect("outside tempdir");
-        let outside_file = outside.path().join("important.txt");
-        fs::write(&outside_file, b"do not delete").unwrap();
-
-        std::os::unix::fs::symlink(outside.path(), scaffold_dir.join("profiles"))
-            .expect("make symlink");
-
-        let err = remove_profiles_root(project_root).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.to_lowercase().contains("refus") || msg.to_lowercase().contains("outside"),
-            "expected safety rejection, got: {msg}"
-        );
-        assert!(
-            outside_file.exists(),
-            "symlinked-to file must not be deleted"
         );
     }
 
