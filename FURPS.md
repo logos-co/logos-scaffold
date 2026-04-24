@@ -157,3 +157,45 @@ Extends v0.2 with two subcommands: a release-style `.lgx-portable` build path fo
 #### Module Dependencies
 
 - `.#lgx-portable` flake output for any module the developer wants to test against a basecamp AppImage. Projects without it get a clear error from `build-portable`, not a silent miss.
+
+## FURPS+ (v0.4 — Module Identity in scaffold.toml)
+
+Every captured module — whether a project source or a runtime dependency — carries a `module_name` in `scaffold.toml` that matches the identifier used in other sources' `metadata.json` `dependencies` array. Dep resolution is a key lookup against that table, and the captured module set is reviewable in version control.
+
+### Functionality
+
+1. `scaffold.toml` gains one `[basecamp.modules.<module_name>]` sub-section per captured module, with `flake` and `role` (`project` | `dependency`) fields. The collection of these sub-sections is the sole source of truth for the captured module set; `basecamp.state` holds only derived artefacts (pin outputs, binaries). Sub-section form fits scaffold's existing line-oriented TOML parser — no inline tables.
+2. `basecamp modules` writes `[basecamp.modules]` during capture. For each captured source, the command derives `module_name` as follows:
+   - `path:` flake ref → read `<flake-path>/metadata.json`, use `.name`. Deterministic.
+   - `.lgx` file path → read `metadata.json` from the sibling directory if present; otherwise fall back to the filename stem.
+   - `github:` flake ref → heuristic: strip `logos-` prefix from the repo stem, replace `-` with `_`. Printed at capture time with an assumption note (see Usability 1).
+3. Dep resolution walks each project source's `metadata.json` `dependencies` array and, for each declared name:
+   - Already keyed in `[basecamp.modules]` → no-op (already covered, irrespective of role).
+   - In `BASECAMP_PREINSTALLED_MODULES` → no-op (basecamp ships it).
+   - Not covered → resolve a flake ref via the declaring source's `flake.lock`, then the scaffold-default pin table. On success, insert into `[basecamp.modules]` with `role = "dependency"`.
+   - Unresolved after all fallbacks → fail with a targeted error naming the two user-side fixes (capture as project source, or add an explicit dependency entry). No silent skip.
+4. `[basecamp.dependencies]` (the legacy override table) is removed. Its role is subsumed by explicit `role = "dependency"` entries in `[basecamp.modules]`.
+
+### Usability
+
+1. For each `github:` flake where scaffold derives `module_name` from the repo slug, `basecamp modules` prints exactly one assumption note at capture time: the flake ref and the inferred `module_name`, with "edit `[basecamp.modules]` in scaffold.toml if wrong." One-time UX cost, never repeats.
+2. `scaffold.toml` is human-editable at all times. `basecamp modules` is idempotent: if a key already exists in `[basecamp.modules]`, its `module_name` and `role` are preserved (user intent wins over auto-derivation).
+3. Unresolved dep diagnostics are a fail-fast error at `basecamp modules` time — the dep name must resolve to an entry in `[basecamp.modules]`, a `metadata.json` source flake-input pin, the scaffold default pin table, or the basecamp preinstall list, otherwise the command exits non-zero before writing any state. No warn-and-skip path.
+4. No migration path: the whole `basecamp` subcommand is unreleased. Users on earlier iterations re-run `basecamp modules` against a fresh scaffold.toml.
+
+### Reliability
+
+1. Dep resolution is deterministic given the same `scaffold.toml` and source `metadata.json` files — no reliance on github repo naming conventions, no string substring matches, no ordering dependencies.
+2. `basecamp modules` writes to `scaffold.toml` atomically (write-temp-then-rename) so a crash mid-write cannot corrupt an otherwise-valid scaffold.toml.
+3. Re-running `basecamp modules` with an unchanged project set is a no-op against `scaffold.toml` contents; hashes of the serialized section match byte-for-byte on re-entry.
+
+### Supportability
+
+1. Assumption notes from Usability 1 are printed to stderr (not the captured log), so pasting them into a bug report is straightforward.
+2. `scaffold.toml` diffs in version control surface module-identity changes as explicit, reviewable edits — same footing as any other project config change.
+
+### Dependencies
+
+#### Internal Dependencies
+
+- Module `metadata.json` schema: `name` (string), `dependencies` (array of strings). Already documented in `docs/basecamp-module-requirements.md`.

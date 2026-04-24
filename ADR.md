@@ -66,6 +66,47 @@ whatever AppImage they are testing against. The tradeoff is an extra manual step
 the upside is no fragile heuristics and no surprise writes into user-managed
 locations.
 
+## Module Identity Lives in scaffold.toml
+
+Runtime IPC composition means a module declares dependencies on other modules by
+*name* (in `metadata.json`'s `dependencies` array). Scaffold needs a mapping from
+those names to concrete flake refs in the captured module set — otherwise
+`basecamp install` cannot know which flake provides `delivery_module` when a
+project source declares that dep.
+
+`scaffold.toml` gains a `[basecamp.modules]` table keyed by `module_name` with
+explicit `flake` and `role` (`project` | `dependency`) fields. `basecamp modules`
+writes the table at capture time; dep resolution at build time is a key lookup
+against that table. `scaffold.toml` is the sole human-readable source of truth
+for the captured module set; `basecamp.state` is reduced to pin-artefact
+metadata only.
+
+Populating `module_name` on capture:
+- `path:` flake sources — read directly from the source's `metadata.json.name`
+  (the source tree is on the local filesystem).
+- `github:` flake sources — `metadata.json` is only available after building,
+  so scaffold derives a best-guess name from the repo slug (strip `logos-`
+  prefix, `-` → `_`) and prints a one-line assumption note at capture time
+  inviting the user to edit `scaffold.toml` if wrong.
+
+The tradeoff: `basecamp modules` now writes to `scaffold.toml`, widening its
+write surface beyond the derived `basecamp.state`. The upside is that the
+captured module set becomes reviewable in version control and diff tooling
+(a single TOML section, not a line-oriented state file), and dep-resolution
+lookups become deterministic key matches — the "is this dep covered by
+something I already captured?" question has an unambiguous answer.
+
+## No Migration for In-Flight Basecamp Subcommand
+
+The whole `basecamp` subcommand is unreleased — it lands in a single PR, so
+there is no user-visible schema to migrate from. Iterations inside the PR
+drop older on-disk shapes without preservation: earlier `basecamp.state`
+files, earlier `[basecamp.dependencies]` tables, and any intermediate formats
+are discarded by a fresh `basecamp modules` run. Keeping the migration
+surface empty avoids carrying ceremonial compatibility code through the
+feature branch, and the PR author is the only user who could be affected by
+the break.
+
 ## Flake Attribute Selection is a Resolver Parameter
 
 `install` and `build-portable` share a single source-resolution routine that is
