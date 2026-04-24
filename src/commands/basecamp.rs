@@ -864,56 +864,9 @@ fn remove_profiles_root(project_root: &Path) -> DynResult<()> {
     Ok(())
 }
 
-/// Annotation attached to a captured source for the "captured modules:" printout.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SourceOrigin {
-    /// Discovered by walking the project's root or immediate sub-flake(s).
-    AutoDiscovered,
-    /// Supplied by the user via `--flake` or `--path`.
-    Explicit,
-    /// Resolved from a `metadata.json` `dependencies` entry against the
-    /// scaffold-level default pin table.
-    DepDefault { name: String, via: String },
-    /// Resolved from a `metadata.json` `dependencies` entry against a
-    /// `[basecamp.dependencies]` override in `scaffold.toml`.
-    DepOverride { name: String, via: String },
-    /// Resolved from a matching input in the project's own `flake.lock`,
-    /// next to the source that declared the dep in its `metadata.json`.
-    /// The project's flake.lock is the most authoritative pin because
-    /// that's what the dev is actually building against.
-    DepFromProjectLock {
-        name: String,
-        via: String,
-        source_flake: String,
-    },
-}
-
-impl SourceOrigin {
-    fn annotation(&self) -> String {
-        match self {
-            SourceOrigin::AutoDiscovered => "[auto-discovered]".to_string(),
-            SourceOrigin::Explicit => "[explicit]".to_string(),
-            SourceOrigin::DepDefault { name, via } => {
-                format!("[dep `{name}` via {via}, scaffold default]")
-            }
-            SourceOrigin::DepOverride { name, via } => {
-                format!("[dep `{name}` via {via}, scaffold.toml override]")
-            }
-            SourceOrigin::DepFromProjectLock {
-                name,
-                via,
-                source_flake,
-            } => {
-                format!("[dep `{name}` via {via}, pinned by {source_flake}/flake.lock]")
-            }
-        }
-    }
-}
-
 /// Extract the rev / tag segment from a `github:owner/repo/<ref>#…` flake
 /// ref. Returns `None` for non-github refs or refs without a ref segment.
-/// Same helper the doctor uses — kept local to `basecamp.rs` so the drift
-/// warning is self-contained.
+/// Used by the doctor dep-pin drift row.
 fn github_flake_ref_rev(flake_ref: &str) -> Option<&str> {
     let rest = flake_ref.strip_prefix("github:")?;
     let before_frag = rest.split_once('#').map_or(rest, |(b, _)| b);
@@ -922,41 +875,6 @@ fn github_flake_ref_rev(flake_ref: &str) -> Option<&str> {
         return None;
     }
     Some(parts[2])
-}
-
-/// Emit a drift warning when a project's `flake.lock` pins a runtime
-/// companion dep to a rev different from scaffold's default. The project
-/// pin wins (they're building against it), but the warning surfaces the
-/// risk of incompatibility with a basecamp shipped against the scaffold
-/// default — matches the `lez standalone pin` drift warning in `doctor`.
-fn warn_on_dep_pin_drift(
-    name: &str,
-    scaffold_default_ref: &str,
-    project_resolved_ref: &str,
-    source_flake_path: &Path,
-) {
-    let default_rev = github_flake_ref_rev(scaffold_default_ref);
-    let project_rev = github_flake_ref_rev(project_resolved_ref);
-    if let (Some(d), Some(p)) = (default_rev, project_rev) {
-        if d == p {
-            return; // revs match — no drift
-        }
-    } else if scaffold_default_ref == project_resolved_ref {
-        return;
-    }
-    eprintln!(
-        "warning: dep `{name}` pinned by `{}/flake.lock` at `{}` \
-         differs from scaffold default `{}`. Your module will build and \
-         run locally against the project-lock rev, but may not work \
-         against a basecamp release that expects the scaffold default. \
-         If you're building for release, either update the project lock \
-         to match the scaffold default or override via \
-         `[basecamp.dependencies]` in scaffold.toml with an explicit \
-         compatible pin.",
-        source_flake_path.display(),
-        project_rev.unwrap_or(project_resolved_ref),
-        default_rev.unwrap_or(scaffold_default_ref),
-    );
 }
 
 /// Given a source flake's local path and a dep name declared in its
@@ -1136,44 +1054,6 @@ fn print_modules_table(
     } else {
         for (name, entry) in dep_entries {
             println!("    {name} = {}", entry.flake);
-        }
-    }
-}
-
-fn print_modules_list(
-    header: &str,
-    project_sources: &[BasecampSource],
-    dependencies: &[BasecampSource],
-    annotations: &[SourceOrigin],
-) {
-    println!("{header}:");
-    if project_sources.is_empty() && dependencies.is_empty() {
-        println!("  (none)");
-        return;
-    }
-    println!("  project_sources:");
-    if project_sources.is_empty() {
-        println!("    (none)");
-    } else {
-        for (i, src) in project_sources.iter().enumerate() {
-            let note = annotations
-                .get(i)
-                .map(|o| format!(" {}", o.annotation()))
-                .unwrap_or_default();
-            println!("    {}{}", flake_ref(src), note);
-        }
-    }
-    println!("  dependencies:");
-    if dependencies.is_empty() {
-        println!("    (none)");
-    } else {
-        let offset = project_sources.len();
-        for (i, src) in dependencies.iter().enumerate() {
-            let note = annotations
-                .get(offset + i)
-                .map(|o| format!(" {}", o.annotation()))
-                .unwrap_or_default();
-            println!("    {}{}", flake_ref(src), note);
         }
     }
 }
@@ -1444,7 +1324,7 @@ fn cmd_basecamp_install(project: Project, probe: &dyn LgxFlakeProbe) -> DynResul
         println!("no modules captured yet; running `basecamp modules` for you");
         cmd_basecamp_modules(project.clone(), Vec::new(), Vec::new(), false, probe)?;
         let cfg_text = fs::read_to_string(project.root.join("scaffold.toml"))
-            .with_context(|| format!("re-read scaffold.toml after auto-capture"))?;
+            .context("re-read scaffold.toml after auto-capture")?;
         let cfg = crate::config::parse_config(&cfg_text)?;
         Project {
             root: project.root,
@@ -3691,23 +3571,4 @@ role = "dependency"
         );
     }
 
-    #[test]
-    fn source_origin_annotations_render_distinctly() {
-        assert_eq!(SourceOrigin::Explicit.annotation(), "[explicit]");
-        assert_eq!(
-            SourceOrigin::AutoDiscovered.annotation(),
-            "[auto-discovered]"
-        );
-        let def = SourceOrigin::DepDefault {
-            name: "delivery_module".to_string(),
-            via: "path:/abs/ui#lgx".to_string(),
-        };
-        assert!(def.annotation().contains("delivery_module"));
-        assert!(def.annotation().contains("scaffold default"));
-        let over = SourceOrigin::DepOverride {
-            name: "delivery_module".to_string(),
-            via: "path:/abs/ui#lgx".to_string(),
-        };
-        assert!(over.annotation().contains("scaffold.toml override"));
-    }
 }
