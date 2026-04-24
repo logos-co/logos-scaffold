@@ -1320,8 +1320,7 @@ fn resolve_manifest_dependencies(
 ///
 /// No CLI source flags (`--flake`/`--path`/`--profile`) — the source set
 /// lives in state, managed by `basecamp modules`. No selective profile
-/// installs either (KISS); reset + install again if you want one profile
-/// clean.
+/// installs either (KISS); install overwrites both profiles in one pass.
 fn cmd_basecamp_install(project: Project, probe: &dyn LgxFlakeProbe) -> DynResult<()> {
     let state_path = project.root.join(".scaffold/state/basecamp.state");
     let state = read_basecamp_state(&state_path)

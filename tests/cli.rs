@@ -1686,8 +1686,8 @@ fn basecamp_build_portable_rejects_flake_flag() {
 
 #[test]
 fn basecamp_build_portable_rejects_dry_run_flag() {
-    // Per spec: only `reset` is destructive; `build-portable` does not get a
-    // `--dry-run` flag. Clap must reject it with a usage error.
+    // `build-portable` is non-destructive and does not accept `--dry-run`.
+    // Clap must reject the flag with a usage error.
     let temp = tempdir().expect("tempdir");
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
@@ -1712,22 +1712,6 @@ fn basecamp_build_portable_inside_empty_project_emits_hint_to_capture_first() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("basecamp modules"));
-}
-
-#[test]
-fn basecamp_reset_subcommand_does_not_exist() {
-    // `basecamp reset` was removed pending a correctness rework: its profile
-    // wipe could segfault an externally-launched basecamp, and the
-    // capture-clear step was redundant with `install` overriding modules.
-    // If someone re-adds it, they should land the safety fixes at the same
-    // time (see prior branch for prior implementation and spec notes).
-    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
-        .args(["basecamp", "reset"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unrecognized subcommand").or(
-            predicate::str::contains("error: unrecognized").or(predicate::str::contains("Usage:")),
-        ));
 }
 
 #[test]
