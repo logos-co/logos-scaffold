@@ -623,7 +623,7 @@ fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
     // deps (leaves first). Basecamp loads `.lgx` artefacts in the order the
     // user hands them to it — emitting bottom-up means a module's deps are
     // already resolved by the time basecamp tries to resolve its symbols.
-    let ordered_names = topo_order_project_modules(&project_modules);
+    let ordered_names = topo_order_project_modules(&project.root, &project_modules);
 
     // Rewrite each project source: attr-swap `#lgx` → `#lgx-portable` on
     // flake refs; pass Path sources through unchanged (they're pre-built).
@@ -631,7 +631,7 @@ fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
         .iter()
         .map(|name| {
             let entry = &project_modules[name];
-            let src = module_entry_to_source(entry);
+            let src = module_entry_to_source(&project.root, entry);
             match src {
                 BasecampSource::Path(p) => BasecampSource::Path(p),
                 BasecampSource::Flake(f) => {
@@ -715,12 +715,13 @@ fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
 /// can't load in any order and basecamp will error anyway — we just don't
 /// want `build-portable` to hang).
 fn topo_order_project_modules(
+    project_root: &Path,
     project_modules: &std::collections::BTreeMap<String, ModuleEntry>,
 ) -> Vec<String> {
     let mut remaining: std::collections::BTreeMap<String, Vec<String>> = project_modules
         .iter()
         .map(|(name, entry)| {
-            let src = module_entry_to_source(entry);
+            let src = module_entry_to_source(project_root, entry);
             let declared = read_source_metadata_dependencies(&src);
             let project_internal_deps: Vec<String> = declared
                 .into_iter()
@@ -1007,7 +1008,7 @@ fn cmd_basecamp_modules(
             eprintln!("{}", assumption_note_line(&n));
         }
         new_modules.entry(name).or_insert_with(|| ModuleEntry {
-            flake: flake_ref(src),
+            flake: relativize_flake_ref(&project.root, &flake_ref(src)),
             role: ModuleRole::Project,
         });
     }
@@ -1511,8 +1512,7 @@ fn flake_declared_inputs(flake_ref: &str) -> DynResult<std::collections::HashSet
 /// directory. Normalizing at the command boundary keeps the downstream
 /// code paths uniform.
 fn normalize_flake_ref(project_root: &Path, flake_ref: &str) -> String {
-    if flake_ref.starts_with("path:")
-        || flake_ref.starts_with("github:")
+    if flake_ref.starts_with("github:")
         || flake_ref.starts_with("git+")
         || flake_ref.starts_with("http:")
         || flake_ref.starts_with("https:")
@@ -1520,6 +1520,23 @@ fn normalize_flake_ref(project_root: &Path, flake_ref: &str) -> String {
         || flake_ref.starts_with("sourcehut:")
     {
         return flake_ref.to_string();
+    }
+    // `path:./sub#attr` or `path:.#attr`: relative to project_root. Absolutize
+    // so downstream consumers (sibling-override, nix build cwd, metadata read)
+    // see a single uniform `path:<abs>#attr` shape regardless of whether the
+    // ref was persisted in relative form.
+    if let Some(rest) = flake_ref.strip_prefix("path:") {
+        let (path_part, frag) = rest.split_once('#').unwrap_or((rest, ""));
+        if path_part.starts_with('/') {
+            return flake_ref.to_string();
+        }
+        let raw = project_root.join(path_part);
+        let canon = raw.canonicalize().unwrap_or(raw);
+        return if frag.is_empty() {
+            format!("path:{}", canon.display())
+        } else {
+            format!("path:{}#{}", canon.display(), frag)
+        };
     }
     let (path_part, frag) = flake_ref.split_once('#').unwrap_or((flake_ref, ""));
     let raw = if path_part.starts_with('/') {
@@ -1532,6 +1549,39 @@ fn normalize_flake_ref(project_root: &Path, flake_ref: &str) -> String {
         format!("path:{}", canon.display())
     } else {
         format!("path:{}#{}", canon.display(), frag)
+    }
+}
+
+/// Inverse of `normalize_flake_ref` for storage: if `flake_ref` is a
+/// `path:<abs>` ref pointing inside `project_root`, rewrite it to the
+/// relative `path:./<rel>` (or `path:.` for root) form so a committed
+/// `scaffold.toml` stays portable across clones. Non-path refs and
+/// out-of-project absolute paths pass through untouched.
+fn relativize_flake_ref(project_root: &Path, flake_ref: &str) -> String {
+    let Some(rest) = flake_ref.strip_prefix("path:") else {
+        return flake_ref.to_string();
+    };
+    let (path_part, frag) = rest.split_once('#').unwrap_or((rest, ""));
+    if !path_part.starts_with('/') {
+        return flake_ref.to_string();
+    }
+    let abs = PathBuf::from(path_part);
+    let canon_abs = abs.canonicalize().unwrap_or(abs);
+    let canon_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let Ok(rel) = canon_abs.strip_prefix(&canon_root) else {
+        return flake_ref.to_string();
+    };
+    let rel_display = if rel.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        format!("./{}", rel.display())
+    };
+    if frag.is_empty() {
+        format!("path:{rel_display}")
+    } else {
+        format!("path:{rel_display}#{frag}")
     }
 }
 
@@ -2037,7 +2087,7 @@ fn push_basecamp_doctor_rows(project: &Project, rows: &mut Vec<crate::model::Che
                 ModuleRole::Project => "basecamp module",
                 ModuleRole::Dependency => "basecamp dep",
             };
-            let src = module_entry_to_source(entry);
+            let src = module_entry_to_source(&project.root, entry);
             rows.push(captured_source_row(label, &src, &alice_modules));
         }
     }
@@ -2505,11 +2555,16 @@ pub(crate) fn flake_ref(src: &BasecampSource) -> String {
 /// prefix; everything else came from `flake_ref` on a `BasecampSource::Flake`.
 /// The `.lgx` suffix is the discriminator — path-sources are always `.lgx`
 /// files by construction (the CLI validates this on capture).
-fn module_entry_to_source(entry: &ModuleEntry) -> BasecampSource {
+///
+/// Flake refs are run through `normalize_flake_ref` so relative `path:./sub`
+/// values persisted in scaffold.toml are re-anchored to `project_root` before
+/// downstream consumers (nix build cwd, sibling override, metadata read) see
+/// them.
+fn module_entry_to_source(project_root: &Path, entry: &ModuleEntry) -> BasecampSource {
     if entry.flake.ends_with(".lgx") && !entry.flake.contains('#') {
         BasecampSource::Path(entry.flake.clone())
     } else {
-        BasecampSource::Flake(entry.flake.clone())
+        BasecampSource::Flake(normalize_flake_ref(project_root, &entry.flake))
     }
 }
 
@@ -2526,7 +2581,7 @@ fn project_role_sources(project: &Project, role: ModuleRole) -> Vec<BasecampSour
             bc.modules
                 .values()
                 .filter(|e| e.role == role)
-                .map(module_entry_to_source)
+                .map(|e| module_entry_to_source(&project.root, e))
                 .collect()
         })
         .unwrap_or_default()
@@ -3222,6 +3277,98 @@ mod tests {
         );
     }
 
+    #[test]
+    fn normalize_flake_ref_absolutizes_relative_path_scheme_refs() {
+        // Relative `path:./sub#lgx` persisted to scaffold.toml must be
+        // re-anchored to project_root so downstream nix invocations see a
+        // single absolute `path:<abs>#lgx` shape.
+        let tmp = tempdir().expect("tempdir");
+        let sub = tmp.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+
+        let got = normalize_flake_ref(tmp.path(), "path:./sub#lgx");
+        assert!(got.starts_with("path:/"), "got: {got}");
+        assert!(got.ends_with("#lgx"), "got: {got}");
+        let canon = sub.canonicalize().unwrap();
+        assert!(
+            got.contains(canon.to_str().unwrap()),
+            "expected canonical sub path in {got}"
+        );
+
+        let got_root = normalize_flake_ref(tmp.path(), "path:.#lgx");
+        let canon_root = tmp.path().canonicalize().unwrap();
+        assert!(
+            got_root.contains(canon_root.to_str().unwrap()),
+            "expected canonical root in {got_root}"
+        );
+    }
+
+    #[test]
+    fn relativize_flake_ref_rewrites_in_project_absolute_refs() {
+        let tmp = tempdir().expect("tempdir");
+        let sub = tmp.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let canon_sub = sub.canonicalize().unwrap();
+        let abs_ref = format!("path:{}#lgx", canon_sub.display());
+
+        let got = relativize_flake_ref(tmp.path(), &abs_ref);
+        assert_eq!(got, "path:./sub#lgx", "got: {got}");
+    }
+
+    #[test]
+    fn relativize_flake_ref_rewrites_project_root_as_dot() {
+        let tmp = tempdir().expect("tempdir");
+        let canon_root = tmp.path().canonicalize().unwrap();
+        let got = relativize_flake_ref(tmp.path(), &format!("path:{}#lgx", canon_root.display()));
+        assert_eq!(got, "path:.#lgx", "got: {got}");
+    }
+
+    #[test]
+    fn relativize_flake_ref_preserves_out_of_project_refs() {
+        let tmp_proj = tempdir().expect("proj tempdir");
+        let tmp_out = tempdir().expect("out tempdir");
+        let canon_out = tmp_out.path().canonicalize().unwrap();
+        let abs_ref = format!("path:{}#lgx", canon_out.display());
+
+        let got = relativize_flake_ref(tmp_proj.path(), &abs_ref);
+        assert_eq!(got, abs_ref, "out-of-project ref must stay absolute");
+    }
+
+    #[test]
+    fn relativize_flake_ref_passes_through_non_path_refs() {
+        let tmp = tempdir().expect("tempdir");
+        for input in [
+            "github:foo/bar#lgx",
+            "git+https://example/r#lgx",
+            "path:./already-relative#lgx",
+        ] {
+            assert_eq!(
+                relativize_flake_ref(tmp.path(), input),
+                input,
+                "non-abs-path ref must pass through unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn module_entry_to_source_normalizes_relative_flake_refs() {
+        let tmp = tempdir().expect("tempdir");
+        let sub = tmp.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let entry = ModuleEntry {
+            flake: "path:./sub#lgx".to_string(),
+            role: ModuleRole::Project,
+        };
+        match module_entry_to_source(tmp.path(), &entry) {
+            BasecampSource::Flake(f) => {
+                assert!(f.starts_with("path:/"), "got: {f}");
+                let canon = sub.canonicalize().unwrap();
+                assert!(f.contains(canon.to_str().unwrap()), "got: {f}");
+            }
+            other => panic!("expected Flake source, got {other:?}"),
+        }
+    }
+
     // ---- resolve_sibling_overrides (I1 fix) — exercised via the command paths;
     //      a focused test pins the helper's Path-source short-circuit ----
 
@@ -3355,7 +3502,7 @@ mod tests {
     fn topo_order_empty_returns_empty() {
         let modules: std::collections::BTreeMap<String, ModuleEntry> =
             std::collections::BTreeMap::new();
-        assert!(topo_order_project_modules(&modules).is_empty());
+        assert!(topo_order_project_modules(Path::new("/"), &modules).is_empty());
     }
 
     #[test]
@@ -3369,7 +3516,7 @@ mod tests {
             entry_for(&format!("path:{}#lgx", d.display())),
         );
         assert_eq!(
-            topo_order_project_modules(&modules),
+            topo_order_project_modules(tmp.path(), &modules),
             vec!["only".to_string()]
         );
     }
@@ -3393,7 +3540,7 @@ mod tests {
             entry_for(&format!("path:{}#lgx", b.display())),
         );
         assert_eq!(
-            topo_order_project_modules(&modules),
+            topo_order_project_modules(tmp.path(), &modules),
             vec!["b".to_string(), "a".to_string()]
         );
     }
@@ -3415,7 +3562,7 @@ mod tests {
             );
         }
         assert_eq!(
-            topo_order_project_modules(&modules),
+            topo_order_project_modules(tmp.path(), &modules),
             vec!["c".to_string(), "b".to_string(), "a".to_string()]
         );
     }
@@ -3439,7 +3586,7 @@ mod tests {
             );
         }
         assert_eq!(
-            topo_order_project_modules(&modules),
+            topo_order_project_modules(tmp.path(), &modules),
             vec!["b".to_string(), "c".to_string(), "a".to_string()]
         );
     }
@@ -3457,7 +3604,10 @@ mod tests {
             "a".to_string(),
             entry_for(&format!("path:{}#lgx", a.display())),
         );
-        assert_eq!(topo_order_project_modules(&modules), vec!["a".to_string()]);
+        assert_eq!(
+            topo_order_project_modules(tmp.path(), &modules),
+            vec!["a".to_string()]
+        );
     }
 
     #[test]
@@ -3479,7 +3629,7 @@ mod tests {
             "b".to_string(),
             entry_for(&format!("path:{}#lgx", b.display())),
         );
-        let got = topo_order_project_modules(&modules);
+        let got = topo_order_project_modules(tmp.path(), &modules);
         assert_eq!(got.len(), 2);
         assert!(got.contains(&"a".to_string()) && got.contains(&"b".to_string()));
     }
@@ -3837,7 +3987,12 @@ port_stride = 10
             "expected new module entry, got:\n{text}"
         );
         assert!(text.contains("role = \"project\""));
-        assert!(text.contains(&format!("flake = \"path:{}#lgx\"", src_dir.display())));
+        // Auto-captured in-project flake refs are persisted in relative form
+        // so the committed scaffold.toml is portable across clones/CI.
+        assert!(
+            text.contains("flake = \"path:./tictactoe#lgx\""),
+            "expected relative flake ref, got:\n{text}"
+        );
     }
 
     #[test]
