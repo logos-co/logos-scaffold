@@ -2392,6 +2392,45 @@ fn completions_zsh_compdef_directive_covers_both_names() {
 }
 
 #[test]
+fn completions_cover_basecamp_subcommands() {
+    // Regression guard: the completion scripts are generated from the full
+    // clap command tree, so every `basecamp` sub-subcommand should appear in
+    // both bash and zsh output. If someone accidentally hides a basecamp
+    // subcommand (e.g. gating it with clap feature flags), shell-tab users
+    // would silently lose completion — this test catches that at build time.
+    const BASECAMP_SUBS: &[&str] = &[
+        "setup",
+        "modules",
+        "install",
+        "launch",
+        "build-portable",
+        "doctor",
+        "docs",
+    ];
+
+    for shell in &["bash", "zsh"] {
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+            .args(["completions", shell])
+            .output()
+            .unwrap_or_else(|e| panic!("run lgs completions {shell}: {e}"));
+        assert!(output.status.success(), "expected success exit for {shell}");
+        let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+        assert!(
+            stdout.contains("basecamp"),
+            "{shell} completion script missing `basecamp`:\n{stdout}"
+        );
+        for sub in BASECAMP_SUBS {
+            assert!(
+                stdout.contains(sub),
+                "{shell} completion script missing `basecamp {sub}`; \
+                 stdout head:\n{}",
+                stdout.lines().take(40).collect::<Vec<_>>().join("\n")
+            );
+        }
+    }
+}
+
+#[test]
 fn completions_bash_output_is_syntax_clean() {
     let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .args(["completions", "bash"])
