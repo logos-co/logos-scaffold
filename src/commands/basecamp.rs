@@ -54,12 +54,22 @@ pub(crate) enum BasecampAction {
     Doctor {
         json: bool,
     },
+    /// Print the canonical compatibility doc (`docs/basecamp-module-requirements.md`,
+    /// embedded at compile time). Runnable outside a scaffold project so LLMs
+    /// exploring the CLI can retrieve the rules before setup.
+    Docs,
     ProfileList {
         json: bool,
     },
 }
 
 pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
+    // `docs` is project-context-free: it prints a bundled doc so an LLM (or
+    // human) can retrieve compatibility rules even before running `init`.
+    if matches!(action, BasecampAction::Docs) {
+        return cmd_basecamp_docs();
+    }
+
     let project = load_project().context(
         "This command must be run inside a logos-scaffold project.\nNext step: cd into your scaffolded project directory and retry.",
     )?;
@@ -83,10 +93,28 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
         BasecampAction::Reset { dry_run } => cmd_basecamp_reset(project, dry_run),
         BasecampAction::BuildPortable => cmd_basecamp_build_portable(project),
         BasecampAction::Doctor { json } => cmd_basecamp_doctor(project, json),
+        // Handled above via early return (project-context-free).
+        BasecampAction::Docs => unreachable!("handled before load_project"),
         // Phase 5 stub: load_project() above is intentional so "outside project"
         // errors precede "not implemented" — future implementer must preserve that order.
         BasecampAction::ProfileList { .. } => bail!("basecamp profile list is not yet implemented"),
     }
+}
+
+/// Canonical compatibility doc bundled at compile time. Single source of
+/// truth: the markdown file at `docs/basecamp-module-requirements.md`.
+const BASECAMP_MODULE_REQUIREMENTS_DOC: &str =
+    include_str!("../../docs/basecamp-module-requirements.md");
+
+/// Text used everywhere we want to point an LLM at the full compatibility
+/// rules — error hints, help breadcrumbs, doctor output. Keep it short and
+/// consistent so agents can pattern-match.
+pub(crate) const COMPAT_DOCS_BREADCRUMB: &str =
+    "See `logos-scaffold basecamp docs` for project compatibility rules.";
+
+fn cmd_basecamp_docs() -> DynResult<()> {
+    print!("{BASECAMP_MODULE_REQUIREMENTS_DOC}");
+    Ok(())
 }
 
 fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
@@ -710,10 +738,10 @@ fn run_build_portable_nix(
         {
             bail!(
                 "flake `{flake_ref}` does not expose `lgx-portable`. Either:\n\
-                 (a) add a `packages.<system>.lgx-portable` output to your module's flake.nix \
-                 (see docs/basecamp-module-requirements.md), or\n\
+                 (a) add a `packages.<system>.lgx-portable` output to your module's flake.nix, or\n\
                  (b) if you don't need a portable build, skip `basecamp build-portable` — \
-                 `basecamp install` uses `.#lgx` and works without it."
+                 `basecamp install` uses `.#lgx` and works without it.\n\
+                 {COMPAT_DOCS_BREADCRUMB}"
             );
         }
         bail!(
@@ -1289,6 +1317,8 @@ fn resolve_manifest_dependencies(
              flake = \"<ref>#lgx\"\n      \
              role = \"dependency\"\n",
         );
+        msg.push_str(COMPAT_DOCS_BREADCRUMB);
+        msg.push('\n');
         bail!("{msg}");
     }
 
@@ -1764,9 +1794,10 @@ impl LgxFlakeProbe for NixLgxProbe {
                 return Ok(Vec::new());
             }
             bail!(
-                "nix eval {target} failed ({}): {}",
+                "nix eval {target} failed ({}): {}\n{}",
                 out.status,
-                stderr.trim()
+                stderr.trim(),
+                COMPAT_DOCS_BREADCRUMB,
             );
         }
         let text = String::from_utf8(out.stdout).context("nix eval output not utf-8")?;
@@ -2337,7 +2368,8 @@ fn resolve_install_sources(
         bail!(
             "found `.#{alt_attr}` in {dirs} but no `.#{attr}` output.\n\
              Next step: expose `packages.<system>.{attr}` in your flake, or re-run with \
-             `--flake <path>#{alt_attr}` to opt into the {alt_attr} variant explicitly.",
+             `--flake <path>#{alt_attr}` to opt into the {alt_attr} variant explicitly.\n\
+             {COMPAT_DOCS_BREADCRUMB}",
             dirs = alt_only_dirs.join(", "),
         );
     }
@@ -2345,7 +2377,8 @@ fn resolve_install_sources(
     bail!(
         "no `.lgx` sources found in this project.\n\
          Next step: expose `packages.<system>.{attr}` in a `flake.nix` at the project root \
-         (or in a sub-directory), or pass `--path <file.lgx>` / `--flake <ref>#{attr}`."
+         (or in a sub-directory), or pass `--path <file.lgx>` / `--flake <ref>#{attr}`.\n\
+         {COMPAT_DOCS_BREADCRUMB}"
     )
 }
 
@@ -3693,6 +3726,10 @@ mod tests {
         assert!(
             msg.contains("basecamp modules --flake") || msg.contains("[basecamp.modules."),
             "expected both user-side fixes in error, got: {msg}"
+        );
+        assert!(
+            msg.contains("basecamp docs"),
+            "compatibility-related errors must point at `basecamp docs`, got: {msg}"
         );
     }
 

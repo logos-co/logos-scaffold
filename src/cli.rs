@@ -282,27 +282,39 @@ struct BasecampArgs {
 
 #[derive(Debug, Subcommand)]
 enum BasecampSubcommand {
-    #[command(about = "Fetch, build, and seed pinned basecamp + lgpm + alice/bob profiles")]
+    #[command(
+        about = "Fetch, build, and seed pinned basecamp + lgpm + alice/bob profiles. See `basecamp docs` for project requirements."
+    )]
     Setup,
     #[command(
-        about = "Capture the set of modules + runtime dependencies to install; auto-discovers or takes explicit --flake/--path"
+        about = "Capture the set of modules + runtime dependencies to install; auto-discovers or takes explicit --flake/--path. See `basecamp docs` for project requirements."
     )]
     Modules(BasecampModulesArgs),
-    #[command(about = "Build the project's .lgx and install it into basecamp profile(s)")]
+    #[command(
+        about = "Build the project's .lgx and install it into basecamp profile(s). See `basecamp docs` for project requirements."
+    )]
     Install(BasecampInstallArgs),
-    #[command(about = "Launch basecamp for a named profile with clean-slate semantics")]
+    #[command(
+        about = "Launch basecamp for a named profile with clean-slate semantics. See `basecamp docs` for project requirements."
+    )]
     Launch(BasecampLaunchArgs),
-    #[command(about = "Kill any live basecamp, wipe profiles, clear recorded sources, re-seed")]
+    #[command(
+        about = "Kill any live basecamp, wipe profiles, clear recorded sources, re-seed. See `basecamp docs` for project requirements."
+    )]
     Reset(BasecampResetArgs),
     #[command(
         name = "build-portable",
-        about = "Build the project's .#lgx-portable artefacts for hand-loading into a basecamp AppImage"
+        about = "Build the project's .#lgx-portable artefacts for hand-loading into a basecamp AppImage. See `basecamp docs` for project requirements."
     )]
     BuildPortable(BasecampBuildPortableArgs),
     #[command(
-        about = "Basecamp-specific doctor: captured modules, manifest variants, and state drift"
+        about = "Basecamp-specific doctor: captured modules, manifest variants, and state drift. See `basecamp docs` for project requirements."
     )]
     Doctor(BasecampDoctorArgs),
+    #[command(
+        about = "Print the canonical project-compatibility rules (embedded copy of docs/basecamp-module-requirements.md)"
+    )]
+    Docs,
     #[command(about = "Manage basecamp profiles")]
     Profile(BasecampProfileArgs),
 }
@@ -483,6 +495,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 },
                 BasecampSubcommand::BuildPortable(_) => BasecampAction::BuildPortable,
                 BasecampSubcommand::Doctor(args) => BasecampAction::Doctor { json: args.json },
+                BasecampSubcommand::Docs => BasecampAction::Docs,
                 BasecampSubcommand::Profile(args) => match args.command {
                     BasecampProfileSubcommand::List(args) => {
                         BasecampAction::ProfileList { json: args.json }

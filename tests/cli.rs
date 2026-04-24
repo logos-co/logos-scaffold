@@ -1468,6 +1468,51 @@ fn basecamp_launch_without_profile_errors() {
 }
 
 #[test]
+fn basecamp_docs_prints_compatibility_rules_anywhere() {
+    // LLM-driven discoverability: `basecamp docs` must work without a
+    // scaffold project (no scaffold.toml needed) so an agent can retrieve
+    // the rules before setting anything up. Asserts on the top-level
+    // heading + the Quick checklist anchor so trivial drift in the doc
+    // body doesn't break the test.
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "docs"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("# Basecamp Module Requirements")
+                .and(predicate::str::contains("Quick checklist")),
+        );
+}
+
+#[test]
+fn basecamp_help_carries_docs_breadcrumb() {
+    // Every basecamp subcommand's --help should mention `basecamp docs`
+    // so an LLM exploring the CLI finds the compatibility doc without
+    // filesystem context.
+    for subcommand in &[
+        "setup",
+        "modules",
+        "install",
+        "launch",
+        "reset",
+        "build-portable",
+        "doctor",
+    ] {
+        let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+            .args(["basecamp", subcommand, "--help"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("basecamp docs"),
+            "{subcommand} --help must reference `basecamp docs`; got:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn basecamp_profile_list_help_lists_json_flag() {
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .arg("basecamp")
