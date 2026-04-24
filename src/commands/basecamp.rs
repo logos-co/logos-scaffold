@@ -14,7 +14,7 @@ use crate::constants::{
     BASECAMP_PROFILES_REL, BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB, BASECAMP_URL,
     BASECAMP_XDG_APP_SUBPATH, DEFAULT_BASECAMP_PIN, DEFAULT_LGPM_FLAKE,
 };
-use crate::model::{BasecampSource, BasecampState, Project, RepoRef};
+use crate::model::{BasecampSource, BasecampState, ModuleEntry, ModuleRole, Project, RepoRef};
 use crate::process::{derive_log_path, rotate_logs, run_checked, run_logged, set_print_output};
 use crate::project::{load_project, save_project_config};
 use crate::repo::{sync_repo_to_pin, RepoSyncOptions};
@@ -999,56 +999,63 @@ fn resolve_dep_from_project_flake_lock(source_flake_path: &Path, dep_name: &str)
     Some(format!("github:{owner}/{repo}/{rev}#lgx"))
 }
 
-/// Capture the modules + dependencies set into `basecamp.state`. Sole writer of
-/// `state.project_sources` and `state.dependencies`. `install` / `build-portable`
-/// / `launch` only read state — they never discover on their own.
+/// Capture the project module set into `[basecamp.modules.*]` in
+/// scaffold.toml. Sole writer of that section. `install` / `build-portable`
+/// / `launch` only read it — they never discover on their own.
 ///
 /// Three modes:
-/// - `--show`: read-only; print both lists labeled.
-/// - Explicit (non-empty `paths` or `flakes`): `project_sources` = exactly
-///   those args; `dependencies` re-resolved from the explicit sources' manifests.
-/// - Auto (default, no args): walk project flakes; resolve manifest deps.
+/// - `--show`: read-only; print the table grouped by role.
+/// - Explicit (non-empty `paths` or `flakes`): captured set = exactly those
+///   args as `role = "project"` entries.
+/// - Auto (default, no args): walk project flakes; record as `role =
+///   "project"`.
+///
+/// Dependency resolution from each source's `metadata.json.dependencies`
+/// array lands in M2d and is intentionally absent here.
+///
+/// Idempotency: if a module_name already exists in `[basecamp.modules]`, its
+/// entry is preserved — user intent (a hand-edited flake or role override)
+/// wins over re-derivation.
 fn cmd_basecamp_modules(
-    project: Project,
+    mut project: Project,
     paths: Vec<PathBuf>,
     flakes: Vec<String>,
     show: bool,
     probe: &dyn LgxFlakeProbe,
 ) -> DynResult<()> {
-    let state_path = project.root.join(".scaffold/state/basecamp.state");
-    let existing = read_basecamp_state(&state_path).unwrap_or_default();
+    let existing_modules: std::collections::BTreeMap<String, ModuleEntry> = project
+        .config
+        .basecamp
+        .as_ref()
+        .map(|bc| bc.modules.clone())
+        .unwrap_or_default();
 
     if show {
-        print_modules_list(
-            "captured modules",
-            &existing.project_sources,
-            &existing.dependencies,
-            &[],
-        );
+        print_modules_table("captured modules", &existing_modules);
         return Ok(());
     }
 
-    let explicit = !paths.is_empty() || !flakes.is_empty();
+    let Some(bc) = project.config.basecamp.as_mut() else {
+        bail!(
+            "no [basecamp] section in scaffold.toml; run `logos-scaffold basecamp setup` first"
+        );
+    };
 
+    let explicit = !paths.is_empty() || !flakes.is_empty();
     let flakes: Vec<String> = flakes
         .into_iter()
         .map(|f| normalize_flake_ref(&project.root, &f))
         .collect();
 
-    // Resolve project sources: explicit args bypass discovery; otherwise walk
-    // project flakes per existing rules.
-    let (project_sources, project_origins): (Vec<BasecampSource>, Vec<SourceOrigin>) = if explicit {
+    let project_sources: Vec<BasecampSource> = if explicit {
         let mut out = Vec::new();
-        let mut origins = Vec::new();
         for p in &paths {
             out.push(BasecampSource::Path(p.display().to_string()));
-            origins.push(SourceOrigin::Explicit);
         }
         for f in &flakes {
             out.push(BasecampSource::Flake(f.clone()));
-            origins.push(SourceOrigin::Explicit);
         }
-        (out, origins)
+        out
     } else {
         let cache_root_first = first_path_component(&project.config.cache_root);
         let mut skip_subdirs: Vec<&str> =
@@ -1058,7 +1065,7 @@ fn cmd_basecamp_modules(
                 skip_subdirs.push(c);
             }
         }
-        let discovered = resolve_install_sources(
+        resolve_install_sources(
             &project.root,
             &[],
             &[],
@@ -1066,52 +1073,76 @@ fn cmd_basecamp_modules(
             &skip_subdirs,
             "lgx",
             "lgx-portable",
-        )?;
-        let origins = vec![SourceOrigin::AutoDiscovered; discovered.len()];
-        (discovered, origins)
+        )?
     };
 
-    // Resolve manifest-declared runtime dependencies. Walks each project source's
-    // local metadata.json (no nix build) and resolves declared dep names against:
-    //   1. `[basecamp.dependencies]` per-project override (wins)
-    //   2. `BASECAMP_DEPENDENCIES` scaffold default
-    //   3. `BASECAMP_PREINSTALLED_MODULES` — skip silently (basecamp provides)
-    //   4. unknown — warn, skip.
-    let dep_overrides = project
+    // Derive module_name per source, emit one stderr note per heuristic
+    // guess, and insert into the table. Existing keys are left untouched.
+    let mut new_modules = existing_modules.clone();
+    for src in &project_sources {
+        let (name, note) = derive_module_name(src)?;
+        if let Some(n) = note {
+            eprintln!("{}", assumption_note_line(&n));
+        }
+        new_modules.entry(name).or_insert_with(|| ModuleEntry {
+            flake: flake_ref(src),
+            role: ModuleRole::Project,
+        });
+    }
+
+    // "previous modules (for reference)" block so reverting is copy-paste.
+    print_modules_table("previous modules (for reference)", &existing_modules);
+
+    bc.modules = new_modules;
+    save_project_config(&project)?;
+
+    let written = &project
         .config
         .basecamp
         .as_ref()
-        .map(|bc| bc.dependencies.clone())
-        .unwrap_or_default();
-    let (dependencies, dep_origins) =
-        resolve_manifest_dependencies(&project_sources, &dep_overrides);
-
-    // Print the "previous modules (for reference)" block so reverting is copy-paste.
-    print_modules_list(
-        "previous modules (for reference)",
-        &existing.project_sources,
-        &existing.dependencies,
-        &[],
-    );
-
-    let new_state = BasecampState {
-        project_sources: project_sources.clone(),
-        dependencies: dependencies.clone(),
-        ..existing
-    };
-    write_basecamp_state(&state_path, &new_state)?;
-
-    // Print the new set with annotations.
-    let mut annotations: Vec<SourceOrigin> = project_origins.clone();
-    annotations.extend(dep_origins.iter().cloned());
-    print_modules_list(
-        "captured modules",
-        &project_sources,
-        &dependencies,
-        &annotations,
-    );
+        .expect("basecamp section present")
+        .modules;
+    print_modules_table("captured modules", written);
 
     Ok(())
+}
+
+fn print_modules_table(
+    header: &str,
+    modules: &std::collections::BTreeMap<String, ModuleEntry>,
+) {
+    println!("{header}:");
+    if modules.is_empty() {
+        println!("  (none)");
+        return;
+    }
+    let mut project_entries: Vec<_> = modules
+        .iter()
+        .filter(|(_, e)| e.role == ModuleRole::Project)
+        .collect();
+    let mut dep_entries: Vec<_> = modules
+        .iter()
+        .filter(|(_, e)| e.role == ModuleRole::Dependency)
+        .collect();
+    project_entries.sort_by_key(|(k, _)| k.as_str());
+    dep_entries.sort_by_key(|(k, _)| k.as_str());
+
+    println!("  project_sources:");
+    if project_entries.is_empty() {
+        println!("    (none)");
+    } else {
+        for (name, entry) in project_entries {
+            println!("    {name} = {}", entry.flake);
+        }
+    }
+    println!("  dependencies:");
+    if dep_entries.is_empty() {
+        println!("    (none)");
+    } else {
+        for (name, entry) in dep_entries {
+            println!("    {name} = {}", entry.flake);
+        }
+    }
 }
 
 fn print_modules_list(
@@ -3361,6 +3392,151 @@ mod tests {
             format!("{{\"name\": \"{name}\", \"dependencies\": []}}"),
         )
         .expect("write metadata.json");
+    }
+
+    fn seed_basecamp_project(root: &Path) -> Project {
+        let scaffold_toml = r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "u"
+source = "s"
+path = "p"
+pin = "q"
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = ""
+port_base = 60000
+port_stride = 10
+"#;
+        fs::write(root.join("scaffold.toml"), scaffold_toml).expect("write scaffold.toml");
+        load_project_at(root)
+    }
+
+    fn load_project_at(root: &Path) -> Project {
+        let text = fs::read_to_string(root.join("scaffold.toml")).expect("read");
+        let cfg = crate::config::parse_config(&text).expect("parse");
+        Project {
+            root: root.to_path_buf(),
+            config: cfg,
+        }
+    }
+
+    #[test]
+    fn cmd_basecamp_modules_writes_project_entries_into_scaffold_toml() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        // Source dir with metadata.json so derive_module_name reads it exactly.
+        let src_dir = root.join("tictactoe");
+        fs::create_dir_all(&src_dir).unwrap();
+        write_metadata(&src_dir, "tictactoe_core");
+
+        let project = seed_basecamp_project(root);
+        let probe = FakeProbe::new(&[]);
+        cmd_basecamp_modules(
+            project,
+            Vec::new(),
+            vec![format!("path:{}#lgx", src_dir.display())],
+            false,
+            &probe,
+        )
+        .expect("modules ok");
+
+        let text = fs::read_to_string(root.join("scaffold.toml")).unwrap();
+        assert!(
+            text.contains("[basecamp.modules.tictactoe_core]"),
+            "expected new module entry, got:\n{text}"
+        );
+        assert!(text.contains("role = \"project\""));
+        assert!(text.contains(&format!("flake = \"path:{}#lgx\"", src_dir.display())));
+    }
+
+    #[test]
+    fn cmd_basecamp_modules_is_idempotent_on_rerun() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let src_dir = root.join("mod");
+        fs::create_dir_all(&src_dir).unwrap();
+        write_metadata(&src_dir, "mod_name");
+
+        let flake = format!("path:{}#lgx", src_dir.display());
+        let project = seed_basecamp_project(root);
+        let probe = FakeProbe::new(&[]);
+        cmd_basecamp_modules(
+            project,
+            Vec::new(),
+            vec![flake.clone()],
+            false,
+            &probe,
+        )
+        .expect("first run");
+
+        let first = fs::read_to_string(root.join("scaffold.toml")).unwrap();
+        let project2 = load_project_at(root);
+        cmd_basecamp_modules(project2, Vec::new(), vec![flake], false, &probe)
+            .expect("second run");
+        let second = fs::read_to_string(root.join("scaffold.toml")).unwrap();
+
+        assert_eq!(first, second, "re-running modules should be a no-op");
+    }
+
+    #[test]
+    fn cmd_basecamp_modules_preserves_existing_entry_for_same_module_name() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let src_dir = root.join("mod");
+        fs::create_dir_all(&src_dir).unwrap();
+        write_metadata(&src_dir, "shared_name");
+
+        // Pre-seed scaffold.toml with an entry under `shared_name` that points
+        // to a _different_ flake. Running modules against the local source
+        // must NOT overwrite that entry (user intent wins).
+        let scaffold_toml = r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "u"
+source = "s"
+path = "p"
+pin = "q"
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = ""
+port_base = 60000
+port_stride = 10
+
+[basecamp.modules.shared_name]
+flake = "github:custom/fork/abc123#lgx"
+role = "dependency"
+"#;
+        fs::write(root.join("scaffold.toml"), scaffold_toml).unwrap();
+
+        let project = load_project_at(root);
+        let probe = FakeProbe::new(&[]);
+        cmd_basecamp_modules(
+            project,
+            Vec::new(),
+            vec![format!("path:{}#lgx", src_dir.display())],
+            false,
+            &probe,
+        )
+        .expect("modules ok");
+
+        let text = fs::read_to_string(root.join("scaffold.toml")).unwrap();
+        assert!(
+            text.contains("flake = \"github:custom/fork/abc123#lgx\""),
+            "pre-existing entry must be preserved, got:\n{text}"
+        );
+        assert!(
+            text.contains("role = \"dependency\""),
+            "pre-existing role must be preserved, got:\n{text}"
+        );
     }
 
     #[test]

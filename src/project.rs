@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail};
 
 use crate::config::{parse_config, serialize_config};
 use crate::model::Project;
-use crate::state::write_text;
+use crate::state::write_text_atomic;
 use crate::DynResult;
 
 pub(crate) fn load_project() -> DynResult<Project> {
@@ -38,7 +38,7 @@ pub(crate) fn run_in_project_dir(
 }
 
 pub(crate) fn save_project_config(project: &Project) -> DynResult<()> {
-    write_text(
+    write_text_atomic(
         &project.root.join("scaffold.toml"),
         &serialize_config(&project.config),
     )

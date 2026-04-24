@@ -16,6 +16,27 @@ pub(crate) fn write_text(path: &Path, text: &str) -> DynResult<()> {
     Ok(())
 }
 
+/// Atomic replacement of `path`'s contents with `text`. Writes to a
+/// sibling temp file in the same directory (so the rename stays on one
+/// filesystem) then `rename`s into place. Readers see either the old
+/// contents or the new contents — never a partial write.
+pub(crate) fn write_text_atomic(path: &Path, text: &str) -> DynResult<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(text.as_bytes())?;
+    tmp.as_file_mut().sync_all()?;
+    tmp.persist(path)
+        .map_err(|e| anyhow!("persist {}: {e}", path.display()))?;
+    Ok(())
+}
+
 pub(crate) fn write_localnet_state(path: &Path, state: &LocalnetState) -> DynResult<()> {
     let mut content = String::new();
     if let Some(pid) = state.sequencer_pid {
