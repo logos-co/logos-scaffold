@@ -13,6 +13,11 @@ pub(crate) mod repo;
 pub(crate) mod state;
 pub(crate) mod template;
 
+// Public library API
+pub mod localnet;
+pub mod scaffold;
+pub mod wallet;
+
 pub fn run(args: Vec<String>) -> DynResult<()> {
     cli::run(args)
 }
