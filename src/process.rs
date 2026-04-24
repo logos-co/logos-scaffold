@@ -369,14 +369,16 @@ fn fmt_duration(d: std::time::Duration) -> String {
 }
 
 fn timestamp_compact() -> String {
-    // YYYYMMDD-HHMMSS using the system clock. No chrono dep; good enough
-    // for log filenames (collision-free within a second).
+    // YYYYMMDD-HHMMSS-mmm using the system clock. Millis granularity so two
+    // `run_logged` calls completing in the same wall-clock second (warm nix
+    // cache, fast builds) don't produce the same filename and clobber each
+    // other's log via the subsequent `File::create`.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let s = now.as_secs();
-    let (y, mo, d, h, mi, se) = unix_to_ymdhms(s);
-    format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{se:02}")
+    let (y, mo, d, h, mi, se) = unix_to_ymdhms(now.as_secs());
+    let ms = now.subsec_millis();
+    format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{se:02}-{ms:03}")
 }
 
 fn chrono_like_stamp() -> String {
@@ -440,6 +442,38 @@ mod logged_tests {
         let p = derive_log_path(tmp.path(), "setup");
         assert!(p.starts_with(tmp.path().join(".scaffold/logs")));
         assert!(p.to_string_lossy().ends_with("-setup.log"));
+    }
+
+    #[test]
+    fn derive_log_path_includes_millisecond_suffix_in_stamp() {
+        // R-C1: two calls within the same second must produce different
+        // filenames. Millis granularity gives us 1000x the headroom before
+        // two truly-simultaneous calls collide on File::create truncation.
+        let tmp = tempfile::tempdir().unwrap();
+        let p = derive_log_path(tmp.path(), "install");
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap();
+        // Expected shape: YYYYMMDD-HHMMSS-mmm-<command>
+        //   parts[0] = YYYYMMDD, parts[1] = HHMMSS,
+        //   parts[2] = mmm,      parts[3] = command
+        let parts: Vec<&str> = stem.split('-').collect();
+        assert!(
+            parts.len() >= 4,
+            "expected 4 dash-separated segments, got: {stem}"
+        );
+        assert_eq!(
+            parts[1].len(),
+            6,
+            "HHMMSS should be 6 chars, got {:?} in {stem}",
+            parts[1]
+        );
+        assert_eq!(
+            parts[2].len(),
+            3,
+            "millis should be 3 digits, got {:?} in {stem}",
+            parts[2]
+        );
+        assert!(parts[2].chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(parts[3], "install");
     }
 }
 
