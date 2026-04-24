@@ -58,9 +58,6 @@ pub(crate) enum BasecampAction {
     /// embedded at compile time). Runnable outside a scaffold project so LLMs
     /// exploring the CLI can retrieve the rules before setup.
     Docs,
-    ProfileList {
-        json: bool,
-    },
 }
 
 pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
@@ -95,9 +92,6 @@ pub(crate) fn cmd_basecamp(action: BasecampAction) -> DynResult<()> {
         BasecampAction::Doctor { json } => cmd_basecamp_doctor(project, json),
         // Handled above via early return (project-context-free).
         BasecampAction::Docs => unreachable!("handled before load_project"),
-        // Phase 5 stub: load_project() above is intentional so "outside project"
-        // errors precede "not implemented" — future implementer must preserve that order.
-        BasecampAction::ProfileList { .. } => bail!("basecamp profile list is not yet implemented"),
     }
 }
 

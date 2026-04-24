@@ -74,8 +74,7 @@
 1. `basecamp setup` is opt-in — it is never triggered implicitly by `new`, the top-level `setup`, or `build`.
 2. When `install` or `launch` run without prior `basecamp setup`, the CLI prints a single one-line hint pointing at the required command instead of erroring with a raw subprocess trace.
 3. When only `.#lgx-portable` is found on a project, the CLI fails explicitly, names the missing `.#lgx` output, and suggests `--flake <ref>#lgx-portable` for explicit opt-in.
-4. `basecamp profile list` exposes per-profile state in both human and `--json` forms.
-5. Commands follow the existing `logos-scaffold` CLI idioms (subcommand groups, `--help` output, project-context errors).
+4. Commands follow the existing `logos-scaffold` CLI idioms (subcommand groups, `--help` output, project-context errors).
 
 ### Reliability
 

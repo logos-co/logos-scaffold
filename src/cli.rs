@@ -350,8 +350,6 @@ enum BasecampSubcommand {
         about = "Print the canonical project-compatibility rules (embedded copy of docs/basecamp-module-requirements.md)"
     )]
     Docs,
-    #[command(about = "Manage basecamp profiles")]
-    Profile(BasecampProfileArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -406,24 +404,6 @@ struct BasecampLaunchArgs {
     /// Skip the clean-slate scrub and reinstall step
     #[arg(long)]
     no_clean: bool,
-}
-
-#[derive(Debug, clap::Args)]
-struct BasecampProfileArgs {
-    #[command(subcommand)]
-    command: BasecampProfileSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum BasecampProfileSubcommand {
-    #[command(about = "List basecamp profiles and their installed modules")]
-    List(BasecampProfileListArgs),
-}
-
-#[derive(Debug, clap::Args)]
-struct BasecampProfileListArgs {
-    #[arg(long)]
-    json: bool,
 }
 
 pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
@@ -531,11 +511,6 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 BasecampSubcommand::BuildPortable(_) => BasecampAction::BuildPortable,
                 BasecampSubcommand::Doctor(args) => BasecampAction::Doctor { json: args.json },
                 BasecampSubcommand::Docs => BasecampAction::Docs,
-                BasecampSubcommand::Profile(args) => match args.command {
-                    BasecampProfileSubcommand::List(args) => {
-                        BasecampAction::ProfileList { json: args.json }
-                    }
-                },
             };
             cmd_basecamp(action)
         }

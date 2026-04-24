@@ -1615,15 +1615,18 @@ fn basecamp_help_carries_docs_breadcrumb() {
 }
 
 #[test]
-fn basecamp_profile_list_help_lists_json_flag() {
+fn basecamp_profile_subcommand_does_not_exist() {
+    // The `basecamp profile` subcommand was removed (KISS — feature was a
+    // stub that returned "not yet implemented" and polluted --help). If
+    // someone re-adds it, they should land a real implementation at the
+    // same time.
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
-        .arg("basecamp")
-        .arg("profile")
-        .arg("list")
-        .arg("--help")
+        .args(["basecamp", "profile"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("--json"));
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand").or(
+            predicate::str::contains("error: unrecognized").or(predicate::str::contains("Usage:")),
+        ));
 }
 
 #[test]
@@ -2038,21 +2041,6 @@ fn basecamp_launch_outside_project_errors() {
         .arg("basecamp")
         .arg("launch")
         .arg("alice")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "This command must be run inside a logos-scaffold project.",
-        ));
-}
-
-#[test]
-fn basecamp_profile_list_outside_project_errors() {
-    let temp = tempdir().expect("tempdir");
-    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
-        .current_dir(temp.path())
-        .arg("basecamp")
-        .arg("profile")
-        .arg("list")
         .assert()
         .failure()
         .stderr(predicate::str::contains(
