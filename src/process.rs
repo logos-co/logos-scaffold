@@ -279,13 +279,30 @@ impl StepHandle {
             } else {
                 println!("  ✗ {} ({duration})", self.description);
             }
-            bail!(
+            let mut detail = format!(
                 "{} failed with {status}; see {}",
                 self.description,
                 self.log_path.display()
             );
+            if log_indicates_truncated_trace(&self.log_path) {
+                detail.push_str(&format!(
+                    "\nhint: nix elided part of the eval trace — re-run with --show-trace for full detail: {} --show-trace",
+                    render_command(cmd)
+                ));
+            }
+            bail!("{detail}");
         }
     }
+}
+
+/// Scan a build log for nix's stack-trace-truncation marker. Only appears on
+/// evaluation-time failures when the eval stack exceeds nix's default frame
+/// limit (~25). Not present for builder-stage failures, so this check gates
+/// the `--show-trace` hint to cases where it actually helps.
+fn log_indicates_truncated_trace(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|s| s.contains("stack trace truncated"))
+        .unwrap_or(false)
 }
 
 impl Drop for StepHandle {
