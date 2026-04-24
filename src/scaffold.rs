@@ -8,12 +8,10 @@
 //! scaffold::setup().expect("setup failed");
 //! ```
 
-use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
+use crate::commands::setup::cmd_setup;
 use crate::DynResult;
 
 /// Run scaffold setup: sync lssa, build sequencer, install wallet.
 pub fn setup() -> DynResult<()> {
-    cmd_setup(SetupCommand {
-        wallet_install: WalletInstallMode::Auto,
-    })
+    cmd_setup()
 }
