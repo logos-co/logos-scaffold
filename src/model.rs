@@ -65,11 +65,6 @@ pub(crate) struct BasecampConfig {
     /// anything that references it). Parsed from `[basecamp.modules.<name>]`
     /// sub-sections. Sole source of truth for what `install` / `launch` build.
     pub(crate) modules: std::collections::BTreeMap<String, ModuleEntry>,
-    /// Legacy per-project dep-override table. Parsed from
-    /// `[basecamp.dependencies]`. Being phased out in favour of
-    /// `[basecamp.modules.<name>]` entries with `role = "dependency"`; kept
-    /// during the v0.4 transition until the dep-resolver migrates off it.
-    pub(crate) dependencies: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for BasecampConfig {
@@ -81,7 +76,6 @@ impl Default for BasecampConfig {
             port_base: 60000,
             port_stride: 10,
             modules: std::collections::BTreeMap::new(),
-            dependencies: std::collections::BTreeMap::new(),
         }
     }
 }

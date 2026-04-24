@@ -1090,6 +1090,13 @@ fn cmd_basecamp_modules(
         });
     }
 
+    // Resolve manifest-declared runtime dependencies against the captured
+    // set + scaffold defaults. Fails fast if any declared dep is unresolvable.
+    let dep_entries = resolve_manifest_dependencies(&project_sources, &new_modules)?;
+    for (name, entry) in dep_entries {
+        new_modules.insert(name, entry);
+    }
+
     // "previous modules (for reference)" block so reverting is copy-paste.
     print_modules_table("previous modules (for reference)", &existing_modules);
 
@@ -1328,16 +1335,26 @@ fn read_source_metadata_dependencies(src: &BasecampSource) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Walk each project source's `metadata.json`, union the declared dep names,
-/// resolve each against overrides → defaults → preinstalled → unknown.
-/// Returns `(resolved_sources, per-source origins)` in a stable (sorted) order.
+/// Resolve dependencies declared in project sources' `metadata.json` into
+/// new `[basecamp.modules]` entries with `role = Dependency`. Returns only
+/// the entries that need to be *added* to `captured` — names already in
+/// `captured` (any role) are silently skipped.
+///
+/// Fails fast if any declared dep name can't be resolved through:
+/// 1. an existing entry in `captured` (any role) — V-4 fix,
+/// 2. the basecamp preinstall list,
+/// 3. the declaring source's own `flake.lock` input of the same name,
+/// 4. the scaffold-default `BASECAMP_DEPENDENCIES` pin table.
+///
+/// No warn-and-skip path: if nothing resolves, the capture is aborted with
+/// a targeted error naming both user-side fixes.
 fn resolve_manifest_dependencies(
     project_sources: &[BasecampSource],
-    overrides: &std::collections::BTreeMap<String, String>,
-) -> (Vec<BasecampSource>, Vec<SourceOrigin>) {
-    // Union of all dep names across project sources, with which source flake
-    // ref they came from (for the "via" annotation) AND the source's local
-    // path (used to consult that source's own flake.lock for a pin).
+    captured: &std::collections::BTreeMap<String, ModuleEntry>,
+) -> DynResult<std::collections::BTreeMap<String, ModuleEntry>> {
+    // Union of declared dep names across project sources, annotated with the
+    // declaring source's flake ref (for error messages) and local path (used
+    // to consult that source's own flake.lock).
     let mut declared: std::collections::BTreeMap<String, (String, Option<PathBuf>)> =
         std::collections::BTreeMap::new();
     for src in project_sources {
@@ -1353,88 +1370,61 @@ fn resolve_manifest_dependencies(
         }
     }
 
-    let mut out_sources: Vec<BasecampSource> = Vec::new();
-    let mut out_origins: Vec<SourceOrigin> = Vec::new();
+    let mut new_entries: std::collections::BTreeMap<String, ModuleEntry> =
+        std::collections::BTreeMap::new();
+    let mut unresolved: Vec<(String, String)> = Vec::new();
 
     for (name, (via, local_path)) in declared {
-        // Skip project-internal deps: if another project source's metadata
-        // `name` matches this dep, it's already captured as a project source.
-        if project_sources.iter().any(|src| {
-            let flake_ref = match src {
-                BasecampSource::Flake(f) => f,
-                BasecampSource::Path(_) => return false,
-            };
-            if let Some(local) = flake_path_prefix(flake_ref) {
-                if let Ok(text) = fs::read_to_string(Path::new(local).join("metadata.json")) {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                        return json.get("name").and_then(|v| v.as_str()) == Some(&name);
-                    }
-                }
-            }
-            false
-        }) {
+        if captured.contains_key(&name) {
             continue;
         }
-
-        // 1. Project override in scaffold.toml wins (explicit user intent).
-        if let Some(flake_ref) = overrides.get(&name) {
-            out_sources.push(BasecampSource::Flake(flake_ref.clone()));
-            out_origins.push(SourceOrigin::DepOverride {
-                name: name.clone(),
-                via: via.clone(),
-            });
-            continue;
-        }
-        // 2. Project's own flake.lock input with the same name — prefer the
-        //    pin the project is already building against. This is the
-        //    authoritative source and sidesteps scaffold-default staleness
-        //    (e.g. when an upstream tag predates the `#lgx` convention).
-        if let Some(path) = &local_path {
-            if let Some(resolved) = resolve_dep_from_project_flake_lock(path, &name) {
-                // Drift warning: if scaffold also has a default pin for this
-                // dep AND the revs differ, surface it loudly. The project's
-                // pin wins (they're building against it) but the dev should
-                // know they're off-scaffold — their module may not work
-                // against a basecamp that shipped with the scaffold default.
-                if let Some((_, default_ref)) =
-                    BASECAMP_DEPENDENCIES.iter().find(|(n, _)| *n == name)
-                {
-                    warn_on_dep_pin_drift(&name, default_ref, &resolved, path);
-                }
-                out_sources.push(BasecampSource::Flake(resolved));
-                out_origins.push(SourceOrigin::DepFromProjectLock {
-                    name: name.clone(),
-                    via: via.clone(),
-                    source_flake: path.display().to_string(),
-                });
-                continue;
-            }
-        }
-        // 3. Scaffold default pin — last-resort, may be stale for projects
-        //    that don't declare the dep in their flake.
-        if let Some((_, flake_ref)) = BASECAMP_DEPENDENCIES.iter().find(|(n, _)| *n == name) {
-            out_sources.push(BasecampSource::Flake((*flake_ref).to_string()));
-            out_origins.push(SourceOrigin::DepDefault {
-                name: name.clone(),
-                via: via.clone(),
-            });
-            continue;
-        }
-        // 4. Basecamp preinstalls it — no-op.
         if BASECAMP_PREINSTALLED_MODULES.iter().any(|m| *m == name) {
             continue;
         }
-        // 5. Unknown: warn and skip.
-        eprintln!(
-            "warning: dep `{name}` declared by `{via}` is not pinned in scaffold defaults, \
-             not in `[basecamp.dependencies]`, not in the source's flake.lock, and is not a \
-             preinstalled basecamp module; skipping. Add it to `[basecamp.dependencies]` in \
-             scaffold.toml, declare it as a flake input of the source, or run \
-             `basecamp modules --flake <ref>#lgx` to capture explicitly."
-        );
+        if let Some(path) = &local_path {
+            if let Some(resolved) = resolve_dep_from_project_flake_lock(path, &name) {
+                new_entries.insert(
+                    name.clone(),
+                    ModuleEntry {
+                        flake: resolved,
+                        role: ModuleRole::Dependency,
+                    },
+                );
+                continue;
+            }
+        }
+        if let Some((_, flake_ref)) = BASECAMP_DEPENDENCIES.iter().find(|(n, _)| *n == name) {
+            new_entries.insert(
+                name.clone(),
+                ModuleEntry {
+                    flake: (*flake_ref).to_string(),
+                    role: ModuleRole::Dependency,
+                },
+            );
+            continue;
+        }
+        unresolved.push((name, via));
     }
 
-    (out_sources, out_origins)
+    if !unresolved.is_empty() {
+        let mut msg = String::from(
+            "unresolved module dependencies (declared in metadata.json but not resolvable):\n",
+        );
+        for (name, via) in &unresolved {
+            msg.push_str(&format!("  - `{name}` declared by `{via}`\n"));
+        }
+        msg.push_str(
+            "Either:\n  \
+             (a) capture the module as a project source: `basecamp modules --flake <ref>#lgx`, or\n  \
+             (b) add an explicit entry to scaffold.toml:\n      \
+             [basecamp.modules.<name>]\n      \
+             flake = \"<ref>#lgx\"\n      \
+             role = \"dependency\"\n",
+        );
+        bail!("{msg}");
+    }
+
+    Ok(new_entries)
 }
 
 /// Pure replay of `state.project_sources` + `state.dependencies` into every
@@ -2020,14 +2010,13 @@ pub(crate) struct ModuleDriftReport {
     pub(crate) discovered_not_captured: Vec<BasecampSource>,
 }
 
-/// Run the `basecamp modules` auto-discovery algorithm as a dry-run and diff
-/// the result against `state` (union of project_sources + dependencies). Uses
-/// the real `NixLgxProbe` internally — callers that need a fake probe for
-/// testing should call the lower-level helpers directly.
+/// Run `basecamp modules` auto-discovery as a dry-run and diff the project
+/// sources it would find against `[basecamp.modules]` entries with
+/// `role = "project"`. Dependencies are not considered here — if a project
+/// source is captured, `basecamp modules` resolves its deps deterministically
+/// at capture time, so any dep drift surfaces via the modules command itself
+/// rather than via this doctor row.
 pub(crate) fn compute_module_drift(project: &Project) -> DynResult<ModuleDriftReport> {
-    let state_path = project.root.join(".scaffold/state/basecamp.state");
-    let state = read_basecamp_state(&state_path).unwrap_or_default();
-
     let cache_root_first = first_path_component(&project.config.cache_root);
     let mut skip_subdirs: Vec<&str> = BASECAMP_AUTODISCOVER_SKIP_SUBDIRS.iter().copied().collect();
     if let Some(c) = cache_root_first.as_deref() {
@@ -2048,24 +2037,23 @@ pub(crate) fn compute_module_drift(project: &Project) -> DynResult<ModuleDriftRe
     )
     .unwrap_or_default();
 
-    let overrides = project
+    let captured_flakes: std::collections::HashSet<String> = project
         .config
         .basecamp
         .as_ref()
-        .map(|bc| bc.dependencies.clone())
+        .map(|bc| {
+            bc.modules
+                .values()
+                .filter(|e| e.role == ModuleRole::Project)
+                .map(|e| e.flake.clone())
+                .collect()
+        })
         .unwrap_or_default();
-    let (discovered_deps, _) = resolve_manifest_dependencies(&discovered_project, &overrides);
 
-    let mut discovered: std::collections::HashSet<BasecampSource> =
-        std::collections::HashSet::new();
-    discovered.extend(discovered_project.iter().cloned());
-    discovered.extend(discovered_deps.iter().cloned());
-
-    let captured: std::collections::HashSet<BasecampSource> =
-        state.all_sources().cloned().collect();
-
-    let mut discovered_not_captured: Vec<BasecampSource> =
-        discovered.difference(&captured).cloned().collect();
+    let mut discovered_not_captured: Vec<BasecampSource> = discovered_project
+        .into_iter()
+        .filter(|src| !captured_flakes.contains(&flake_ref(src)))
+        .collect();
     discovered_not_captured.sort_by_key(flake_ref);
 
     Ok(ModuleDriftReport {
@@ -3290,81 +3278,84 @@ mod tests {
     }
 
     #[test]
-    fn resolve_manifest_dependencies_uses_project_override_over_default() {
-        let tmp = tempdir().expect("tempdir");
-        seed_module_metadata(tmp.path(), "mymod", &["delivery_module"]);
-        let project = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
-
-        let mut overrides = std::collections::BTreeMap::new();
-        overrides.insert(
-            "delivery_module".to_string(),
-            "github:custom/delivery-fork#lgx".to_string(),
-        );
-
-        let (deps, origins) = resolve_manifest_dependencies(&[project], &overrides);
-        assert_eq!(
-            deps,
-            vec![BasecampSource::Flake(
-                "github:custom/delivery-fork#lgx".to_string()
-            )]
-        );
-        assert!(matches!(origins[0], SourceOrigin::DepOverride { .. }));
-    }
-
-    #[test]
     fn resolve_manifest_dependencies_falls_back_to_scaffold_default() {
         let tmp = tempdir().expect("tempdir");
         seed_module_metadata(tmp.path(), "mymod", &["delivery_module"]);
         let project = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
 
-        let overrides = std::collections::BTreeMap::new();
-        let (deps, origins) = resolve_manifest_dependencies(&[project], &overrides);
-        assert_eq!(deps.len(), 1);
-        // Scaffold default for delivery_module (see constants::BASECAMP_DEPENDENCIES).
-        match &deps[0] {
-            BasecampSource::Flake(f) => assert!(
-                f.contains("logos-delivery-module"),
-                "expected scaffold default delivery ref, got {f}"
-            ),
-            _ => panic!("expected Flake"),
-        }
-        assert!(matches!(origins[0], SourceOrigin::DepDefault { .. }));
+        let captured = std::collections::BTreeMap::new();
+        let new_entries = resolve_manifest_dependencies(&[project], &captured).expect("ok");
+        let entry = new_entries.get("delivery_module").expect("delivery resolved");
+        assert_eq!(entry.role, ModuleRole::Dependency);
+        assert!(
+            entry.flake.contains("logos-delivery-module"),
+            "expected scaffold default delivery ref, got {}",
+            entry.flake,
+        );
     }
 
     #[test]
     fn resolve_manifest_dependencies_silently_skips_preinstalled_modules() {
         let tmp = tempdir().expect("tempdir");
-        // `capability_module` is preinstalled by basecamp; must not be captured.
         seed_module_metadata(
             tmp.path(),
             "mymod",
             &["capability_module", "package_manager"],
         );
         let project = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
-        let (deps, origins) =
-            resolve_manifest_dependencies(&[project], &std::collections::BTreeMap::new());
-        assert!(deps.is_empty(), "preinstalled modules must not be captured");
-        assert!(origins.is_empty());
+        let new_entries =
+            resolve_manifest_dependencies(&[project], &std::collections::BTreeMap::new())
+                .expect("ok");
+        assert!(
+            new_entries.is_empty(),
+            "preinstalled modules must not be captured"
+        );
     }
 
     #[test]
-    fn resolve_manifest_dependencies_skips_project_internal_deps() {
-        // Two sibling project sources where one declares a dep on the other.
+    fn resolve_manifest_dependencies_skips_names_already_in_captured_table() {
+        // V-4 fix: a dep name that already has a `[basecamp.modules]` entry
+        // (regardless of role) is silently skipped. vpavlin's repro: yolo
+        // declares `storage_module` as a dep; the user captured
+        // logos-storage-module as a project source via explicit --flake,
+        // which resolves to module_name `storage_module`. The resolver must
+        // see that and skip it.
         let tmp = tempdir().expect("tempdir");
-        let core = tmp.path().join("core");
-        let ui = tmp.path().join("ui");
-        seed_module_metadata(&core, "core", &[]);
-        seed_module_metadata(&ui, "ui", &["core"]);
+        seed_module_metadata(tmp.path(), "yolo", &["storage_module"]);
+        let project = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
 
-        let project = vec![
-            BasecampSource::Flake(format!("path:{}#lgx", core.display())),
-            BasecampSource::Flake(format!("path:{}#lgx", ui.display())),
-        ];
+        let mut captured = std::collections::BTreeMap::new();
+        captured.insert(
+            "storage_module".to_string(),
+            ModuleEntry {
+                flake: "github:logos-co/logos-storage-module/abc123#lgx".to_string(),
+                role: ModuleRole::Project,
+            },
+        );
 
-        let (deps, _) = resolve_manifest_dependencies(&project, &std::collections::BTreeMap::new());
+        let new_entries = resolve_manifest_dependencies(&[project], &captured).expect("ok");
         assert!(
-            deps.is_empty(),
-            "project-internal deps should not produce external captures"
+            new_entries.is_empty(),
+            "dep already in captured table must not produce a new entry"
+        );
+    }
+
+    #[test]
+    fn resolve_manifest_dependencies_fails_fast_on_unresolved_dep() {
+        let tmp = tempdir().expect("tempdir");
+        seed_module_metadata(tmp.path(), "mymod", &["no_such_module"]);
+        let project = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+
+        let captured = std::collections::BTreeMap::new();
+        let err = resolve_manifest_dependencies(&[project], &captured).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no_such_module") && msg.contains("unresolved"),
+            "expected fail-fast error naming the dep, got: {msg}"
+        );
+        assert!(
+            msg.contains("basecamp modules --flake") || msg.contains("[basecamp.modules."),
+            "expected both user-side fixes in error, got: {msg}"
         );
     }
 
