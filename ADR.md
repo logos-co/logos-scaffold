@@ -55,6 +55,41 @@ mutates profile state, and never touches `basecamp.state`. This keeps the two
 delivery flows strictly separate, trading a slight command-surface duplication for
 clean boundaries.
 
+## Build-Portable Stages Symlinks in a Scaffold-Owned Directory
+
+`basecamp build-portable` produces `.lgx` artefacts in the nix store — paths
+like `/nix/store/xxx-source/foo.lgx`. Operators then load those into a
+basecamp AppImage via its "install lgx" file picker, which opens in the
+filesystem. Browsing to `/nix/store/` by hand through a file dialog is
+painful: the hashes are opaque, there's no ordering, and the user has to
+mentally reconstruct which artefact belongs to which module.
+
+`build-portable` now writes a mirror of each built artefact as a symlink
+under `<project>/.scaffold/basecamp/portable/<NN>-<module_name>.lgx`
+(or `<NN>-<module_name>-<stem>.lgx` when a source emits multiple outputs).
+The `NN` prefix is a two-digit zero-padded load-order index, so the
+directory lists the artefacts in the exact order basecamp needs to load
+them — modules with no project-internal deps first, modules that depend
+on them afterwards. Ordering is derived from each source's `metadata.json`
+`dependencies` array via a topological sort among the captured
+`role = "project"` modules; non-project deps are ignored because they're
+resolved at runtime via the basecamp preinstall or package-manager
+catalog, not at hand-load time.
+
+The symlink directory is wiped and recreated on every `build-portable`
+run. That keeps re-runs idempotent: removing a module via `basecamp
+modules` and re-running `build-portable` leaves no stale symlinks. The
+symlinks point at live nix-store paths; the store entries themselves are
+retained by their `result-lgx-portable` GC root at each flake root, so
+scaffold's symlink does not itself pin the artefacts.
+
+Tradeoffs: scaffold now writes under `.scaffold/basecamp/portable/` at
+`build-portable` time, which contradicts the original v0.3 claim that
+`build-portable` "never writes under `.scaffold/`" (the v0.3 FURPS has
+been updated accordingly). The upside is operator ergonomics for the
+one actual friction point in the AppImage test flow — no more hunting
+through the nix store in a file picker.
+
 ## AppImage Path is Outside Scaffold's Scope
 
 `build-portable` could have tried to auto-locate a basecamp AppImage and copy

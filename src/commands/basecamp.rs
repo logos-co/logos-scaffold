@@ -606,9 +606,20 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
 /// that isn't a project source, `basecamp modules --flake <ref>#lgx` it first,
 /// run `build-portable`, then revert with another `modules` call.
 fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
-    let project_sources = project_role_sources(&project, ModuleRole::Project);
+    let project_modules: std::collections::BTreeMap<String, ModuleEntry> = project
+        .config
+        .basecamp
+        .as_ref()
+        .map(|bc| {
+            bc.modules
+                .iter()
+                .filter(|(_, e)| e.role == ModuleRole::Project)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
 
-    if project_sources.is_empty() {
+    if project_modules.is_empty() {
         bail!(
             "no project modules captured in scaffold.toml; run `basecamp modules` \
              first (auto-discover) or `basecamp modules --flake <ref>#lgx \
@@ -617,39 +628,141 @@ fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
         );
     }
 
+    // Order project modules so each appears AFTER its own project-internal
+    // deps (leaves first). Basecamp loads `.lgx` artefacts in the order the
+    // user hands them to it — emitting bottom-up means a module's deps are
+    // already resolved by the time basecamp tries to resolve its symbols.
+    let ordered_names = topo_order_project_modules(&project_modules);
+
     // Rewrite each project source: attr-swap `#lgx` → `#lgx-portable` on
     // flake refs; pass Path sources through unchanged (they're pre-built).
-    let portable_sources: Vec<BasecampSource> = project_sources
+    let portable_sources: Vec<BasecampSource> = ordered_names
         .iter()
-        .map(|src| match src {
-            BasecampSource::Path(p) => BasecampSource::Path(p.clone()),
-            BasecampSource::Flake(f) => {
-                BasecampSource::Flake(swap_flake_attr(f, "lgx", "lgx-portable"))
+        .map(|name| {
+            let entry = &project_modules[name];
+            let src = module_entry_to_source(entry);
+            match src {
+                BasecampSource::Path(p) => BasecampSource::Path(p),
+                BasecampSource::Flake(f) => {
+                    BasecampSource::Flake(swap_flake_attr(&f, "lgx", "lgx-portable"))
+                }
             }
         })
         .collect();
 
+    // Local symlink dir: basecamp's AppImage "install lgx" button opens a
+    // file picker starting in the project, and /nix/store/…-source paths
+    // are painful to navigate by hand. Wipe + recreate so a re-run doesn't
+    // leave stale symlinks from modules that have since been removed.
+    let portable_dir = project.root.join(".scaffold/basecamp/portable");
+    let _ = fs::remove_dir_all(&portable_dir);
+    fs::create_dir_all(&portable_dir)
+        .with_context(|| format!("create {}", portable_dir.display()))?;
+
     let mut outputs: Vec<PathBuf> = Vec::new();
-    for src in &portable_sources {
-        match src {
-            BasecampSource::Path(p) => {
-                outputs.push(build_portable_resolve_path(Path::new(p))?);
-            }
+    for (index, (name, src)) in ordered_names.iter().zip(portable_sources.iter()).enumerate() {
+        let store_paths: Vec<PathBuf> = match src {
+            BasecampSource::Path(p) => vec![build_portable_resolve_path(Path::new(p))?],
             BasecampSource::Flake(flake_ref) => {
                 // Sibling overrides still computed against the post-swap set
                 // so path-sibling inputs resolve locally like they do at install.
                 let overrides = resolve_sibling_overrides(src, &portable_sources, flake_ref);
                 let inv = build_portable_nix_invocation(flake_ref, &overrides);
-                outputs.extend(run_build_portable_nix(&project.root, flake_ref, &inv)?);
+                run_build_portable_nix(&project.root, flake_ref, &inv)?
             }
+        };
+
+        // Symlink each store path into `portable_dir` with a load-ordered,
+        // human-readable name. Two-digit index so a file-browser sorts the
+        // list the same way the user should load them in basecamp.
+        let load_order = format!("{:02}", index + 1);
+        let multiple = store_paths.len() > 1;
+        for store_path in &store_paths {
+            let link_name = if multiple {
+                let stem = store_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("out");
+                format!("{load_order}-{name}-{stem}.lgx")
+            } else {
+                format!("{load_order}-{name}.lgx")
+            };
+            let link_path = portable_dir.join(&link_name);
+            std::os::unix::fs::symlink(store_path, &link_path).with_context(|| {
+                format!(
+                    "symlink {} -> {}",
+                    link_path.display(),
+                    store_path.display()
+                )
+            })?;
+            outputs.push(link_path);
         }
     }
 
-    println!("Built portable .lgx artefacts (copy these into your basecamp AppImage manually):");
+    println!(
+        "Portable .lgx artefacts (in load order, symlinked into {}):",
+        portable_dir.display()
+    );
     for out in &outputs {
         println!("  {}", out.display());
     }
     Ok(())
+}
+
+/// Order `project_modules` so each module appears AFTER every
+/// project-internal module it declares as a `metadata.json` dependency.
+/// Modules with no project-internal deps come first, in alphabetical
+/// order. Non-project deps (anything not keyed in `project_modules`) are
+/// ignored — they're resolved at runtime, not load-time here.
+///
+/// Falls back to the remaining alphabetical order if a cycle is detected
+/// (extremely unlikely in practice; a cycle would also mean the modules
+/// can't load in any order and basecamp will error anyway — we just don't
+/// want `build-portable` to hang).
+fn topo_order_project_modules(
+    project_modules: &std::collections::BTreeMap<String, ModuleEntry>,
+) -> Vec<String> {
+    let mut remaining: std::collections::BTreeMap<String, Vec<String>> = project_modules
+        .iter()
+        .map(|(name, entry)| {
+            let src = module_entry_to_source(entry);
+            let declared = read_source_metadata_dependencies(&src);
+            let project_internal_deps: Vec<String> = declared
+                .into_iter()
+                .filter(|d| d != name && project_modules.contains_key(d))
+                .collect();
+            (name.clone(), project_internal_deps)
+        })
+        .collect();
+
+    let mut out: Vec<String> = Vec::with_capacity(remaining.len());
+    while !remaining.is_empty() {
+        let mut ready: Vec<String> = remaining
+            .iter()
+            .filter(|(_, deps)| deps.is_empty())
+            .map(|(k, _)| k.clone())
+            .collect();
+        ready.sort();
+
+        if ready.is_empty() {
+            // Cycle or unreachable state. Emit the rest alphabetically so
+            // output stays deterministic; operator will see the load error
+            // at basecamp runtime.
+            let mut rest: Vec<String> = remaining.keys().cloned().collect();
+            rest.sort();
+            out.extend(rest);
+            break;
+        }
+
+        for name in &ready {
+            remaining.remove(name);
+            out.push(name.clone());
+        }
+        for deps in remaining.values_mut() {
+            deps.retain(|d| !ready.contains(d));
+        }
+    }
+    out
 }
 
 /// Swap the attribute suffix on a flake ref: `path:/abs#lgx` → `path:/abs#lgx-portable`.
@@ -3461,6 +3574,143 @@ mod tests {
     }
 
     // ---- `basecamp modules` helpers (manifest walking + dep resolution) ----
+
+    fn entry_for(flake: &str) -> ModuleEntry {
+        ModuleEntry {
+            flake: flake.to_string(),
+            role: ModuleRole::Project,
+        }
+    }
+
+    #[test]
+    fn topo_order_empty_returns_empty() {
+        let modules: std::collections::BTreeMap<String, ModuleEntry> =
+            std::collections::BTreeMap::new();
+        assert!(topo_order_project_modules(&modules).is_empty());
+    }
+
+    #[test]
+    fn topo_order_single_module_returns_singleton() {
+        let tmp = tempdir().expect("tempdir");
+        let d = tmp.path().join("only");
+        seed_module_metadata(&d, "only", &[]);
+        let mut modules = std::collections::BTreeMap::new();
+        modules.insert(
+            "only".to_string(),
+            entry_for(&format!("path:{}#lgx", d.display())),
+        );
+        assert_eq!(topo_order_project_modules(&modules), vec!["only".to_string()]);
+    }
+
+    #[test]
+    fn topo_order_emits_dep_before_dependent() {
+        // A declares dep on B; build-portable load order must be [B, A] so
+        // basecamp can resolve B's symbols before loading A.
+        let tmp = tempdir().expect("tempdir");
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        seed_module_metadata(&a, "a", &["b"]);
+        seed_module_metadata(&b, "b", &[]);
+        let mut modules = std::collections::BTreeMap::new();
+        modules.insert(
+            "a".to_string(),
+            entry_for(&format!("path:{}#lgx", a.display())),
+        );
+        modules.insert(
+            "b".to_string(),
+            entry_for(&format!("path:{}#lgx", b.display())),
+        );
+        assert_eq!(
+            topo_order_project_modules(&modules),
+            vec!["b".to_string(), "a".to_string()]
+        );
+    }
+
+    #[test]
+    fn topo_order_handles_three_level_chain() {
+        let tmp = tempdir().expect("tempdir");
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        let c = tmp.path().join("c");
+        seed_module_metadata(&a, "a", &["b"]);
+        seed_module_metadata(&b, "b", &["c"]);
+        seed_module_metadata(&c, "c", &[]);
+        let mut modules = std::collections::BTreeMap::new();
+        for (name, dir) in [("a", &a), ("b", &b), ("c", &c)] {
+            modules.insert(
+                name.to_string(),
+                entry_for(&format!("path:{}#lgx", dir.display())),
+            );
+        }
+        assert_eq!(
+            topo_order_project_modules(&modules),
+            vec!["c".to_string(), "b".to_string(), "a".to_string()]
+        );
+    }
+
+    #[test]
+    fn topo_order_sorts_peers_alphabetically_for_determinism() {
+        // A depends on both b and c; b and c have no deps between each other.
+        // Emit peers alphabetically so build-portable output is reproducible.
+        let tmp = tempdir().expect("tempdir");
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        let c = tmp.path().join("c");
+        seed_module_metadata(&a, "a", &["b", "c"]);
+        seed_module_metadata(&b, "b", &[]);
+        seed_module_metadata(&c, "c", &[]);
+        let mut modules = std::collections::BTreeMap::new();
+        for (name, dir) in [("a", &a), ("b", &b), ("c", &c)] {
+            modules.insert(
+                name.to_string(),
+                entry_for(&format!("path:{}#lgx", dir.display())),
+            );
+        }
+        assert_eq!(
+            topo_order_project_modules(&modules),
+            vec!["b".to_string(), "c".to_string(), "a".to_string()]
+        );
+    }
+
+    #[test]
+    fn topo_order_ignores_non_project_deps() {
+        // A declares `delivery_module` as a dep but delivery_module isn't
+        // in the project-module set (it's a role=Dependency entry). The
+        // dep doesn't participate in project ordering.
+        let tmp = tempdir().expect("tempdir");
+        let a = tmp.path().join("a");
+        seed_module_metadata(&a, "a", &["delivery_module"]);
+        let mut modules = std::collections::BTreeMap::new();
+        modules.insert(
+            "a".to_string(),
+            entry_for(&format!("path:{}#lgx", a.display())),
+        );
+        assert_eq!(topo_order_project_modules(&modules), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn topo_order_breaks_cycle_with_stable_fallback() {
+        // A <-> B cycle. Shouldn't deadlock; fall back to emitting the
+        // cycle members in alphabetical order so the output is at least
+        // deterministic even if it won't load correctly.
+        let tmp = tempdir().expect("tempdir");
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        seed_module_metadata(&a, "a", &["b"]);
+        seed_module_metadata(&b, "b", &["a"]);
+        let mut modules = std::collections::BTreeMap::new();
+        modules.insert(
+            "a".to_string(),
+            entry_for(&format!("path:{}#lgx", a.display())),
+        );
+        modules.insert(
+            "b".to_string(),
+            entry_for(&format!("path:{}#lgx", b.display())),
+        );
+        let got = topo_order_project_modules(&modules);
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&"a".to_string()) && got.contains(&"b".to_string()));
+    }
 
     fn seed_module_metadata(dir: &Path, name: &str, deps: &[&str]) {
         let metadata = serde_json::json!({

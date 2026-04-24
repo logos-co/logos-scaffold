@@ -127,7 +127,7 @@ Extends v0.2 with two subcommands: a release-style `.lgx-portable` build path fo
 
 ### Functionality
 
-1. `basecamp build-portable` builds the project's `.#lgx-portable` flake outputs (the variant that loads cleanly into a release basecamp AppImage) and prints the absolute store paths of the resulting `.lgx` artefacts.
+1. `basecamp build-portable` builds the project's `.#lgx-portable` flake outputs (the variant that loads cleanly into a release basecamp AppImage), orders them topologically by `metadata.json` dependencies so leaves load first, symlinks the results into `<project>/.scaffold/basecamp/portable/` with names carrying the load order, and prints those symlink paths. The wipe-and-recreate on every run keeps the staging dir idempotent.
 2. `basecamp reset` kills any live basecamp tracked in per-profile `launch.state`, wipes `.scaffold/basecamp/profiles/`, clears recorded `sources` in `basecamp.state` (preserving the pinned basecamp + lgpm binaries), and re-seeds empty `alice` / `bob` profiles in the same run.
 3. Source resolution for `build-portable` reuses the same auto-discovery + `--path` / `--flake` escape hatches as `install`, but targets `#lgx-portable` instead of `#lgx`.
 4. `basecamp reset --dry-run` prints the full action plan (PIDs to kill, paths to remove, source count to clear, profiles to re-seed) and exits 0 without side effects.
@@ -135,7 +135,7 @@ Extends v0.2 with two subcommands: a release-style `.lgx-portable` build path fo
 ### Usability
 
 1. Projects exposing only `.#lgx` (no `.#lgx-portable`) receive a targeted hint naming the missing attribute and suggesting `--flake <ref>#lgx-portable` for explicit opt-in — mirror of the v0.2 failure mode, in reverse.
-2. `build-portable` leaves the symlink destination to `nix build`'s default — no `.scaffold/`-owned output directory, so each flake's `./result-lgx-portable` symlink lands next to its `flake.nix`. Multi-flake projects get per-flake-dir disambiguation for free.
+2. `build-portable` stages a user-facing mirror of every built artefact as a symlink under `<project>/.scaffold/basecamp/portable/<NN>-<module_name>.lgx`. The two-digit `NN` is the load-order index so a file-browser lists the artefacts in the exact order basecamp needs to load them — the AppImage's "install lgx" picker sees human-named files in the right order rather than opaque `/nix/store/…-source/…` paths. Nix's own `./result-lgx-portable` symlinks still land next to each flake; the scaffold-owned dir is a separate concern layered on top.
 3. `reset` prints the action plan before any destructive step, both for `--dry-run` and live invocations, so users see what's about to happen without surprises.
 4. `reset` exits with a targeted hint (run `basecamp setup`) when invoked before the basecamp state exists.
 
@@ -143,12 +143,12 @@ Extends v0.2 with two subcommands: a release-style `.lgx-portable` build path fo
 
 1. `reset` re-verifies each recorded PID's `/proc/<pid>/comm` against the pinned basecamp binary before issuing TERM or KILL, avoiding PID-reuse hazards.
 2. `reset` refuses to remove `.scaffold/basecamp/profiles/` when that path resolves (via symlink or otherwise) outside `.scaffold/basecamp/` — enforced by the same `canonicalize_under` guard used by `scrub_profile_data_and_cache`.
-3. `build-portable` never writes under `.scaffold/`, never invokes `lgpm`, and never touches `basecamp.state`, so a failed portable build cannot corrupt the scaffold-managed profile trees.
+3. `build-portable` writes only under `<project>/.scaffold/basecamp/portable/` (a wiped-and-recreated staging dir of symlinks into the nix store), never invokes `lgpm`, and never touches `basecamp.state` or the `alice`/`bob` profile trees — so a failed portable build cannot corrupt install/launch state.
 4. `reset` is idempotent: a second invocation on a freshly-reset project prints an empty kill plan and completes cleanly.
 
 ### Supportability
 
-1. `build-portable`'s manual copy-to-AppImage step is explicit: scaffold does not know or print the AppImage's destination path. The AppImage lifecycle is intentionally outside scaffold's scope — see ADR "AppImage Path is Outside Scaffold's Scope".
+1. `build-portable`'s manual load-into-AppImage step is explicit: scaffold stages browsable symlinks under `.scaffold/basecamp/portable/` but does not know or auto-feed the AppImage's install dialog. The AppImage lifecycle is intentionally outside scaffold's scope — see ADR "AppImage Path is Outside Scaffold's Scope".
 2. `reset`'s action plan doubles as a verification checklist when debugging stale profile state.
 3. Known limitation: multi-sub-flake projects must unify transitive `logos-module-builder` references via `inputs.<dep>.inputs.logos-module-builder.follows = "logos-module-builder"`. Without it, `install` can fail via the overridden sibling's lock even when a direct `nix build` succeeds. Documented fully in `docs/basecamp-module-requirements.md`; expected to become obsolete once upstream `logos-module-builder` scaffolding emits this `follows` automatically.
 

@@ -147,12 +147,19 @@ role = "dependency"
 
 ```bash
 logos-scaffold basecamp build-portable
-# → builds .#lgx-portable for each auto-discovered source
-# → prints the absolute store paths of the built .lgx artefacts
-# → leaves `./result-lgx-portable` symlinks next to each flake
+# → builds .#lgx-portable for every `role = "project"` entry in [basecamp.modules]
+# → topologically orders by metadata.json dependencies (leaves first,
+#   so basecamp can resolve each module's deps before loading it)
+# → symlinks the built artefacts into `.scaffold/basecamp/portable/` as
+#   `<NN>-<module_name>.lgx` (NN = load-order index) so the AppImage's
+#   "install lgx" file picker has browsable, human-named files in the
+#   right order — no manual hunting through /nix/store/
+# → prints the symlink paths in load order
 ```
 
-`build-portable` does not touch profiles, `basecamp.state`, or the AppImage itself — it only produces artefacts. Copy them into your AppImage's module directory manually; scaffold is intentionally unaware of that path.
+`build-portable` does not touch profiles, `basecamp.state`, or the AppImage itself — it only produces artefacts. Load them into your AppImage in the printed order via its "install lgx" button; scaffold is intentionally unaware of the AppImage's install path.
+
+The `.scaffold/basecamp/portable/` directory is wiped and recreated on every `build-portable` run, so re-running after you've removed a module via `basecamp modules` doesn't leave stale symlinks behind.
 
 If a flake exposes only `lgx` (not `lgx-portable`), `build-portable` fails with a targeted hint — mirror of the `install` portable-only failure, in reverse.
 
