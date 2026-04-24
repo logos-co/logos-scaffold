@@ -49,7 +49,8 @@ pub(crate) enum BasecampAction {
     /// provides those. No CLI source flags.
     BuildPortable,
     /// Basecamp-specific doctor: captured modules summary, manifest variant
-    /// check per seeded profile, and drift between auto-discovery and state.
+    /// check per seeded profile, and uncaptured-module drift against
+    /// auto-discovery.
     Doctor {
         json: bool,
     },
@@ -709,6 +710,17 @@ fn run_build_portable_nix(
         .with_context(|| format!("spawn nix build {flake_ref}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if (stderr.contains("does not provide attribute") || stderr.contains("missing attribute"))
+            && stderr.contains("lgx-portable")
+        {
+            bail!(
+                "flake `{flake_ref}` does not expose `lgx-portable`. Either:\n\
+                 (a) add a `packages.<system>.lgx-portable` output to your module's flake.nix \
+                 (see docs/basecamp-module-requirements.md), or\n\
+                 (b) if you don't need a portable build, skip `basecamp build-portable` — \
+                 `basecamp install` uses `.#lgx` and works without it."
+            );
+        }
         bail!(
             "nix build {flake_ref} failed ({}): {}",
             output.status,
@@ -1853,19 +1865,15 @@ pub(crate) fn check_manifest_variants(
     issues
 }
 
-/// Difference between what `basecamp modules` would auto-discover today
-/// and what's captured in `state.sources`. Used by `doctor` to flag stale
-/// or missing captures without running the real capture.
+/// Sources `basecamp modules` would auto-discover today but which aren't in
+/// `state.sources`. Used by `doctor` to flag missing captures without running
+/// the real capture. The reverse direction (captured-but-not-discovered) is
+/// intentionally not reported: explicitly captured sources (e.g. `--path` to
+/// a nix store, a github ref outside the project tree) are never
+/// auto-discoverable, and flagging them produced noisy false positives.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ModuleDriftReport {
     pub(crate) discovered_not_captured: Vec<BasecampSource>,
-    pub(crate) captured_not_discovered: Vec<BasecampSource>,
-}
-
-impl ModuleDriftReport {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.discovered_not_captured.is_empty() && self.captured_not_discovered.is_empty()
-    }
 }
 
 /// Run the `basecamp modules` auto-discovery algorithm as a dry-run and diff
@@ -1915,13 +1923,9 @@ pub(crate) fn compute_module_drift(project: &Project) -> DynResult<ModuleDriftRe
     let mut discovered_not_captured: Vec<BasecampSource> =
         discovered.difference(&captured).cloned().collect();
     discovered_not_captured.sort_by_key(flake_ref);
-    let mut captured_not_discovered: Vec<BasecampSource> =
-        captured.difference(&discovered).cloned().collect();
-    captured_not_discovered.sort_by_key(flake_ref);
 
     Ok(ModuleDriftReport {
         discovered_not_captured,
-        captured_not_discovered,
     })
 }
 
@@ -1972,7 +1976,7 @@ fn cmd_basecamp_doctor(project: Project, as_json: bool) -> DynResult<()> {
 
 /// Build the basecamp-specific doctor rows: captured modules summary (each
 /// source's flake ref + commit/tag + installed api headers), manifest variant
-/// checks per seeded profile, and a module-set drift check against
+/// checks per seeded profile, and a missing-module drift check against
 /// auto-discovery. No-op when `basecamp.state` is absent.
 fn push_basecamp_doctor_rows(project: &Project, rows: &mut Vec<crate::model::CheckRow>) {
     use crate::model::{CheckRow, CheckStatus};
@@ -2073,38 +2077,20 @@ fn push_basecamp_doctor_rows(project: &Project, rows: &mut Vec<crate::model::Che
         }
     }
 
-    match compute_module_drift(project) {
-        Ok(drift) if !drift.is_empty() => {
-            for src in &drift.discovered_not_captured {
-                rows.push(CheckRow {
-                    status: CheckStatus::Warn,
-                    name: "basecamp drift: uncaptured".to_string(),
-                    detail: format!(
-                        "discovered `{}` but not captured in basecamp.state",
-                        flake_ref(src)
-                    ),
-                    remediation: Some(
-                        "run `logos-scaffold basecamp modules` to refresh capture".to_string(),
-                    ),
-                });
-            }
-            for src in &drift.captured_not_discovered {
-                rows.push(CheckRow {
-                    status: CheckStatus::Warn,
-                    name: "basecamp drift: stale".to_string(),
-                    detail: format!(
-                        "captured `{}` no longer discoverable (may be stale)",
-                        flake_ref(src)
-                    ),
-                    remediation: Some(
-                        "run `logos-scaffold basecamp modules` to refresh; \
-                         or `--flake <ref>#lgx` / `--path <file.lgx>` to capture explicitly"
-                            .to_string(),
-                    ),
-                });
-            }
+    if let Ok(drift) = compute_module_drift(project) {
+        for src in &drift.discovered_not_captured {
+            rows.push(CheckRow {
+                status: CheckStatus::Warn,
+                name: "basecamp drift: uncaptured".to_string(),
+                detail: format!(
+                    "discovered `{}` but not captured in basecamp.state",
+                    flake_ref(src)
+                ),
+                remediation: Some(
+                    "run `logos-scaffold basecamp modules` to refresh capture".to_string(),
+                ),
+            });
         }
-        _ => {}
     }
 }
 
