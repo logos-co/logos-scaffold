@@ -11,13 +11,28 @@ pub(crate) struct RepoRef {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct LocalnetConfig {
+    pub(crate) port: u16,
+    pub(crate) risc0_dev_mode: bool,
+}
+
+impl Default for LocalnetConfig {
+    fn default() -> Self {
+        Self {
+            port: 3040,
+            risc0_dev_mode: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct Config {
     pub(crate) version: String,
     pub(crate) cache_root: String,
-    pub(crate) lssa: RepoRef,
-    pub(crate) wallet_binary: String,
+    pub(crate) lez: RepoRef,
     pub(crate) wallet_home_dir: String,
     pub(crate) framework: FrameworkConfig,
+    pub(crate) localnet: LocalnetConfig,
 }
 
 #[derive(Clone, Debug)]

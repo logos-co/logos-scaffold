@@ -16,3 +16,11 @@ pub(crate) mod template;
 pub fn run(args: Vec<String>) -> DynResult<()> {
     cli::run(args)
 }
+
+pub fn entry_main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Err(err) = run(args) {
+        eprintln!("error: {err:#}");
+        std::process::exit(1);
+    }
+}

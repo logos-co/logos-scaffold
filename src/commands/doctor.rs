@@ -5,13 +5,14 @@ use std::process::{Command, Stdio};
 use anyhow::bail;
 
 use super::wallet_support::wallet_password;
-use crate::constants::DEFAULT_LSSA_PIN;
+use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
+use crate::constants::{DEFAULT_LEZ_PIN, SEQUENCER_BIN_REL_PATH, WALLET_BIN_REL_PATH};
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
     check_standalone_support, one_line, print_rows,
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
-use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo, which};
+use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo};
 use crate::project::load_project;
 use crate::state::read_localnet_state;
 use crate::DynResult;
@@ -69,7 +70,7 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
 
 pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     let project = load_project()?;
-    let lssa = PathBuf::from(&project.config.lssa.path);
+    let lez = PathBuf::from(&project.config.lez.path);
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     let localnet_state_path = project.root.join(".scaffold/state/localnet.state");
 
@@ -78,40 +79,46 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     rows.push(check_binary("git", true));
     rows.push(check_binary("rustc", true));
     rows.push(check_binary("cargo", true));
-    rows.push(check_binary(&project.config.wallet_binary, true));
     rows.push(check_binary("lsof", true));
     rows.push(check_binary("ps", true));
     rows.push(check_binary("kill", true));
     rows.push(check_container_runtime());
 
-    rows.push(check_repo("lssa", &lssa, &project.config.lssa.pin));
+    rows.push(check_repo("lez", &lez, &project.config.lez.pin));
 
     rows.push(CheckRow {
-        status: if project.config.lssa.pin == DEFAULT_LSSA_PIN {
+        status: if project.config.lez.pin == DEFAULT_LEZ_PIN {
             CheckStatus::Pass
         } else {
             CheckStatus::Warn
         },
-        name: "lssa standalone pin".to_string(),
+        name: "lez standalone pin".to_string(),
         detail: format!(
             "configured pin={} expected={}",
-            project.config.lssa.pin, DEFAULT_LSSA_PIN
+            project.config.lez.pin, DEFAULT_LEZ_PIN
         ),
-        remediation: if project.config.lssa.pin == DEFAULT_LSSA_PIN {
+        remediation: if project.config.lez.pin == DEFAULT_LEZ_PIN {
             None
         } else {
             Some(format!(
-                "Set repos.lssa.pin in scaffold.toml to {} and run `{}`",
-                DEFAULT_LSSA_PIN, STEP_SETUP
+                "Set repos.lez.pin in scaffold.toml to {} and run `{}`",
+                DEFAULT_LEZ_PIN, STEP_SETUP
             ))
         },
     });
 
-    rows.push(check_standalone_support(&lssa));
+    rows.push(check_standalone_support(&lez));
 
     rows.push(check_path(
         "sequencer binary",
-        &lssa.join("target/release/sequencer_runner"),
+        &lez.join(SEQUENCER_BIN_REL_PATH),
+        "Run `logos-scaffold setup`",
+    ));
+
+    let wallet_binary_path = lez.join(WALLET_BIN_REL_PATH);
+    rows.push(check_path(
+        "wallet binary",
+        &wallet_binary_path,
         "Run `logos-scaffold setup`",
     ));
 
@@ -175,7 +182,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         });
     }
 
-    let wallet_cfg = wallet_home.join("config.json");
+    let wallet_cfg = wallet_home.join(WALLET_CONFIG_PRIMARY);
     if wallet_cfg.exists() {
         let cfg_text = fs::read_to_string(&wallet_cfg)?;
         if cfg_text.contains("127.0.0.1:3040") || cfg_text.contains("localhost:3040") {
@@ -191,7 +198,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
                 name: "wallet network config".to_string(),
                 detail: "wallet may point to non-local sequencer".to_string(),
                 remediation: Some(
-                    "Set .scaffold/wallet/config.json sequencer_addr=http://127.0.0.1:3040"
+                    "Set .scaffold/wallet/wallet_config.json sequencer_addr=http://127.0.0.1:3040"
                         .to_string(),
                 ),
             });
@@ -200,13 +207,13 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         rows.push(CheckRow {
             status: CheckStatus::Warn,
             name: "wallet network config".to_string(),
-            detail: "missing .scaffold/wallet/config.json".to_string(),
+            detail: "missing .scaffold/wallet/wallet_config.json".to_string(),
             remediation: Some("Run `logos-scaffold setup`".to_string()),
         });
     }
 
-    if which(&project.config.wallet_binary).is_some() {
-        let mut version_cmd = Command::new(&project.config.wallet_binary);
+    if wallet_binary_path.exists() {
+        let mut version_cmd = Command::new(&wallet_binary_path);
         version_cmd.arg("--version");
         match run_capture(&mut version_cmd, "wallet --version") {
             Ok(out) => rows.push(CheckRow {
@@ -223,7 +230,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
             }),
         }
 
-        let mut health_cmd = Command::new(&project.config.wallet_binary);
+        let mut health_cmd = Command::new(&wallet_binary_path);
         health_cmd
             .env("NSSA_WALLET_HOME_DIR", wallet_home.display().to_string())
             .arg("check-health")

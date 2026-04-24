@@ -6,21 +6,30 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use serde_json::Value;
 
-use crate::constants::DEFAULT_WALLET_PASSWORD;
+use crate::constants::{DEFAULT_WALLET_PASSWORD, WALLET_BIN_REL_PATH};
 use crate::model::Project;
 use crate::state::write_text;
 use crate::DynResult;
 
-const WALLET_CONFIG_PRIMARY: &str = "wallet_config.json";
-const WALLET_CONFIG_FALLBACK: &str = "config.json";
+pub(crate) const WALLET_CONFIG_PRIMARY: &str = "wallet_config.json";
+pub(crate) const WALLET_CONFIG_FALLBACK: &str = "config.json";
 
 pub(crate) struct WalletRuntimeContext {
     pub(crate) wallet_home: PathBuf,
-    pub(crate) wallet_binary: String,
+    pub(crate) wallet_binary: PathBuf,
     pub(crate) sequencer_addr: Option<String>,
 }
 
 pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeContext> {
+    let lez = PathBuf::from(&project.config.lez.path);
+    let wallet_binary = lez.join(WALLET_BIN_REL_PATH);
+    if !wallet_binary.exists() {
+        bail!(
+            "missing wallet binary at {}. Run `logos-scaffold setup`.",
+            wallet_binary.display()
+        );
+    }
+
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     if !wallet_home.exists() {
         bail!(
@@ -37,29 +46,32 @@ pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeC
 
     Ok(WalletRuntimeContext {
         wallet_home,
-        wallet_binary: project.config.wallet_binary.clone(),
+        wallet_binary,
         sequencer_addr,
     })
 }
 
 fn read_wallet_config(wallet_home: &Path) -> DynResult<(PathBuf, Value)> {
-    let candidates = [
-        wallet_home.join(WALLET_CONFIG_PRIMARY),
-        wallet_home.join(WALLET_CONFIG_FALLBACK),
-    ];
+    let primary = wallet_home.join(WALLET_CONFIG_PRIMARY);
+    let fallback = wallet_home.join(WALLET_CONFIG_FALLBACK);
 
-    let path = candidates
-        .iter()
-        .find(|path| path.exists())
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "missing wallet config. Expected `{}` or `{}` under {}. Run `logos-scaffold setup`.",
-                WALLET_CONFIG_PRIMARY,
-                WALLET_CONFIG_FALLBACK,
-                wallet_home.display()
-            )
-        })?;
+    let path = if primary.exists() {
+        primary
+    } else if fallback.exists() {
+        // Legacy: older `setup` runs wrote "config.json" instead of
+        // "wallet_config.json". Re-run `logos-scaffold setup` to migrate.
+        eprintln!(
+            "warning: found legacy wallet config '{}';              re-run `logos-scaffold setup` to migrate to '{}'.",
+            WALLET_CONFIG_FALLBACK,
+            WALLET_CONFIG_PRIMARY,
+        );
+        fallback
+    } else {
+        return Err(anyhow::anyhow!(
+            "missing wallet config at \'{}\'. Run `logos-scaffold setup`.",
+            wallet_home.join(WALLET_CONFIG_PRIMARY).display()
+        ));
+    };
 
     let text = fs::read_to_string(&path)
         .with_context(|| format!("failed to read wallet config at {}", path.display()))?;
@@ -377,11 +389,11 @@ impl std::fmt::Display for RpcReachabilityError {
 
 impl std::error::Error for RpcReachabilityError {}
 
-pub(crate) fn rpc_get_last_block(sequencer_addr: &str) -> Result<u64, RpcReachabilityError> {
+pub(crate) fn rpc_get_last_block_id(sequencer_addr: &str) -> Result<u64, RpcReachabilityError> {
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1_u64,
-        "method": "get_last_block",
+        "method": "getLastBlockId",
         "params": {}
     });
 
@@ -399,19 +411,29 @@ pub(crate) fn rpc_get_last_block(sequencer_addr: &str) -> Result<u64, RpcReachab
 
     let body: Value = response.into_json().map_err(|err| {
         RpcReachabilityError::Other(format!(
-            "failed to decode get_last_block response from {sequencer_addr}: {err}"
+            "failed to decode getLastBlockId response from {sequencer_addr}: {err}"
         ))
     })?;
 
-    body.get("result")
-        .and_then(|result| result.get("last_block"))
-        .and_then(Value::as_u64)
-        .ok_or_else(|| {
-            RpcReachabilityError::Other(format!(
-                "get_last_block response missing `result.last_block`: {}",
-                one_line(&body.to_string())
-            ))
-        })
+    if let Some(err_obj) = body.get("error") {
+        let code = err_obj.get("code").and_then(Value::as_i64);
+        let message = err_obj.get("message").and_then(Value::as_str).unwrap_or("");
+        let formatted = match code {
+            Some(c) => format!("getLastBlockId RPC error {c}: {message}"),
+            None => format!(
+                "getLastBlockId RPC error: {}",
+                one_line(&err_obj.to_string())
+            ),
+        };
+        return Err(RpcReachabilityError::Other(formatted));
+    }
+
+    body.get("result").and_then(Value::as_u64).ok_or_else(|| {
+        RpcReachabilityError::Other(format!(
+            "getLastBlockId response missing numeric `result`: {}",
+            one_line(&body.to_string())
+        ))
+    })
 }
 
 fn map_ureq_error(err: ureq::Error) -> RpcReachabilityError {
@@ -443,6 +465,7 @@ fn one_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{WALLET_CONFIG_FALLBACK, WALLET_CONFIG_PRIMARY};
     use std::fs;
 
     use tempfile::tempdir;
@@ -528,7 +551,7 @@ mod tests {
         let wallet_home = temp.path().join(".scaffold/wallet");
         fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
         fs::write(
-            wallet_home.join("wallet_config.json"),
+            wallet_home.join(WALLET_CONFIG_PRIMARY),
             r#"{
   "initial_accounts": [
     { "Private": { "account_id": "2ECgkFTaXzwjJBXR7ZKmXYQtpHbvTTHK9Auma4NL9AUo" } },
@@ -549,7 +572,7 @@ mod tests {
         let wallet_home = temp.path().join(".scaffold/wallet");
         fs::create_dir_all(&wallet_home).expect("mkdir wallet home");
         fs::write(
-            wallet_home.join("wallet_config.json"),
+            wallet_home.join(WALLET_CONFIG_PRIMARY),
             r#"{
   "initial_accounts": [
     { "Private": { "account_id": "2ECgkFTaXzwjJBXR7ZKmXYQtpHbvTTHK9Auma4NL9AUo" } }
@@ -649,6 +672,122 @@ details: [1, 2, 3]
 
         let tx = extract_tx_identifier(stdout, "");
         assert_eq!(tx.as_deref(), Some("tx_hash: plain-id-789"));
+    }
+
+    #[test]
+    fn rpc_get_last_block_id_parses_valid_response() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://{addr}");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+
+            let body = r#"{"jsonrpc":"2.0","result":42,"id":1}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+            stream.flush().expect("flush");
+        });
+
+        let block =
+            super::rpc_get_last_block_id(&url).expect("rpc_get_last_block_id should succeed");
+        assert_eq!(block, 42);
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn rpc_get_last_block_id_returns_connectivity_error_when_unreachable() {
+        let result = super::rpc_get_last_block_id("http://127.0.0.1:1");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            super::RpcReachabilityError::Connectivity(_) => {}
+            other => panic!("expected Connectivity error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn rpc_get_last_block_id_returns_error_on_malformed_response() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://{addr}");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+
+            // Response with non-numeric `result`
+            let body = r#"{"jsonrpc":"2.0","result":{},"id":1}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+            stream.flush().expect("flush");
+        });
+
+        let result = super::rpc_get_last_block_id(&url);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("missing numeric `result`"),
+            "expected missing numeric result error, got: {err_msg}"
+        );
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn rpc_get_last_block_id_returns_error_on_method_not_found() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("http://{addr}");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+
+            let body =
+                r#"{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":1}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+            stream.flush().expect("flush");
+        });
+
+        let result = super::rpc_get_last_block_id(&url);
+        let err_msg = result
+            .expect_err("method-not-found should surface as error")
+            .to_string();
+        assert!(
+            err_msg.contains("-32601") && err_msg.contains("Method not found"),
+            "expected JSON-RPC error code and message to surface, got: {err_msg}"
+        );
+        assert!(
+            !err_msg.contains("missing numeric"),
+            "JSON-RPC error should surface structurally, not fall through to the \
+             generic missing-result branch; got: {err_msg}"
+        );
+        handle.join().expect("server thread");
     }
 
     #[test]

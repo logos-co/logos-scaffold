@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context};
@@ -9,7 +9,7 @@ use crate::project::load_project;
 use crate::DynResult;
 
 use super::wallet_support::{
-    extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block,
+    extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block_id,
     sequencer_unreachable_hint, summarize_command_failure, wallet_password, RpcReachabilityError,
 };
 
@@ -17,11 +17,33 @@ const GUEST_BIN_REL_PATH: &str =
     "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
-pub(crate) fn cmd_deploy(program_name: Option<String>) -> DynResult<()> {
+pub(crate) fn cmd_deploy(
+    program_name: Option<String>,
+    program_path: Option<PathBuf>,
+    json: bool,
+) -> DynResult<()> {
     let project = load_project().context(
         "This command must be run inside a logos-scaffold project.\nNext step: cd into your scaffolded project directory and retry.",
     )?;
     let wallet = load_wallet_runtime(&project)?;
+
+    let sequencer_addr = wallet
+        .sequencer_addr
+        .clone()
+        .unwrap_or_else(|| DEFAULT_SEQUENCER_ADDR.to_string());
+
+    // --program-path: deploy a single custom ELF directly, skip auto-discovery
+    if let Some(custom_path) = program_path {
+        if !custom_path.exists() {
+            bail!("program binary not found at `{}`", custom_path.display());
+        }
+        let program_name = custom_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        return deploy_single_program(&wallet, &program_name, &custom_path, &sequencer_addr, json);
+    }
 
     let available_programs = discover_deployable_programs(&project.root)?;
     if available_programs.is_empty() {
@@ -34,10 +56,6 @@ pub(crate) fn cmd_deploy(program_name: Option<String>) -> DynResult<()> {
     let selected_programs = resolve_selected_programs(program_name, &available_programs)?;
     let binaries_root = project.root.join(GUEST_BIN_REL_PATH);
 
-    let sequencer_addr = wallet
-        .sequencer_addr
-        .clone()
-        .unwrap_or_else(|| DEFAULT_SEQUENCER_ADDR.to_string());
     preflight_sequencer_reachability(&sequencer_addr)?;
 
     let mut results = Vec::new();
@@ -128,7 +146,7 @@ pub(crate) fn cmd_deploy(program_name: Option<String>) -> DynResult<()> {
         .filter(|result| matches!(result.status, DeployStatus::Failed))
         .count();
 
-    println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LSSA wallet/RPC for scaffold.");
+    println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LEZ wallet/RPC for scaffold.");
     println!("Summary:");
     println!("  Succeeded: {success_count}");
     println!("  Failed: {failed_count}");
@@ -150,7 +168,7 @@ pub(crate) fn cmd_deploy(program_name: Option<String>) -> DynResult<()> {
 }
 
 fn preflight_sequencer_reachability(sequencer_addr: &str) -> DynResult<()> {
-    match rpc_get_last_block(sequencer_addr) {
+    match rpc_get_last_block_id(sequencer_addr) {
         Ok(_) => Ok(()),
         Err(RpcReachabilityError::Connectivity(err)) => {
             bail!(
@@ -220,6 +238,70 @@ fn resolve_selected_programs(
         "unknown program `{candidate}`. Available programs: {}",
         available_programs.join(", ")
     )
+}
+
+fn deploy_single_program(
+    wallet: &super::wallet_support::WalletRuntimeContext,
+    program_name: &str,
+    binary_path: &Path,
+    sequencer_addr: &str,
+    json: bool,
+) -> DynResult<()> {
+    preflight_sequencer_reachability(sequencer_addr)?;
+
+    let mut command = std::process::Command::new(&wallet.wallet_binary);
+    command
+        .env(
+            "NSSA_WALLET_HOME_DIR",
+            wallet.wallet_home.as_os_str().to_string_lossy().to_string(),
+        )
+        .arg("deploy-program")
+        .arg(binary_path);
+
+    let output = run_with_stdin(
+        command,
+        format!(
+            "{}
+",
+            wallet_password()
+        ),
+    )
+    .context("failed to execute wallet deploy-program command")?;
+
+    let tx = extract_tx_identifier(&output.stdout, &output.stderr);
+
+    if !output.status.success() {
+        let summary = summarize_command_failure(&output.stdout, &output.stderr);
+        if json {
+            eprintln!(
+                "{{\"status\":\"failed\",\"program\":\"{}\",\"error\":\"{}\"}}",
+                program_name, summary
+            );
+        } else {
+            println!("FAIL {program_name} deployment failed");
+            println!("  Error: {summary}");
+        }
+        bail!("deploy failed: {summary}");
+    }
+
+    if json {
+        let tx_val = tx
+            .as_deref()
+            .map(|t| format!("\"{}\"", t))
+            .unwrap_or_else(|| "null".to_string());
+        println!(
+            "{{\"status\":\"submitted\",\"program\":\"{}\",\"tx\":{}}}",
+            program_name, tx_val
+        );
+    } else {
+        println!("OK  {program_name} submitted");
+        println!("  Binary: {}", binary_path.display());
+        if let Some(tx) = &tx {
+            println!("  Tx: {tx}");
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Debug)]

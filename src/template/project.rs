@@ -11,7 +11,7 @@ static TEMPLATES_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
 pub(crate) struct OverlayRenderContext<'a> {
     pub(crate) crate_name: &'a str,
-    pub(crate) lssa_pin: &'a str,
+    pub(crate) lez_pin: &'a str,
 }
 
 pub(crate) fn apply_overlay(
@@ -23,7 +23,7 @@ pub(crate) fn apply_overlay(
     ensure_scaffold_in_gitignore(target)
 }
 
-fn ensure_scaffold_in_gitignore(target: &Path) -> DynResult<()> {
+pub(crate) fn ensure_scaffold_in_gitignore(target: &Path) -> DynResult<()> {
     let gitignore_path = target.join(".gitignore");
     let mut content = if gitignore_path.exists() {
         fs::read_to_string(&gitignore_path)?
@@ -105,7 +105,7 @@ fn normalize_template_file_name(file_name: &std::ffi::OsStr) -> std::ffi::OsStri
 fn render_template_text(raw: &str, ctx: &OverlayRenderContext<'_>) -> DynResult<String> {
     let rendered = raw
         .replace("{{crate_name}}", ctx.crate_name)
-        .replace("{{lssa_pin}}", ctx.lssa_pin);
+        .replace("{{lez_pin}}", ctx.lez_pin);
 
     if let Some(token) = find_unresolved_placeholder(&rendered) {
         bail!("unresolved template token `{token}`");
@@ -123,6 +123,22 @@ fn find_unresolved_placeholder(text: &str) -> Option<&str> {
     } else {
         Some(&text[start..])
     }
+}
+
+pub(crate) fn available_templates() -> Vec<String> {
+    let mut names: Vec<String> = TEMPLATES_DIR
+        .dirs()
+        .map(|d| {
+            d.path()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    names.sort();
+    names
 }
 
 #[cfg(test)]
@@ -151,7 +167,7 @@ mod tests {
         let target = mk_temp_dir("files");
         let ctx = OverlayRenderContext {
             crate_name: "my-app",
-            lssa_pin: "abc123",
+            lez_pin: "abc123",
         };
 
         apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
@@ -188,14 +204,14 @@ mod tests {
         let target = mk_temp_dir("lez-manifests");
         let ctx = OverlayRenderContext {
             crate_name: "my-app",
-            lssa_pin: "abc123",
+            lez_pin: "abc123",
         };
 
         apply_overlay(&target, "lez-framework", &ctx).expect("failed to apply lez-framework");
 
         for path in [
             "Cargo.toml",
-            "crates/lssa-client-gen/Cargo.toml",
+            "crates/lez-client-gen/Cargo.toml",
             "methods/guest/Cargo.toml",
         ] {
             assert!(
@@ -206,7 +222,7 @@ mod tests {
 
         for path in [
             "Cargo.toml.template",
-            "crates/lssa-client-gen/Cargo.toml.template",
+            "crates/lez-client-gen/Cargo.toml.template",
             "methods/guest/Cargo.toml.template",
         ] {
             assert!(
@@ -223,7 +239,7 @@ mod tests {
         let target = mk_temp_dir("tokens");
         let ctx = OverlayRenderContext {
             crate_name: "example-name",
-            lssa_pin: "deadbeef",
+            lez_pin: "deadbeef",
         };
 
         apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
@@ -242,7 +258,7 @@ mod tests {
         let target = mk_temp_dir("parity");
         let ctx = OverlayRenderContext {
             crate_name: "my-app",
-            lssa_pin: "abc123",
+            lez_pin: "abc123",
         };
 
         apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
@@ -273,7 +289,7 @@ mod tests {
         let target = mk_temp_dir("gitignore");
         let ctx = OverlayRenderContext {
             crate_name: "my-app",
-            lssa_pin: "abc123",
+            lez_pin: "abc123",
         };
 
         apply_overlay(&target, "default", &ctx).expect("failed to apply default overlay");
@@ -316,7 +332,7 @@ mod tests {
     fn render_fails_on_unresolved_placeholder() {
         let ctx = OverlayRenderContext {
             crate_name: "my-app",
-            lssa_pin: "abc123",
+            lez_pin: "abc123",
         };
 
         let err = render_template_text("name = \"{{unknown_token}}\"", &ctx)

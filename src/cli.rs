@@ -1,20 +1,39 @@
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use anyhow::anyhow;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::client::cmd_client;
+use crate::commands::completions::cmd_completions;
 use crate::commands::deploy::cmd_deploy;
 use crate::commands::doctor::cmd_doctor;
 use crate::commands::idl::cmd_idl;
+use crate::commands::init::cmd_init;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
-use crate::commands::setup::{cmd_setup, SetupCommand, WalletInstallMode};
+use crate::commands::setup::cmd_setup;
 use crate::commands::wallet::{cmd_wallet, WalletAction};
 use crate::constants::VERSION;
+use crate::template::project::available_templates;
 use crate::DynResult;
+
+static TEMPLATE_HELP: LazyLock<String> = LazyLock::new(|| {
+    let templates = available_templates().join(", ");
+    format!("Template to use (available: {templates})")
+});
+
+static CREATE_ABOUT: LazyLock<String> = LazyLock::new(|| {
+    let templates = available_templates().join(", ");
+    format!("Create a new logos-scaffold project (templates: {templates})")
+});
+
+static NEW_ABOUT: LazyLock<String> = LazyLock::new(|| {
+    let templates = available_templates().join(", ");
+    format!("Alias for `create` (templates: {templates})")
+});
 
 #[derive(Debug, Parser)]
 #[command(
@@ -30,8 +49,10 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     #[command(about = "Create a new logos-scaffold project")]
+    #[command(before_long_help = CREATE_ABOUT.as_str())]
     Create(NewArgs),
     #[command(about = "Alias for `create`")]
+    #[command(before_long_help = NEW_ABOUT.as_str())]
     New(NewArgs),
     Setup(SetupArgs),
     Build(BuildArgs),
@@ -41,8 +62,51 @@ enum Commands {
     Doctor(DoctorArgs),
     #[command(about = "Collect a sanitized diagnostics archive for issue reporting")]
     Report(ReportArgs),
+    #[command(
+        about = "Print a shell completion script to stdout",
+        long_about = "Print a shell completion script to stdout.\n\n\
+                      Run `lgs completions <shell> --help` for per-shell install instructions."
+    )]
+    Completions(CompletionsArgs),
+    #[command(about = "Initialize scaffold.toml in the current directory")]
+    Init,
     #[command(hide = true)]
     Help,
+}
+
+#[derive(Debug, clap::Args)]
+struct CompletionsArgs {
+    #[command(subcommand)]
+    shell: CompletionsShell,
+}
+
+#[derive(Debug, Subcommand)]
+enum CompletionsShell {
+    #[command(
+        about = "Print bash completion script to stdout",
+        long_about = "Print bash completion script to stdout.\n\n\
+                      The generated script completes both `lgs` and `logos-scaffold`.\n\n\
+                      Install:\n\n    \
+                      lgs completions bash > ~/.local/share/bash-completion/completions/lgs\n\n\
+                      Then reload your shell (or `source` the file) to pick up completions."
+    )]
+    Bash,
+    #[command(
+        about = "Print zsh completion script to stdout",
+        long_about = "Print zsh completion script to stdout.\n\n\
+                      The generated script completes both `lgs` and `logos-scaffold`.\n\n\
+                      Install (plain zsh):\n\n    \
+                      mkdir -p ~/.zfunc\n    \
+                      lgs completions zsh > ~/.zfunc/_lgs\n\n\
+                      Then ensure ~/.zshrc contains:\n\n    \
+                      fpath=(~/.zfunc $fpath)\n    \
+                      autoload -Uz compinit && compinit\n\n\
+                      Install (oh-my-zsh, as a custom plugin):\n\n    \
+                      mkdir -p ~/.oh-my-zsh/custom/plugins/lgs\n    \
+                      lgs completions zsh > ~/.oh-my-zsh/custom/plugins/lgs/_lgs\n\n\
+                      Then add `lgs` to the `plugins=(...)` array in ~/.zshrc and reload the shell."
+    )]
+    Zsh,
 }
 
 #[derive(Debug, clap::Args)]
@@ -50,19 +114,16 @@ struct NewArgs {
     name: String,
     #[arg(long)]
     vendor_deps: bool,
-    #[arg(long)]
-    lssa_path: Option<PathBuf>,
+    #[arg(long, alias = "lssa-path")]
+    lez_path: Option<PathBuf>,
     #[arg(long)]
     cache_root: Option<PathBuf>,
-    #[arg(long, default_value = "default")]
+    #[arg(long, default_value = "default", help = TEMPLATE_HELP.as_str())]
     template: String,
 }
 
 #[derive(Debug, clap::Args)]
-struct SetupArgs {
-    #[arg(long, value_enum, default_value_t = WalletInstallMode::Auto)]
-    wallet_install: WalletInstallMode,
-}
+struct SetupArgs {}
 
 #[derive(Debug, clap::Args)]
 struct BuildArgs {
@@ -87,6 +148,12 @@ struct BuildSubArgs {
 #[derive(Debug, clap::Args)]
 struct DeployArgs {
     program_name: Option<String>,
+    /// Path to a custom ELF binary to deploy directly (bypasses auto-discovery)
+    #[arg(long, value_name = "PATH")]
+    program_path: Option<PathBuf>,
+    /// Output result as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -115,6 +182,7 @@ enum LocalnetSubcommand {
     Stop,
     Status(LocalnetStatusArgs),
     Logs(LocalnetLogsArgs),
+    Reset(LocalnetResetArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -133,6 +201,23 @@ struct LocalnetStatusArgs {
 struct LocalnetLogsArgs {
     #[arg(long, default_value_t = 200)]
     tail: usize,
+}
+
+/// Reset localnet to a clean state: stop the sequencer, delete the sequencer
+/// database, restart the sequencer, and verify block production.
+///
+/// The wallet is preserved by default. Pass `--reset-wallet` to additionally
+/// delete wallet keypairs and wallet state.
+#[derive(Debug, clap::Args)]
+struct LocalnetResetArgs {
+    /// Also delete the wallet home directory and wallet state. Destructive:
+    /// keypairs are not recoverable after this.
+    #[arg(long)]
+    reset_wallet: bool,
+
+    /// Seconds to wait for the restarted sequencer to produce a block.
+    #[arg(long, default_value_t = 30)]
+    verify_timeout_sec: u64,
 }
 
 #[derive(Debug, clap::Args)]
@@ -197,7 +282,14 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         return cmd_wallet(action);
     }
 
-    let cli = match Cli::try_parse_from(args) {
+    let bin_name = args
+        .first()
+        .and_then(|s| std::path::Path::new(s).file_name())
+        .and_then(|f| f.to_str())
+        .unwrap_or("logos-scaffold")
+        .to_string();
+
+    let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
             clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
@@ -212,13 +304,11 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         Some(Commands::Create(args)) | Some(Commands::New(args)) => cmd_new(NewCommand {
             name: args.name,
             vendor_deps: args.vendor_deps,
-            lssa_path: args.lssa_path,
+            lez_path: args.lez_path,
             cache_root: args.cache_root,
             template: args.template,
         }),
-        Some(Commands::Setup(args)) => cmd_setup(SetupCommand {
-            wallet_install: args.wallet_install,
-        }),
+        Some(Commands::Setup(_)) => cmd_setup(),
         Some(Commands::Build(args)) => match args.subcommand {
             Some(BuildSubcommand::Idl(sub)) => cmd_idl(
                 &sub.project_path
@@ -232,7 +322,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             ),
             None => cmd_build_shortcut(args.project_path),
         },
-        Some(Commands::Deploy(args)) => cmd_deploy(args.program_name),
+        Some(Commands::Deploy(args)) => cmd_deploy(args.program_name, args.program_path, args.json),
         Some(Commands::Localnet(localnet)) => {
             let action = match localnet.command {
                 LocalnetSubcommand::Start(args) => LocalnetAction::Start {
@@ -241,6 +331,10 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 LocalnetSubcommand::Stop => LocalnetAction::Stop,
                 LocalnetSubcommand::Status(args) => LocalnetAction::Status { json: args.json },
                 LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
+                LocalnetSubcommand::Reset(args) => LocalnetAction::Reset {
+                    reset_wallet: args.reset_wallet,
+                    verify_timeout_sec: args.verify_timeout_sec,
+                },
             };
             cmd_localnet(action)
         }
@@ -270,13 +364,25 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
-        Some(Commands::Help) => print_help(),
-        None => print_help(),
+        Some(Commands::Completions(args)) => {
+            let shell = match args.shell {
+                CompletionsShell::Bash => clap_complete::Shell::Bash,
+                CompletionsShell::Zsh => clap_complete::Shell::Zsh,
+            };
+            cmd_completions(shell)
+        }
+        Some(Commands::Init) => cmd_init(&bin_name),
+        Some(Commands::Help) => print_help(&bin_name),
+        None => print_help(&bin_name),
     }
 }
 
-pub(crate) fn print_help() -> DynResult<()> {
-    let mut cmd = Cli::command();
+pub(crate) fn cli_command() -> clap::Command {
+    Cli::command()
+}
+
+pub(crate) fn print_help(bin_name: &str) -> DynResult<()> {
+    let mut cmd = Cli::command().bin_name(bin_name);
     cmd.print_help()?;
     println!();
     Ok(())
