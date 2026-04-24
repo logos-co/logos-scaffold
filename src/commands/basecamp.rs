@@ -15,7 +15,7 @@ use crate::constants::{
     BASECAMP_XDG_APP_SUBPATH, DEFAULT_BASECAMP_PIN, DEFAULT_LGPM_FLAKE,
 };
 use crate::model::{BasecampSource, BasecampState, ModuleEntry, ModuleRole, Project, RepoRef};
-use crate::process::{derive_log_path, rotate_logs, run_checked, run_logged, set_print_output};
+use crate::process::{derive_log_path, run_checked, run_logged, set_print_output};
 use crate::project::{load_project, save_project_config};
 use crate::repo::{sync_repo_to_pin, RepoSyncOptions};
 use crate::state::{read_basecamp_state, write_basecamp_state};
@@ -182,7 +182,6 @@ fn build_basecamp_app(project_root: &Path, repo: &Path, out_dir: &Path) -> DynRe
         .arg("--out-link")
         .arg(&link);
     run_logged(&mut cmd, "building basecamp", &log)?;
-    rotate_logs(project_root, "setup-basecamp", 10);
     resolve_basecamp_binary(&link)
 }
 
@@ -200,7 +199,6 @@ fn build_lgpm(project_root: &Path, out_dir: &Path, override_flake: &str) -> DynR
         .arg("--out-link")
         .arg(&link);
     run_logged(&mut cmd, &format!("building lgpm ({flake_ref})"), &log)?;
-    rotate_logs(project_root, "setup-lgpm", 10);
     Ok(link.join("bin/lgpm"))
 }
 
@@ -1717,7 +1715,6 @@ fn materialize_lgx_files(
             cmd.arg("--out-link").arg(&link);
             let log = derive_log_path(project_root, "install");
             run_logged(&mut cmd, &format!("building {flake_ref}"), &log)?;
-            rotate_logs(project_root, "install", 10);
             list_lgx(&link)
         }
     }

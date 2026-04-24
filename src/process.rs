@@ -62,236 +62,147 @@ pub(crate) fn print_output_enabled() -> bool {
             .unwrap_or(false)
 }
 
-/// Run a subprocess with captured output. The user sees:
-/// - A single start line: `<step>… (log: <abs-log-path>)`
-/// - On success: `  ✓ <step> (<duration>)`
-/// - On failure: `  ✗ <step> (<duration>) — see <abs-log-path>`
+/// Run a subprocess with captured output and a single progress line. The
+/// user sees:
+/// - `<step>` on its own line.
+/// - `  tip: tail -f <abs-log-path>` so they can watch live.
+/// - In TTY mode: an animated `⋯ <step>` spinner line that resolves to
+///   `  ✓ <step> (<duration>)` on success or `  ✗ <step> (<duration>)` on
+///   failure.
+/// - In non-TTY mode: the same `⋯`/`✓`/`✗` lines, no animation.
 ///
-/// Full stdout+stderr is appended to the log file. Under `--print-output`
-/// / `LOGOS_SCAFFOLD_PRINT_OUTPUT=1`, falls back to streaming as today.
+/// Full stdout+stderr is captured to the log file at `log_path`. On failure,
+/// the error carries the log path and, when nix's truncated-eval-trace
+/// marker is present in the log, a hint to re-run with `--show-trace`.
+/// Under `--print-output` / `LOGOS_SCAFFOLD_PRINT_OUTPUT=1`, output streams
+/// directly to the terminal and nothing is captured.
 ///
-/// Duration is always reported, on both success and failure, per PR #75
-/// review finding 4.
+/// After the step completes, old logs in the same `.scaffold/logs/`
+/// directory with the same command-name suffix are rotated down to 10.
 pub(crate) fn run_logged(cmd: &mut Command, step: &str, log_path: &Path) -> DynResult<()> {
     if print_output_enabled() {
-        return run_forwarded(cmd, step);
+        return run_forwarded_with_status(cmd, step);
     }
 
-    // Single-step path: no session context. Create a one-off session and run.
-    let session = BuildSession::new(step, log_path, None);
-    let handle = session.step(step);
-    handle.run(cmd)
-}
-
-/// A session of related nix builds displayed as a checkbox tree in TTY mode
-/// and a line-per-update stream in non-TTY mode. Writes full subprocess
-/// output to a shared log file under `.scaffold/logs/` and prints a
-/// `tip: tail -f <path>` line at session start so the dev can watch.
-///
-/// Each step shows:
-/// - `○` pending
-/// - `⋯` in-progress (spinner + elapsed)
-/// - `✓ (<duration>)` on success
-/// - `✗ (<duration>)` on failure, followed by `error: see <log path>`
-///
-/// Under `--print-output` / `LOGOS_SCAFFOLD_PRINT_OUTPUT=1` the session falls
-/// back to streaming nix output directly — the tree isn't printed.
-pub(crate) struct BuildSession {
-    log_path: PathBuf,
-    multi: Option<indicatif::MultiProgress>,
-    // Streaming-direct mode (set via --print-output / env var). When true
-    // we skip log capture and the checkbox rendering.
-    print_output: bool,
-}
-
-impl BuildSession {
-    /// Start a new session. If `project_root` is `Some`, the session's log
-    /// path is derived under `<project_root>/.scaffold/logs/<ts>-<command>.log`
-    /// and rotated. Pass `None` to use `log_path` directly (legacy callers).
-    pub(crate) fn new(header: &str, log_path: &Path, project_root: Option<&Path>) -> Self {
-        let print_output = print_output_enabled();
-        let log_path = log_path.to_path_buf();
-
-        if !print_output {
-            if let Some(parent) = log_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            // Seed the log file with a header block; later steps append.
-            if let Ok(mut f) = File::create(&log_path) {
-                use std::io::Write;
-                let _ = writeln!(f, "# session: {header}");
-                let _ = writeln!(f, "# started: {}", chrono_like_stamp());
-                let _ = writeln!(f, "---");
-            }
-            // Print header + tail -f hint on the user's terminal.
-            println!("{header}");
-            println!("  tip: tail -f {}", log_path.display());
-        }
-
-        // Rotate if project_root given.
-        if let Some(pr) = project_root {
-            // Extract the command suffix from the log path filename.
-            if let Some(stem) = log_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.split_once('-').map(|(_, rest)| rest))
-            {
-                rotate_logs(pr, stem, 10);
-            }
-        }
-
-        let multi = if print_output {
-            None
-        } else {
-            use std::io::IsTerminal;
-            if std::io::stderr().is_terminal() {
-                Some(indicatif::MultiProgress::new())
-            } else {
-                None // non-TTY: we'll print line-per-event from within StepHandle
-            }
-        };
-
-        Self {
-            log_path,
-            multi,
-            print_output,
-        }
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Seed the log with a header block. `File::create` is fine here — the
+    // timestamp stamp is millisecond-granular (see `timestamp_compact`), so
+    // two back-to-back calls don't collide on the same filename.
+    if let Ok(mut f) = File::create(log_path) {
+        use std::io::Write;
+        let _ = writeln!(f, "# step: {step}");
+        let _ = writeln!(f, "# started: {}", chrono_like_stamp());
+        let _ = writeln!(f, "# command: {}", render_command(cmd));
+        let _ = writeln!(f, "---");
     }
 
-    /// Begin a step. The returned handle renders a spinner line in TTY mode
-    /// (or a `started <description>` line in non-TTY mode). Call `.run(cmd)`
-    /// on the handle to execute; the handle finishes automatically on drop.
-    pub(crate) fn step(&self, description: &str) -> StepHandle {
-        if self.print_output {
-            return StepHandle {
-                description: description.to_string(),
-                start: std::time::Instant::now(),
-                log_path: self.log_path.clone(),
-                bar: None,
-                print_output: true,
-                finished: false,
-            };
-        }
+    println!("{step}");
+    println!("  tip: tail -f {}", log_path.display());
 
-        let bar = if let Some(multi) = &self.multi {
-            let pb = multi.add(indicatif::ProgressBar::new_spinner());
-            pb.set_style(
-                indicatif::ProgressStyle::with_template("  {spinner:.cyan} {wide_msg}")
-                    .expect("valid progress template")
-                    .tick_strings(&["⋯", "⋯.", "⋯..", "⋯..."]),
-            );
-            pb.set_message(description.to_string());
-            pb.enable_steady_tick(std::time::Duration::from_millis(200));
-            Some(pb)
-        } else {
-            // Non-TTY: print a simple "⋯ <description>" line. Final status
-            // line will append on completion.
-            println!("  ⋯ {description}");
-            None
-        };
+    let start = std::time::Instant::now();
+    let bar = make_spinner(step);
 
-        StepHandle {
-            description: description.to_string(),
-            start: std::time::Instant::now(),
-            log_path: self.log_path.clone(),
-            bar,
-            print_output: false,
-            finished: false,
+    // Append captured output to the log (the header seeded above stays).
+    let log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(log_path)
+        .map_err(|e| anyhow::anyhow!("open log {}: {e}", log_path.display()))?;
+
+    cmd.stdout(Stdio::from(
+        log.try_clone()
+            .map_err(|e| anyhow::anyhow!("clone log handle: {e}"))?,
+    ));
+    cmd.stderr(Stdio::from(
+        log.try_clone()
+            .map_err(|e| anyhow::anyhow!("clone log handle: {e}"))?,
+    ));
+
+    let status = cmd.status()?;
+    let duration = fmt_duration(start.elapsed());
+
+    // Rotate once per call. `rotate_logs` is defensive: if the stem doesn't
+    // parse or the logs dir doesn't exist, it's a silent no-op.
+    if let Some((project_root, command)) = project_root_and_command_from_log_path(log_path) {
+        rotate_logs(&project_root, command, 10);
+    }
+
+    if status.success() {
+        finish_spinner_ok(bar, step, &duration);
+        Ok(())
+    } else {
+        finish_spinner_err(bar, step, &duration);
+        let mut detail = format!(
+            "{step} failed with {status}; see {}",
+            log_path.display()
+        );
+        if log_indicates_truncated_trace(log_path) {
+            detail.push_str(&format!(
+                "\nhint: nix elided part of the eval trace — re-run with --show-trace for full detail: {} --show-trace",
+                render_command(cmd)
+            ));
         }
+        bail!("{detail}");
     }
 }
 
-pub(crate) struct StepHandle {
-    description: String,
-    start: std::time::Instant,
-    log_path: PathBuf,
-    bar: Option<indicatif::ProgressBar>,
-    print_output: bool,
-    finished: bool,
+/// `run_forwarded` but with the same spinner-status UX shape as logged
+/// mode: echoes the command, streams live, prints ✓/✗ with duration.
+fn run_forwarded_with_status(cmd: &mut Command, step: &str) -> DynResult<()> {
+    println!("{step}");
+    println!("  running: {}", render_command(cmd));
+    let start = std::time::Instant::now();
+    let status = cmd.status()?;
+    let duration = fmt_duration(start.elapsed());
+    if status.success() {
+        println!("  ✓ {step} ({duration})");
+        Ok(())
+    } else {
+        println!("  ✗ {step} ({duration})");
+        bail!("{step} failed with {status}");
+    }
 }
 
-impl StepHandle {
-    /// Run `cmd`, capturing stdout+stderr to the session log file (except
-    /// under `--print-output` where we stream directly). Finalizes the step
-    /// with ✓ or ✗ based on exit status.
-    pub(crate) fn run(mut self, cmd: &mut Command) -> DynResult<()> {
-        if self.print_output {
-            // Streaming fallback: echo command + stream output live.
-            println!("  running: {}", render_command(cmd));
-            let status = cmd.status()?;
-            let elapsed = self.start.elapsed();
-            self.finished = true;
-            if status.success() {
-                println!("  ✓ {} ({})", self.description, fmt_duration(elapsed));
-                return Ok(());
-            }
-            println!("  ✗ {} ({})", self.description, fmt_duration(elapsed));
-            bail!("{} failed with {status}", self.description);
-        }
+fn make_spinner(step: &str) -> Option<indicatif::ProgressBar> {
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        // Non-TTY: print a static "⋯" line; finalization prints the ✓/✗ line.
+        println!("  ⋯ {step}");
+        return None;
+    }
+    let pb = indicatif::ProgressBar::new_spinner();
+    pb.set_style(
+        indicatif::ProgressStyle::with_template("  {spinner:.cyan} {wide_msg}")
+            .expect("valid progress template")
+            .tick_strings(&["⋯", "⋯.", "⋯..", "⋯..."]),
+    );
+    pb.set_message(step.to_string());
+    pb.enable_steady_tick(std::time::Duration::from_millis(200));
+    Some(pb)
+}
 
-        // Append subprocess output to the session log.
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)
-            .map_err(|e| anyhow::anyhow!("open log {}: {e}", self.log_path.display()))?;
-        {
-            use std::io::Write;
-            let mut w = &log;
-            let _ = writeln!(w, "\n[step: {}]", self.description);
-            let _ = writeln!(w, "# command: {}", render_command(cmd));
-        }
+fn finish_spinner_ok(bar: Option<indicatif::ProgressBar>, step: &str, duration: &str) {
+    let msg = format!("✓ {step} ({duration})");
+    if let Some(bar) = bar {
+        bar.set_style(
+            indicatif::ProgressStyle::with_template("  {msg:.green}").expect("valid template"),
+        );
+        bar.finish_with_message(msg);
+    } else {
+        println!("  ✓ {step} ({duration})");
+    }
+}
 
-        cmd.stdout(Stdio::from(
-            log.try_clone()
-                .map_err(|e| anyhow::anyhow!("clone log handle: {e}"))?,
-        ));
-        cmd.stderr(Stdio::from(
-            log.try_clone()
-                .map_err(|e| anyhow::anyhow!("clone log handle: {e}"))?,
-        ));
-
-        let status = cmd.status()?;
-        let elapsed = self.start.elapsed();
-        self.finished = true;
-
-        let duration = fmt_duration(elapsed);
-        if status.success() {
-            let msg = format!("✓ {} ({duration})", self.description);
-            if let Some(bar) = self.bar.take() {
-                bar.set_style(
-                    indicatif::ProgressStyle::with_template("  {msg:.green}")
-                        .expect("valid template"),
-                );
-                bar.finish_with_message(msg);
-            } else {
-                println!("  ✓ {} ({duration})", self.description);
-            }
-            Ok(())
-        } else {
-            let msg = format!("✗ {} ({duration})", self.description);
-            if let Some(bar) = self.bar.take() {
-                bar.set_style(
-                    indicatif::ProgressStyle::with_template("  {msg:.red}")
-                        .expect("valid template"),
-                );
-                bar.finish_with_message(msg);
-            } else {
-                println!("  ✗ {} ({duration})", self.description);
-            }
-            let mut detail = format!(
-                "{} failed with {status}; see {}",
-                self.description,
-                self.log_path.display()
-            );
-            if log_indicates_truncated_trace(&self.log_path) {
-                detail.push_str(&format!(
-                    "\nhint: nix elided part of the eval trace — re-run with --show-trace for full detail: {} --show-trace",
-                    render_command(cmd)
-                ));
-            }
-            bail!("{detail}");
-        }
+fn finish_spinner_err(bar: Option<indicatif::ProgressBar>, step: &str, duration: &str) {
+    let msg = format!("✗ {step} ({duration})");
+    if let Some(bar) = bar {
+        bar.set_style(
+            indicatif::ProgressStyle::with_template("  {msg:.red}").expect("valid template"),
+        );
+        bar.finish_with_message(msg);
+    } else {
+        println!("  ✗ {step} ({duration})");
     }
 }
 
@@ -305,17 +216,22 @@ fn log_indicates_truncated_trace(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-impl Drop for StepHandle {
-    fn drop(&mut self) {
-        // Belt-and-braces: if the handle drops without `.run()` being called
-        // (e.g. caller code path that doesn't invoke a subprocess), clear the
-        // pending bar rather than leaving a phantom spinner.
-        if !self.finished {
-            if let Some(bar) = self.bar.take() {
-                bar.finish_and_clear();
-            }
-        }
+/// Given a log path of the shape
+/// `<project_root>/.scaffold/logs/YYYYMMDD-HHMMSS-mmm-<command>.log`, recover
+/// the `(project_root, command)` pair used for rotation. Returns `None` if
+/// the path doesn't match that layout; rotation becomes a no-op.
+fn project_root_and_command_from_log_path(log_path: &Path) -> Option<(PathBuf, &str)> {
+    let project_root = log_path.parent()?.parent()?.parent()?.to_path_buf();
+    let stem = log_path.file_stem()?.to_str()?;
+    let mut parts = stem.splitn(4, '-');
+    parts.next()?; // YYYYMMDD
+    parts.next()?; // HHMMSS
+    parts.next()?; // mmm
+    let command = parts.next()?;
+    if command.is_empty() {
+        return None;
     }
+    Some((project_root, command))
 }
 
 /// Build a log path `<project_root>/.scaffold/logs/<stamp>-<command>.log`.
