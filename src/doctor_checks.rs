@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::constants::DEFAULT_LSSA_PIN;
+use crate::constants::DEFAULT_LEZ_PIN;
 use crate::model::{CheckRow, CheckStatus};
 use crate::process::{port_open, which};
 use crate::repo::{git_clean, git_head_sha};
@@ -146,11 +146,11 @@ pub(crate) fn check_port_warn(name: &str, addr: &str, remediation: &str) -> Chec
     }
 }
 
-pub(crate) fn check_standalone_support(lssa_path: &Path) -> CheckRow {
+pub(crate) fn check_standalone_support(lez_path: &Path) -> CheckRow {
     let files = [
-        lssa_path.join("Cargo.toml"),
-        lssa_path.join("sequencer_runner/Cargo.toml"),
-        lssa_path.join("README.md"),
+        lez_path.join("Cargo.toml"),
+        lez_path.join("sequencer/service/Cargo.toml"),
+        lez_path.join("README.md"),
     ];
 
     for path in files {
@@ -159,7 +159,7 @@ pub(crate) fn check_standalone_support(lssa_path: &Path) -> CheckRow {
                 return CheckRow {
                     status: CheckStatus::Pass,
                     name: "standalone support marker".to_string(),
-                    detail: "found `standalone` marker in lssa repository".to_string(),
+                    detail: "found `standalone` marker in lez repository".to_string(),
                     remediation: None,
                 };
             }
@@ -169,10 +169,10 @@ pub(crate) fn check_standalone_support(lssa_path: &Path) -> CheckRow {
     CheckRow {
         status: CheckStatus::Fail,
         name: "standalone support marker".to_string(),
-        detail: "could not find `standalone` marker in lssa repo".to_string(),
+        detail: "could not find `standalone` marker in lez repo".to_string(),
         remediation: Some(format!(
-            "Use an lssa source that contains standalone mode and pin {}",
-            DEFAULT_LSSA_PIN
+            "Use a logos-execution-zone source that contains standalone mode and pin {}",
+            DEFAULT_LEZ_PIN
         )),
     }
 }

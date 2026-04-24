@@ -64,7 +64,7 @@ fn generate_clients_from_project_idl(project: &Project) -> DynResult<()> {
     let out_dir = project.root.join("src/generated");
     fs::create_dir_all(&out_dir)?;
 
-    let generator_manifest = project.root.join("crates/lssa-client-gen/Cargo.toml");
+    let generator_manifest = project.root.join("crates/lez-client-gen/Cargo.toml");
     if !generator_manifest.exists() {
         bail!(
             "missing client generator crate at {}",
@@ -83,7 +83,7 @@ fn generate_clients_from_project_idl(project: &Project) -> DynResult<()> {
             .arg(&idl_dir)
             .arg("--out-dir")
             .arg(&out_dir),
-        "run lssa client generator",
+        "run lez client generator",
     )?;
 
     Ok(())

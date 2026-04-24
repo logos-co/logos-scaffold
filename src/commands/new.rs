@@ -7,10 +7,9 @@ use anyhow::{bail, Context};
 use crate::config::serialize_config;
 use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    DEFAULT_LSSA_PIN, DEFAULT_WALLET_BINARY, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK,
-    LSSA_URL, VERSION,
+    DEFAULT_LEZ_PIN, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK, LEZ_URL, VERSION,
 };
-use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, RepoRef};
+use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
 use crate::project::default_cache_root;
 use crate::repo::{sync_repo_to_pin_at_path_with_opts, RepoSyncOptions};
 use crate::state::write_text;
@@ -23,7 +22,7 @@ pub(crate) struct NewCommand {
     pub(crate) name: String,
     pub(crate) template: String,
     pub(crate) vendor_deps: bool,
-    pub(crate) lssa_path: Option<PathBuf>,
+    pub(crate) lez_path: Option<PathBuf>,
     pub(crate) cache_root: Option<PathBuf>,
 }
 
@@ -59,45 +58,44 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     fs::create_dir_all(cache_root.join("logs"))?;
     fs::create_dir_all(cache_root.join("builds"))?;
 
-    let lssa_source = cmd
-        .lssa_path
+    let lez_source = cmd
+        .lez_path
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|| LSSA_URL.to_string());
+        .unwrap_or_else(|| LEZ_URL.to_string());
 
-    let lssa_repo_path = if cmd.vendor_deps {
+    let lez_repo_path = if cmd.vendor_deps {
         let root = target.join(".scaffold/repos");
         fs::create_dir_all(&root)?;
-        let lssa_vendor = root.join("lssa");
+        let lez_vendor = root.join("lez");
         sync_repo_to_pin_at_path_with_opts(
-            &lssa_vendor,
-            &lssa_source,
-            DEFAULT_LSSA_PIN,
-            "lssa",
+            &lez_vendor,
+            &lez_source,
+            DEFAULT_LEZ_PIN,
+            "lez",
             RepoSyncOptions::fail_on_source_mismatch(),
         )?;
-        lssa_vendor
+        lez_vendor
     } else {
-        let lssa_cached = cache_root.join("repos/lssa");
+        let lez_cached = cache_root.join("repos/lez").join(DEFAULT_LEZ_PIN);
         sync_repo_to_pin_at_path_with_opts(
-            &lssa_cached,
-            &lssa_source,
-            DEFAULT_LSSA_PIN,
-            "lssa",
+            &lez_cached,
+            &lez_source,
+            DEFAULT_LEZ_PIN,
+            "lez",
             RepoSyncOptions::auto_reclone_cache_repo(),
         )?;
-        lssa_cached
+        lez_cached
     };
 
     let cfg = Config {
         version: VERSION.to_string(),
         cache_root: cache_root.display().to_string(),
-        lssa: RepoRef {
-            url: LSSA_URL.to_string(),
-            source: lssa_source,
-            path: lssa_repo_path.display().to_string(),
-            pin: DEFAULT_LSSA_PIN.to_string(),
+        lez: RepoRef {
+            url: LEZ_URL.to_string(),
+            source: lez_source,
+            path: lez_repo_path.display().to_string(),
+            pin: DEFAULT_LEZ_PIN.to_string(),
         },
-        wallet_binary: DEFAULT_WALLET_BINARY.to_string(),
         wallet_home_dir: ".scaffold/wallet".to_string(),
         framework: FrameworkConfig {
             kind: template_variant.clone(),
@@ -107,9 +105,10 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
                 path: DEFAULT_FRAMEWORK_IDL_PATH.to_string(),
             },
         },
+        localnet: LocalnetConfig::default(),
     };
 
-    let template_root = lssa_repo_path.join("examples/program_deployment");
+    let template_root = lez_repo_path.join("examples/program_deployment");
     if !template_root.exists() {
         bail!("template not found at {}", template_root.display());
     }
@@ -120,11 +119,11 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     }
     let overlay_ctx = OverlayRenderContext {
         crate_name: &crate_name,
-        lssa_pin: &cfg.lssa.pin,
+        lez_pin: &cfg.lez.pin,
     };
     apply_overlay(&target, &template_variant, &overlay_ctx)?;
     if template_variant == FRAMEWORK_KIND_LEZ_FRAMEWORK {
-        cleanup_lssa_lang_hello_artifacts(&target)?;
+        cleanup_lez_hello_artifacts(&target)?;
     }
     write_text(&target.join("scaffold.toml"), &serialize_config(&cfg))?;
 
@@ -139,13 +138,13 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         target.display()
     );
     println!("Cache root: {}", cfg.cache_root);
-    println!("Pinned lssa: {}", cfg.lssa.pin);
+    println!("Pinned lez: {}", cfg.lez.pin);
     println!("Template variant: {}", cfg.framework.kind);
 
     Ok(())
 }
 
-fn cleanup_lssa_lang_hello_artifacts(project_root: &Path) -> DynResult<()> {
+fn cleanup_lez_hello_artifacts(project_root: &Path) -> DynResult<()> {
     const RUNNER_FILES: &[&str] = &[
         "src/bin/run_hello_world.rs",
         "src/bin/run_hello_world_private.rs",
@@ -199,5 +198,53 @@ pub(crate) fn to_cargo_crate_name(input: &str) -> String {
         "program_deployment".to_string()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_cargo_crate_name;
+
+    #[test]
+    fn simple_name_is_lowercased() {
+        assert_eq!(to_cargo_crate_name("MyApp"), "myapp");
+    }
+
+    #[test]
+    fn spaces_become_dashes() {
+        assert_eq!(to_cargo_crate_name("my app"), "my-app");
+    }
+
+    #[test]
+    fn special_chars_become_single_dash() {
+        assert_eq!(to_cargo_crate_name("my--app"), "my-app");
+        assert_eq!(to_cargo_crate_name("my___app"), "my-app");
+    }
+
+    #[test]
+    fn leading_and_trailing_dashes_are_trimmed() {
+        assert_eq!(to_cargo_crate_name("--myapp--"), "myapp");
+        assert_eq!(to_cargo_crate_name("_myapp_"), "myapp");
+    }
+
+    #[test]
+    fn empty_string_returns_default() {
+        assert_eq!(to_cargo_crate_name(""), "program_deployment");
+    }
+
+    #[test]
+    fn only_special_chars_returns_default() {
+        assert_eq!(to_cargo_crate_name("---"), "program_deployment");
+        assert_eq!(to_cargo_crate_name("!!!"), "program_deployment");
+    }
+
+    #[test]
+    fn alphanumeric_preserved() {
+        assert_eq!(to_cargo_crate_name("my-app-123"), "my-app-123");
+    }
+
+    #[test]
+    fn unicode_becomes_dash() {
+        assert_eq!(to_cargo_crate_name("héllo"), "h-llo");
     }
 }
