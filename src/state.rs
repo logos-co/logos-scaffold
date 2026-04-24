@@ -141,7 +141,6 @@ pub(crate) fn prepare_wallet_home(lez_repo: &Path, wallet_home: &Path) -> DynRes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::BasecampSource;
     use tempfile::tempdir;
 
     #[test]
@@ -153,8 +152,6 @@ mod tests {
             pin: "deadbeef".to_string(),
             basecamp_bin: "/nix/store/abc/bin/basecamp".to_string(),
             lgpm_bin: "/nix/store/def/bin/lgpm".to_string(),
-            project_sources: vec![],
-            dependencies: vec![],
         };
 
         write_basecamp_state(&path, &state).expect("write");
@@ -174,8 +171,6 @@ mod tests {
             pin: "sha1".to_string(),
             basecamp_bin: String::new(),
             lgpm_bin: String::new(),
-            project_sources: vec![],
-            dependencies: vec![],
         };
 
         write_basecamp_state(&path, &state).expect("write");
@@ -184,31 +179,6 @@ mod tests {
 
         let loaded = read_basecamp_state(&path).expect("read");
         assert_eq!(loaded.pin, "sha1");
-    }
-
-    #[test]
-    fn basecamp_state_writer_omits_source_lines_even_when_struct_has_them() {
-        // Source lines moved out of basecamp.state into [basecamp.modules] in
-        // scaffold.toml (v0.4). The writer ignores any residual struct fields
-        // during the Phase 2 transition; the fields themselves are removed
-        // in Phase 3 when readers migrate.
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("basecamp.state");
-        let state = BasecampState {
-            pin: "abc".to_string(),
-            basecamp_bin: "/bin/bc".to_string(),
-            lgpm_bin: String::new(),
-            project_sources: vec![BasecampSource::Flake("path:/p#lgx".to_string())],
-            dependencies: vec![BasecampSource::Flake(
-                "github:logos-co/logos-delivery-module/1.0.0#lgx".to_string(),
-            )],
-        };
-        write_basecamp_state(&path, &state).expect("write");
-        let content = fs::read_to_string(&path).unwrap();
-        assert!(
-            !content.contains("project:") && !content.contains("dep:"),
-            "writer must not emit source lines, got:\n{content}"
-        );
     }
 
     #[test]
@@ -226,9 +196,5 @@ mod tests {
         .unwrap();
         let loaded = read_basecamp_state(&path).expect("read legacy");
         assert_eq!(loaded.pin, "abc");
-        // Phase 2 keeps the struct fields; they are populated empty because
-        // the reader no longer parses source lines.
-        assert!(loaded.project_sources.is_empty());
-        assert!(loaded.dependencies.is_empty());
     }
 }

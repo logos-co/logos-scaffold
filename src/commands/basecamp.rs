@@ -130,13 +130,10 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
     println!("seeded profiles: {}", seeded.join(", "));
 
     let state_path = project.root.join(".scaffold/state/basecamp.state");
-    let existing = read_basecamp_state(&state_path).unwrap_or_default();
     let state = BasecampState {
         pin: bc.pin.clone(),
         basecamp_bin: basecamp_bin.display().to_string(),
         lgpm_bin: lgpm_bin.display().to_string(),
-        project_sources: existing.project_sources,
-        dependencies: existing.dependencies,
     };
     write_basecamp_state(&state_path, &state)?;
 
@@ -256,8 +253,8 @@ fn cmd_basecamp_launch(project: Project, profile: String, no_clean: bool) -> Dyn
         // module/plugin subtrees back before lgpm writes into them.
         seed_profiles(&profiles_root, &[profile.as_str()])?;
         install_sources_into_profiles(
+            &project,
             &state,
-            &project.root,
             &project.config.cache_root,
             &profiles_root,
             &[profile.clone()],
@@ -583,12 +580,11 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
 /// that isn't a project source, `basecamp modules --flake <ref>#lgx` it first,
 /// run `build-portable`, then revert with another `modules` call.
 fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
-    let state_path = project.root.join(".scaffold/state/basecamp.state");
-    let state = read_basecamp_state(&state_path).unwrap_or_default();
+    let project_sources = project_role_sources(&project, ModuleRole::Project);
 
-    if state.project_sources.is_empty() {
+    if project_sources.is_empty() {
         bail!(
-            "no project modules captured in state; run `basecamp modules` \
+            "no project modules captured in scaffold.toml; run `basecamp modules` \
              first (auto-discover) or `basecamp modules --flake <ref>#lgx \
              --path <file.lgx>` to capture explicitly. `build-portable` \
              operates on captured project sources only — it never discovers."
@@ -597,8 +593,7 @@ fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
 
     // Rewrite each project source: attr-swap `#lgx` → `#lgx-portable` on
     // flake refs; pass Path sources through unchanged (they're pre-built).
-    let portable_sources: Vec<BasecampSource> = state
-        .project_sources
+    let portable_sources: Vec<BasecampSource> = project_sources
         .iter()
         .map(|src| match src {
             BasecampSource::Path(p) => BasecampSource::Path(p.clone()),
@@ -753,7 +748,7 @@ fn run_build_portable_nix(
     Ok(results)
 }
 
-fn cmd_basecamp_reset(project: Project, dry_run: bool) -> DynResult<()> {
+fn cmd_basecamp_reset(mut project: Project, dry_run: bool) -> DynResult<()> {
     let state_path = project.root.join(".scaffold/state/basecamp.state");
     let state = match read_basecamp_state(&state_path).ok() {
         Some(s) if !s.basecamp_bin.is_empty() => s,
@@ -774,7 +769,8 @@ fn cmd_basecamp_reset(project: Project, dry_run: bool) -> DynResult<()> {
         }
     }
 
-    for line in plan_reset_lines(&live, &profiles_root, state.total_sources(), &seed_names) {
+    let module_count = total_captured_modules(&project);
+    for line in plan_reset_lines(&live, &profiles_root, module_count, &seed_names) {
         println!("{line}");
     }
 
@@ -792,8 +788,11 @@ fn cmd_basecamp_reset(project: Project, dry_run: bool) -> DynResult<()> {
     }
     println!("wiping {}", profiles_root.display());
     remove_profiles_root(&project.root)?;
-    println!("clearing recorded sources");
-    clear_basecamp_sources(&state_path)?;
+    println!("clearing captured modules");
+    if let Some(bc) = project.config.basecamp.as_mut() {
+        bc.modules.clear();
+    }
+    save_project_config(&project)?;
     println!("re-seeding profiles: {}", seed_names.join(", "));
     seed_profiles(&profiles_root, &seed_names)?;
 
@@ -804,7 +803,7 @@ fn cmd_basecamp_reset(project: Project, dry_run: bool) -> DynResult<()> {
 fn plan_reset_lines(
     live: &[(String, u32, String)],
     profiles_root: &Path,
-    source_count: usize,
+    module_count: usize,
     seed_profile_names: &[&str],
 ) -> Vec<String> {
     let mut out = vec!["reset plan:".to_string()];
@@ -819,7 +818,7 @@ fn plan_reset_lines(
     }
     out.push(format!("  rm -rf {}", profiles_root.display()));
     out.push(format!(
-        "  clear basecamp.state sources ({source_count} recorded)"
+        "  clear [basecamp.modules] in scaffold.toml ({module_count} captured)"
     ));
     out.push(format!(
         "  re-seed profiles: {}",
@@ -863,17 +862,6 @@ fn remove_profiles_root(project_root: &Path) -> DynResult<()> {
             .with_context(|| format!("remove symlink {}", profiles_root.display()))?;
     }
     Ok(())
-}
-
-/// Rewrite `basecamp.state` with `sources = []`, preserving `pin`,
-/// `basecamp_bin`, and `lgpm_bin` so the expensive setup artefacts stay
-/// usable. Atomic via `write_basecamp_state`'s underlying tmp+rename.
-fn clear_basecamp_sources(state_path: &Path) -> DynResult<()> {
-    let mut state = read_basecamp_state(state_path)
-        .with_context(|| format!("read {}", state_path.display()))?;
-    state.project_sources.clear();
-    state.dependencies.clear();
-    write_basecamp_state(state_path, &state)
 }
 
 /// Annotation attached to a captured source for the "captured modules:" printout.
@@ -1450,17 +1438,20 @@ fn cmd_basecamp_install(project: Project, probe: &dyn LgxFlakeProbe) -> DynResul
         bail!("basecamp not set up yet; run: logos-scaffold basecamp setup");
     }
 
-    // If state has no captured sources, run `modules` in auto-discover mode
-    // transparently. This preserves the "bare install on a fresh project
-    // just works" story.
-    let state = if state.total_sources() == 0 {
+    // If scaffold.toml has no captured modules, run `modules` in
+    // auto-discover mode transparently, then reload the project config.
+    let project = if total_captured_modules(&project) == 0 {
         println!("no modules captured yet; running `basecamp modules` for you");
         cmd_basecamp_modules(project.clone(), Vec::new(), Vec::new(), false, probe)?;
-        read_basecamp_state(&state_path).with_context(|| {
-            format!("re-read state after auto-capture: {}", state_path.display())
-        })?
+        let cfg_text = fs::read_to_string(project.root.join("scaffold.toml"))
+            .with_context(|| format!("re-read scaffold.toml after auto-capture"))?;
+        let cfg = crate::config::parse_config(&cfg_text)?;
+        Project {
+            root: project.root,
+            config: cfg,
+        }
     } else {
-        state
+        project
     };
 
     let cache_root = project.root.join(&project.config.cache_root);
@@ -1475,7 +1466,7 @@ fn cmd_basecamp_install(project: Project, probe: &dyn LgxFlakeProbe) -> DynResul
 
     // Deps-first build order. fail-fast: a broken companion pin surfaces
     // before we invest nix build time on the dev's own modules.
-    let ordered: Vec<BasecampSource> = state.all_sources().cloned().collect();
+    let ordered = captured_sources_deps_first(&project);
     if ordered.is_empty() {
         bail!(
             "no modules captured after auto-discovery; \
@@ -1743,25 +1734,25 @@ fn run_lgpm_install(
     Ok(())
 }
 
-/// Used by launch replay: build lgx files from state-recorded sources and hand
-/// them to lgpm for the given profile(s). No-op if state has no captured
-/// sources. Dependencies are built and installed *before* project sources so a
-/// broken companion pin surfaces before we invest nix build time on the dev's
-/// own modules.
+/// Used by launch replay: build lgx files from the captured modules in
+/// `[basecamp.modules]` and hand them to lgpm for the given profile(s).
+/// No-op if no modules are captured. Dependencies build before project
+/// sources so a broken companion pin surfaces before we invest nix build
+/// time on the dev's own modules.
 fn install_sources_into_profiles(
+    project: &Project,
     state: &BasecampState,
-    project_root: &Path,
     cache_root: &str,
     profiles_root: &Path,
     profiles: &[String],
 ) -> DynResult<()> {
-    if state.total_sources() == 0 {
+    let ordered = captured_sources_deps_first(project);
+    if ordered.is_empty() {
         return Ok(());
     }
-    let lgx_cache = project_root.join(cache_root).join("basecamp/lgx-links");
+    let lgx_cache = project.root.join(cache_root).join("basecamp/lgx-links");
     fs::create_dir_all(&lgx_cache).with_context(|| format!("create {}", lgx_cache.display()))?;
-    let all: Vec<BasecampSource> = state.all_sources().cloned().collect();
-    let lgx_files = collect_lgx_files(project_root, &all, &lgx_cache)?;
+    let lgx_files = collect_lgx_files(&project.root, &ordered, &lgx_cache)?;
     run_lgpm_install(&state.lgpm_bin, profiles_root, profiles, &lgx_files, false)
 }
 
@@ -2109,15 +2100,15 @@ fn cmd_basecamp_doctor(project: Project, as_json: bool) -> DynResult<()> {
 /// Build the basecamp-specific doctor rows: captured modules summary (each
 /// source's flake ref + commit/tag + installed api headers), manifest variant
 /// checks per seeded profile, and a missing-module drift check against
-/// auto-discovery. No-op when `basecamp.state` is absent.
+/// auto-discovery. No-op when neither `basecamp.state` nor
+/// `[basecamp.modules]` carries anything.
 fn push_basecamp_doctor_rows(project: &Project, rows: &mut Vec<crate::model::CheckRow>) {
     use crate::model::{CheckRow, CheckStatus};
 
     let state_path = project.root.join(".scaffold/state/basecamp.state");
-    let Ok(state) = read_basecamp_state(&state_path) else {
-        return;
-    };
-    if state.basecamp_bin.is_empty() && state.lgpm_bin.is_empty() && state.total_sources() == 0 {
+    let state = read_basecamp_state(&state_path).unwrap_or_default();
+    let module_count = total_captured_modules(project);
+    if state.basecamp_bin.is_empty() && state.lgpm_bin.is_empty() && module_count == 0 {
         return;
     }
 
@@ -2128,56 +2119,52 @@ fn push_basecamp_doctor_rows(project: &Project, rows: &mut Vec<crate::model::Che
         .join(BASECAMP_XDG_APP_SUBPATH)
         .join("modules");
 
-    for src in &state.project_sources {
-        rows.push(captured_source_row("basecamp module", src, &alice_modules));
-    }
-    for src in &state.dependencies {
-        rows.push(captured_source_row("basecamp dep", src, &alice_modules));
+    if let Some(bc) = project.config.basecamp.as_ref() {
+        let mut entries: Vec<(&String, &ModuleEntry)> = bc.modules.iter().collect();
+        entries.sort_by_key(|(_, e)| e.role == ModuleRole::Dependency);
+        for (_name, entry) in entries {
+            let label = match entry.role {
+                ModuleRole::Project => "basecamp module",
+                ModuleRole::Dependency => "basecamp dep",
+            };
+            let src = module_entry_to_source(entry);
+            rows.push(captured_source_row(label, &src, &alice_modules));
+        }
     }
 
-    // Drift between a captured dep ref and scaffold's default for that dep.
-    // Mirrors the `lez standalone pin` warning pattern: surfaces a rev
-    // mismatch so the dev knows they're off-scaffold. Matches by module name
-    // against `BASECAMP_DEPENDENCIES` entries; captured dep refs that aren't
-    // github refs (rare) are skipped silently.
-    for (name, default_ref) in BASECAMP_DEPENDENCIES {
-        let Some(captured) = state.dependencies.iter().find_map(|src| match src {
-            BasecampSource::Flake(f) => {
-                let rest = f.strip_prefix("github:")?;
-                let before_frag = rest.split_once('#').map_or(rest, |(b, _)| b);
-                let repo = before_frag.split('/').nth(1)?;
-                let candidate_name = repo.trim_start_matches("logos-").replace('-', "_");
-                if candidate_name == *name {
-                    Some(f.as_str())
-                } else {
-                    None
-                }
+    // Dep-pin drift: captured `role = Dependency` entry rev differs from the
+    // scaffold default for the same module_name. Exact-match lookup — no
+    // repo-slug heuristic (R-I3 fix).
+    if let Some(bc) = project.config.basecamp.as_ref() {
+        for (name, default_ref) in BASECAMP_DEPENDENCIES {
+            let Some(entry) = bc.modules.get(*name) else {
+                continue;
+            };
+            if entry.role != ModuleRole::Dependency {
+                continue;
             }
-            _ => None,
-        }) else {
-            continue;
-        };
-        let captured_rev = github_flake_ref_rev(captured);
-        let default_rev = github_flake_ref_rev(default_ref);
-        let drifted = match (captured_rev, default_rev) {
-            (Some(c), Some(d)) => c != d,
-            _ => captured != *default_ref,
-        };
-        if drifted {
-            rows.push(crate::model::CheckRow {
-                status: crate::model::CheckStatus::Warn,
-                name: format!("basecamp dep pin drift: {name}"),
-                detail: format!(
-                    "captured `{}` differs from scaffold default `{}`",
-                    captured_rev.unwrap_or(captured),
-                    default_rev.unwrap_or(default_ref),
-                ),
-                remediation: Some(format!(
-                    "module may not work against a basecamp release built with the scaffold \
-                     default. Either update the project's flake.lock to match, or set \
-                     `[basecamp.dependencies].{name}` in scaffold.toml to a compatible rev."
-                )),
-            });
+            let captured_rev = github_flake_ref_rev(&entry.flake);
+            let default_rev = github_flake_ref_rev(default_ref);
+            let drifted = match (captured_rev, default_rev) {
+                (Some(c), Some(d)) => c != d,
+                _ => entry.flake.as_str() != *default_ref,
+            };
+            if drifted {
+                rows.push(CheckRow {
+                    status: CheckStatus::Warn,
+                    name: format!("basecamp dep pin drift: {name}"),
+                    detail: format!(
+                        "captured `{}` differs from scaffold default `{}`",
+                        captured_rev.unwrap_or(&entry.flake),
+                        default_rev.unwrap_or(default_ref),
+                    ),
+                    remediation: Some(format!(
+                        "module may not work against a basecamp release built with the scaffold \
+                         default. Update `[basecamp.modules.{name}].flake` in scaffold.toml to \
+                         a compatible rev."
+                    )),
+                });
+            }
         }
     }
 
@@ -2457,6 +2444,56 @@ pub(crate) fn flake_ref(src: &BasecampSource) -> String {
         BasecampSource::Path(p) => p.clone(),
         BasecampSource::Flake(f) => f.clone(),
     }
+}
+
+/// Recover a `BasecampSource` from a stored `ModuleEntry.flake` string. A
+/// captured `--path <file.lgx>` was stored as its raw path with no `path:`
+/// prefix; everything else came from `flake_ref` on a `BasecampSource::Flake`.
+/// The `.lgx` suffix is the discriminator — path-sources are always `.lgx`
+/// files by construction (the CLI validates this on capture).
+fn module_entry_to_source(entry: &ModuleEntry) -> BasecampSource {
+    if entry.flake.ends_with(".lgx") && !entry.flake.contains('#') {
+        BasecampSource::Path(entry.flake.clone())
+    } else {
+        BasecampSource::Flake(entry.flake.clone())
+    }
+}
+
+/// Convert captured modules in `[basecamp.modules]` filtered by `role` into
+/// a `Vec<BasecampSource>` in key order. Key order is BTreeMap-sorted, which
+/// happens to give deps-first semantics only by coincidence — callers that
+/// need deps-first explicitly should iterate by role.
+fn project_role_sources(project: &Project, role: ModuleRole) -> Vec<BasecampSource> {
+    project
+        .config
+        .basecamp
+        .as_ref()
+        .map(|bc| {
+            bc.modules
+                .values()
+                .filter(|e| e.role == role)
+                .map(module_entry_to_source)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Return all captured sources with `role = Dependency` first, then
+/// `role = Project`. Install's existing invariant is "deps before project
+/// sources" so a broken companion pin fails fast before any project build.
+fn captured_sources_deps_first(project: &Project) -> Vec<BasecampSource> {
+    let mut deps = project_role_sources(project, ModuleRole::Dependency);
+    deps.extend(project_role_sources(project, ModuleRole::Project));
+    deps
+}
+
+fn total_captured_modules(project: &Project) -> usize {
+    project
+        .config
+        .basecamp
+        .as_ref()
+        .map(|bc| bc.modules.len())
+        .unwrap_or(0)
 }
 
 /// Create XDG-rooted profile dirs under `profiles_root` for every named profile.
@@ -2977,8 +3014,8 @@ mod tests {
             profiles_root.display()
         );
         assert!(
-            joined.contains("clear basecamp.state sources (3 recorded)"),
-            "missing source-clear line in:\n{joined}"
+            joined.contains("clear [basecamp.modules] in scaffold.toml (3 captured)"),
+            "missing modules-clear line in:\n{joined}"
         );
         assert!(
             joined.contains("re-seed profiles: alice, bob"),
@@ -2997,8 +3034,8 @@ mod tests {
             "empty kill list must be explicit, got:\n{joined}"
         );
         assert!(
-            joined.contains("clear basecamp.state sources (0 recorded)"),
-            "zero-sources count must still be printed for transparency, got:\n{joined}"
+            joined.contains("clear [basecamp.modules] in scaffold.toml (0 captured)"),
+            "zero-modules count must still be printed for transparency, got:\n{joined}"
         );
     }
 
@@ -3200,36 +3237,6 @@ mod tests {
         let got =
             resolve_sibling_overrides(&only, std::slice::from_ref(&only), "path:/abs/alone#lgx");
         assert!(got.is_empty(), "no siblings → no overrides");
-    }
-
-    #[test]
-    fn clear_basecamp_sources_preserves_binaries_and_pin() {
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("basecamp.state");
-        let original = BasecampState {
-            pin: "deadbeef".to_string(),
-            basecamp_bin: "/nix/store/a/bin/basecamp".to_string(),
-            lgpm_bin: "/nix/store/b/bin/lgpm".to_string(),
-            project_sources: vec![
-                BasecampSource::Flake("path:/abs/tictactoe#lgx".to_string()),
-                BasecampSource::Path("/mod.lgx".to_string()),
-            ],
-            dependencies: vec![BasecampSource::Flake(
-                "github:logos-co/logos-delivery-module/1.0.0#lgx".to_string(),
-            )],
-        };
-        write_basecamp_state(&path, &original).expect("seed state");
-
-        clear_basecamp_sources(&path).expect("clear");
-
-        let loaded = read_basecamp_state(&path).expect("reload");
-        assert_eq!(loaded.pin, "deadbeef");
-        assert_eq!(loaded.basecamp_bin, "/nix/store/a/bin/basecamp");
-        assert_eq!(loaded.lgpm_bin, "/nix/store/b/bin/lgpm");
-        assert!(
-            loaded.project_sources.is_empty() && loaded.dependencies.is_empty(),
-            "both project_sources and dependencies must be cleared"
-        );
     }
 
     // ---- `basecamp modules` helpers (manifest walking + dep resolution) ----

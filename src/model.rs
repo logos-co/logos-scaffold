@@ -102,27 +102,6 @@ pub(crate) struct BasecampState {
     pub(crate) pin: String,
     pub(crate) basecamp_bin: String,
     pub(crate) lgpm_bin: String,
-    /// Dev's own modules (what the project is building and shipping).
-    /// `build-portable` operates only on these (attr-swap to `#lgx-portable`).
-    pub(crate) project_sources: Vec<BasecampSource>,
-    /// Runtime companion modules resolved from manifest `dependencies` against
-    /// the scaffold-level pin table or `[basecamp.dependencies]` override.
-    /// `install` installs both these and `project_sources`; `build-portable`
-    /// ignores these (assumed present in the target AppImage).
-    pub(crate) dependencies: Vec<BasecampSource>,
-}
-
-impl BasecampState {
-    /// Iterate over every captured source (project + dependencies), in
-    /// deps-first order. Used by `install` for replay; `build-portable`
-    /// instead iterates `project_sources` alone.
-    pub(crate) fn all_sources(&self) -> impl Iterator<Item = &BasecampSource> {
-        self.dependencies.iter().chain(self.project_sources.iter())
-    }
-
-    pub(crate) fn total_sources(&self) -> usize {
-        self.project_sources.len() + self.dependencies.len()
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

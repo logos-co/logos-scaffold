@@ -1637,16 +1637,21 @@ fn basecamp_reset_dry_run_is_non_destructive() {
 
 #[cfg(unix)]
 #[test]
-fn basecamp_reset_wipes_profiles_and_clears_sources() {
+fn basecamp_reset_wipes_profiles_and_clears_captured_modules() {
     let temp = tempdir().expect("tempdir");
     let root = temp.path();
-    fs::write(root.join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML).expect("write scaffold.toml");
+    let scaffold_with_modules = format!(
+        "{MINIMAL_SCAFFOLD_TOML}\n\
+         [basecamp.modules.tictactoe]\nflake = \"path:/abs/tictactoe#lgx\"\nrole = \"project\"\n\
+         [basecamp.modules.delivery_module]\nflake = \"github:logos-co/logos-delivery-module/abc#lgx\"\nrole = \"dependency\"\n"
+    );
+    fs::write(root.join("scaffold.toml"), &scaffold_with_modules).expect("write scaffold.toml");
 
     let state_dir = root.join(".scaffold/state");
     fs::create_dir_all(&state_dir).unwrap();
     fs::write(
         state_dir.join("basecamp.state"),
-        "pin=deadbeef\nbasecamp_bin=/nonexistent/bin/basecamp\nlgpm_bin=/nonexistent/bin/lgpm\nsource:flake=./sub#lgx\nsource:path=/m.lgx\n",
+        "pin=deadbeef\nbasecamp_bin=/nonexistent/bin/basecamp\nlgpm_bin=/nonexistent/bin/lgpm\n",
     )
     .expect("seed basecamp.state");
 
@@ -1668,11 +1673,13 @@ fn basecamp_reset_wipes_profiles_and_clears_sources() {
     assert!(alice_dir.is_dir(), "alice must be re-seeded");
     assert!(bob_dir.is_dir(), "bob must be re-seeded");
 
-    let state_text = fs::read_to_string(state_dir.join("basecamp.state")).unwrap();
+    let scaffold_text = fs::read_to_string(root.join("scaffold.toml")).unwrap();
     assert!(
-        !state_text.contains("source:"),
-        "sources must be cleared, got:\n{state_text}"
+        !scaffold_text.contains("[basecamp.modules."),
+        "captured modules must be cleared from scaffold.toml, got:\n{scaffold_text}"
     );
+
+    let state_text = fs::read_to_string(state_dir.join("basecamp.state")).unwrap();
     assert!(
         state_text.contains("basecamp_bin=/nonexistent/bin/basecamp"),
         "basecamp_bin must be preserved, got:\n{state_text}"
