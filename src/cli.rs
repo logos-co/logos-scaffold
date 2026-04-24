@@ -75,6 +75,41 @@ enum Commands {
     Init,
     #[command(hide = true)]
     Help,
+    /// Test-only hooks — hidden from `--help` output. Keeps the binary
+    /// verifiable end-to-end without polluting the user-visible CLI surface.
+    #[command(hide = true)]
+    SelfTest(SelfTestArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct SelfTestArgs {
+    #[command(subcommand)]
+    command: SelfTestSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SelfTestSubcommand {
+    /// Drive `run_logged` against a trivial subprocess. Used by the CLI
+    /// integration suite to pin the logged / `--print-output` output
+    /// shapes against regressions.
+    RunLogged(SelfTestRunLoggedArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct SelfTestRunLoggedArgs {
+    /// Absolute path to write the captured log to.
+    #[arg(long, value_name = "PATH")]
+    log: PathBuf,
+    /// Step label passed to `run_logged`. Appears in progress / failure lines.
+    #[arg(long, default_value = "self-test step")]
+    step: String,
+    /// Run `/bin/false` instead of `/bin/true` — exercises the failure bail.
+    #[arg(long)]
+    fail: bool,
+    /// Set `LOGOS_SCAFFOLD_PRINT_OUTPUT=1` for this call — exercises the
+    /// streamed shape instead of the captured one.
+    #[arg(long)]
+    print_output: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -515,6 +550,16 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         }
         Some(Commands::Init) => cmd_init(&bin_name),
         Some(Commands::Help) => print_help(&bin_name),
+        Some(Commands::SelfTest(args)) => match args.command {
+            SelfTestSubcommand::RunLogged(a) => {
+                crate::commands::self_test::cmd_self_test_run_logged(
+                    &a.log,
+                    &a.step,
+                    a.fail,
+                    a.print_output,
+                )
+            }
+        },
         None => print_help(&bin_name),
     }
 }

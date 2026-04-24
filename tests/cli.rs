@@ -1467,6 +1467,108 @@ fn basecamp_launch_without_profile_errors() {
         .failure();
 }
 
+#[cfg(unix)]
+#[test]
+fn self_test_run_logged_success_shape() {
+    // Hidden `self-test run-logged` hook drives `run_logged` against a
+    // trivial subprocess (`/bin/true`). We assert the visible output shape
+    // so future reshapes of `run_logged` don't silently regress the UX.
+    let temp = tempdir().expect("tempdir");
+    let log = temp.path().join("self-test.log");
+    let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .args([
+            "self-test",
+            "run-logged",
+            "--log",
+            log.to_str().unwrap(),
+            "--step",
+            "self-test success",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("self-test success"),
+        "expected the step label to appear, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("tip: tail -f"),
+        "expected tail-f hint on the default logged path, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("✓"),
+        "expected a ✓ finalization line on success, got:\n{stdout}"
+    );
+    assert!(
+        log.exists(),
+        "expected the log file to be written at {}",
+        log.display()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn self_test_run_logged_failure_shape() {
+    // Failure path must bail (non-zero exit) and name the log path.
+    let temp = tempdir().expect("tempdir");
+    let log = temp.path().join("self-test.log");
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .args([
+            "self-test",
+            "run-logged",
+            "--log",
+            log.to_str().unwrap(),
+            "--step",
+            "self-test failure",
+            "--fail",
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("self-test failure") && stderr.contains("failed with"),
+        "failure bail must name the step and exit status, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&log.display().to_string()),
+        "failure bail must reference the captured log path, got:\n{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn self_test_run_logged_print_output_streams_and_echoes_command() {
+    // Under --print-output the shape is different: no `tip: tail -f`, has
+    // `running: <cmd>`, still has ✓/✗ with duration.
+    let temp = tempdir().expect("tempdir");
+    let log = temp.path().join("self-test.log");
+    let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .args([
+            "self-test",
+            "run-logged",
+            "--log",
+            log.to_str().unwrap(),
+            "--step",
+            "self-test streamed",
+            "--print-output",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("running: ") && stdout.contains("/bin/true"),
+        "--print-output must echo the command, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("tip: tail -f"),
+        "--print-output must not print the log-tail hint (no capture), got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("✓"),
+        "expected ✓ finalization under --print-output, got:\n{stdout}"
+    );
+}
+
 #[test]
 fn basecamp_docs_prints_compatibility_rules_anywhere() {
     // LLM-driven discoverability: `basecamp docs` must work without a
