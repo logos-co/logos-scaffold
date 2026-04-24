@@ -1537,9 +1537,14 @@ fn first_path_component(rel: &str) -> Option<String> {
     })
 }
 
-/// Compute the sibling-overrides list for `target`: every other path-flake in
-/// `all` whose path lives under the same parent directory as `target`'s path.
-/// Returned as `(input_name, "path:<abs>")` pairs ready for `--override-input`.
+/// Compute the sibling-overrides list for `target`: collect every other
+/// path-flake in `all` sharing `target`'s parent directory, then delegate to
+/// `probe_sibling_overrides` to parse `target`'s own `flake.nix` and key
+/// each override by the declared input name (not the sibling directory
+/// name). This matters when the user's flake uses
+/// `inputs.<snake>.url = "path:../<kebab>"` — the dir and input names
+/// differ, and keying by dirname produces a nix `non-existent input`
+/// warning plus a silently-unresolved original path.
 fn sibling_overrides_for(target: &BasecampSource, all: &[BasecampSource]) -> Vec<(String, String)> {
     let BasecampSource::Flake(target_ref) = target else {
         return Vec::new();
@@ -1547,11 +1552,12 @@ fn sibling_overrides_for(target: &BasecampSource, all: &[BasecampSource]) -> Vec
     let Some(target_abs) = flake_path_prefix(target_ref) else {
         return Vec::new();
     };
-    let Some(target_parent) = Path::new(target_abs).parent() else {
+    let target_dir = Path::new(target_abs);
+    let Some(target_parent) = target_dir.parent() else {
         return Vec::new();
     };
 
-    let mut out = Vec::new();
+    let mut sibling_paths: Vec<PathBuf> = Vec::new();
     for other in all {
         let BasecampSource::Flake(other_ref) = other else {
             continue;
@@ -1566,11 +1572,11 @@ fn sibling_overrides_for(target: &BasecampSource, all: &[BasecampSource]) -> Vec
         if other_path.parent() != Some(target_parent) {
             continue;
         }
-        let Some(name) = other_path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        out.push((name.to_string(), format!("path:{other_abs}")));
+        sibling_paths.push(other_path.to_path_buf());
     }
+
+    let sibling_refs: Vec<&Path> = sibling_paths.iter().map(|p| p.as_path()).collect();
+    let mut out = probe_sibling_overrides(target_dir, &sibling_refs);
     out.sort();
     out
 }
@@ -2358,7 +2364,7 @@ fn classify_flake_dir(
          would be unreachable and alt-only detection silently broken"
     );
     let flake_ref = format!("path:{}", dir.display());
-    let overrides = probe_sibling_overrides(siblings);
+    let overrides = probe_sibling_overrides(dir, siblings);
     let names = probe.package_names(&flake_ref, &overrides)?;
     // A flake that exposes only `alt_attr` (not the requested `attr`) is a failure case
     // handled by the caller with a targeted hint.
@@ -2370,24 +2376,103 @@ fn classify_flake_dir(
     Ok(())
 }
 
-/// Build the `--override-input <dir-name> path:<abs-path>` pairs for every
-/// sibling flake directory at probe time. Unfiltered: we pass all siblings
-/// and accept that nix may warn about unknown inputs — probe-time correctness
-/// (unlock the evaluation) takes priority over probe-time noise (the warning
-/// doesn't mask the result). Build-time filtering via `flake_declared_inputs`
-/// still suppresses noise at the `nix build` step.
-fn probe_sibling_overrides(siblings: &[&Path]) -> Vec<(String, String)> {
+/// Build `--override-input <input_name> path:<abs-sibling>` pairs by reading
+/// `<target_dir>/flake.nix` for `path:../<sibling>` inputs and matching each
+/// URL target against the sibling directories on disk.
+///
+/// We can't key overrides by the sibling's directory name because the sub-
+/// flake's declared input name can differ (e.g. input `tictactoe_solo_ai`
+/// referencing dir `logos-tictactoe-solo-ai`). Passing the override under the
+/// wrong key emits a nix warning ("input has an override for a non-existent
+/// input") and silently falls through to the original `path:..` URL — which
+/// then fails pure-eval. So we parse flake.nix for the input name.
+///
+/// Parsing is best-effort line-level regex-lite. Matches `<name>.url = "…"`
+/// (with or without an `inputs.` prefix) and the value starting with
+/// `path:../`. Nix syntax it won't catch (multi-line values, let-bindings,
+/// `inputs = { x = { url = …; }; }` nested blocks written on separate lines
+/// from `x`) falls through and the probe may still fail — but the common
+/// declarative form works.
+fn probe_sibling_overrides(target_dir: &Path, siblings: &[&Path]) -> Vec<(String, String)> {
+    let flake_nix = target_dir.join("flake.nix");
+    let Ok(text) = fs::read_to_string(&flake_nix) else {
+        return Vec::new();
+    };
+    let parsed = parse_path_dotdot_inputs(&text);
+    if parsed.is_empty() {
+        return Vec::new();
+    }
     let mut out = Vec::new();
-    for sibling in siblings {
-        let Some(name) = sibling.file_name().and_then(|n| n.to_str()) else {
+    for (input_name, sibling_stem) in parsed {
+        let Some(sibling_path) = siblings.iter().find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n == sibling_stem)
+        }) else {
             continue;
         };
-        let abs = sibling
+        let abs = sibling_path
             .canonicalize()
-            .unwrap_or_else(|_| sibling.to_path_buf());
-        out.push((name.to_string(), format!("path:{}", abs.display())));
+            .unwrap_or_else(|_| sibling_path.to_path_buf());
+        out.push((input_name, format!("path:{}", abs.display())));
     }
     out
+}
+
+/// Parse lines of the form `<name>.url = "path:../<sibling>"` out of a
+/// flake.nix text. Returns `(input_name, sibling_dir_stem)` pairs.
+///
+/// Deliberately permissive — matches both `inputs.foo.url = "…"` and bare
+/// `foo.url = "…"` (the common form inside an `inputs = { … }` block).
+/// The path: scheme must be present and start with `../`; anything else
+/// (`github:`, `path:./sub`, absolute paths) is ignored as out-of-scope for
+/// sibling-override resolution.
+fn parse_path_dotdot_inputs(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some(url_at) = line.find(".url") else {
+            continue;
+        };
+        let before_url = &line[..url_at];
+        // Input name is the last identifier-ish token in `before_url`.
+        let name = before_url
+            .rsplit(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+            .next()
+            .unwrap_or("");
+        if name.is_empty() || name == "inputs" {
+            continue;
+        }
+        let after_url = &line[url_at + ".url".len()..];
+        let Some(eq_at) = after_url.find('=') else {
+            continue;
+        };
+        let Some(value) = extract_first_string_literal(&after_url[eq_at + 1..]) else {
+            continue;
+        };
+        let Some(rest) = value.strip_prefix("path:../") else {
+            continue;
+        };
+        let sibling = rest.split(['/', '?', '#']).next().unwrap_or("");
+        if sibling.is_empty() {
+            continue;
+        }
+        out.push((name.to_string(), sibling.to_string()));
+    }
+    out
+}
+
+/// Extract the first double-quoted string literal from `s`. Returns the
+/// string's inner contents (no surrounding quotes). Doesn't handle escaped
+/// quotes — good enough for URL values, which don't carry `\"` in practice.
+fn extract_first_string_literal(s: &str) -> Option<String> {
+    let start = s.find('"')? + 1;
+    let rest = &s[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 pub(crate) fn flake_ref(src: &BasecampSource) -> String {
@@ -2708,22 +2793,64 @@ mod tests {
 
     #[test]
     fn sibling_overrides_pair_path_flakes_under_a_shared_parent() {
-        let target = BasecampSource::Flake("path:/repo/tictactoe-ui-cpp#lgx".to_string());
+        // Set up a repo with three sub-flakes sharing a parent and two
+        // distractors (different-parent flake, path source, remote flake).
+        // Target is the ui-cpp flake; it declares `tictactoe` as an input
+        // pointing at the sibling. Only that sibling should produce an
+        // override; the others must be filtered out.
+        let tmp = tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        let tictactoe = repo.join("tictactoe");
+        let ui_cpp = repo.join("tictactoe-ui-cpp");
+        fs::create_dir_all(&tictactoe).unwrap();
+        fs::create_dir_all(&ui_cpp).unwrap();
+        fs::write(
+            ui_cpp.join("flake.nix"),
+            r#"{ inputs.tictactoe.url = "path:../tictactoe"; outputs = {...}: {}; }"#,
+        )
+        .unwrap();
+
+        let target = BasecampSource::Flake(format!("path:{}#lgx", ui_cpp.display()));
         let all = vec![
-            BasecampSource::Flake("path:/repo/tictactoe#lgx".to_string()),
-            BasecampSource::Flake("path:/repo/tictactoe-ui-cpp#lgx".to_string()),
-            // An unrelated path-flake under a different parent must NOT be paired.
+            BasecampSource::Flake(format!("path:{}#lgx", tictactoe.display())),
+            BasecampSource::Flake(format!("path:{}#lgx", ui_cpp.display())),
             BasecampSource::Flake("path:/elsewhere/other#lgx".to_string()),
-            // A .lgx path source is not a flake and must be ignored.
             BasecampSource::Path("/repo/prebuilt.lgx".to_string()),
-            // A remote flake ref can't be overridden with a local path.
             BasecampSource::Flake("github:foo/bar#lgx".to_string()),
         ];
         let got = sibling_overrides_for(&target, &all);
-        assert_eq!(
-            got,
-            vec![("tictactoe".to_string(), "path:/repo/tictactoe".to_string())]
-        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "tictactoe");
+        assert!(got[0].1.starts_with("path:/"));
+        assert!(got[0].1.ends_with("tictactoe"));
+    }
+
+    #[test]
+    fn sibling_overrides_use_declared_input_name_not_dirname() {
+        // Target's flake declares `inputs.core.url = "path:../core-src"` —
+        // input name `core`, sibling directory `core-src`. Override must key
+        // by `core`, not `core-src`.
+        let tmp = tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        let core_src = repo.join("core-src");
+        let ui = repo.join("ui");
+        fs::create_dir_all(&core_src).unwrap();
+        fs::create_dir_all(&ui).unwrap();
+        fs::write(
+            ui.join("flake.nix"),
+            r#"{ inputs.core.url = "path:../core-src"; outputs = {...}: {}; }"#,
+        )
+        .unwrap();
+
+        let target = BasecampSource::Flake(format!("path:{}#lgx", ui.display()));
+        let all = vec![
+            BasecampSource::Flake(format!("path:{}#lgx", core_src.display())),
+            BasecampSource::Flake(format!("path:{}#lgx", ui.display())),
+        ];
+        let got = sibling_overrides_for(&target, &all);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "core", "override must key by declared input name");
+        assert!(got[0].1.ends_with("core-src"));
     }
 
     #[test]
@@ -3195,32 +3322,112 @@ mod tests {
     }
 
     #[test]
-    fn probe_sibling_overrides_emits_path_override_per_sibling() {
-        // Sub-flake probes need `--override-input <dirname> path:<abs>` for
-        // every filesystem sibling so `path:../<sibling>` inputs in the target
-        // flake resolve under pure-eval. This helper is the probe-time
-        // equivalent of `sibling_overrides_for` at build time.
+    fn probe_sibling_overrides_keys_by_input_name_not_dirname() {
+        // Target's flake.nix declares `tictactoe_solo_ai.url = "path:../logos-tictactoe-solo-ai"`.
+        // The sibling dir on disk is `logos-tictactoe-solo-ai`. Override must
+        // key by the input name `tictactoe_solo_ai`, not the dirname — nix
+        // would warn + ignore the latter.
         let tmp = tempdir().expect("tempdir");
-        let a = tmp.path().join("alpha");
-        let b = tmp.path().join("beta");
-        fs::create_dir_all(&a).unwrap();
-        fs::create_dir_all(&b).unwrap();
-        let siblings: Vec<&Path> = vec![&a, &b];
-        let overrides = probe_sibling_overrides(&siblings);
-        assert_eq!(overrides.len(), 2);
-        let names: Vec<&str> = overrides.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"alpha") && names.contains(&"beta"));
-        for (_, value) in &overrides {
-            assert!(
-                value.starts_with("path:/"),
-                "expected absolute path: scheme, got {value}"
-            );
-        }
+        let target = tmp.path().join("ui");
+        let sibling = tmp.path().join("logos-tictactoe-solo-ai");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(
+            target.join("flake.nix"),
+            r#"{
+  inputs.tictactoe_solo_ai.url = "path:../logos-tictactoe-solo-ai";
+  outputs = { ... }: {};
+}"#,
+        )
+        .unwrap();
+
+        let siblings: Vec<&Path> = vec![&sibling];
+        let overrides = probe_sibling_overrides(&target, &siblings);
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].0, "tictactoe_solo_ai");
+        assert!(overrides[0].1.starts_with("path:/"));
+        assert!(overrides[0].1.ends_with("logos-tictactoe-solo-ai"));
     }
 
     #[test]
-    fn probe_sibling_overrides_empty_for_no_siblings() {
-        assert!(probe_sibling_overrides(&[]).is_empty());
+    fn probe_sibling_overrides_handles_bare_inputs_block_form() {
+        // `inputs = { foo.url = "..."; }` — bare `foo.url` without `inputs.` prefix.
+        let tmp = tempdir().expect("tempdir");
+        let target = tmp.path().join("ui");
+        let sibling = tmp.path().join("core");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(
+            target.join("flake.nix"),
+            r#"{
+  inputs = {
+    core.url = "path:../core";
+    nixpkgs.url = "github:NixOS/nixpkgs";
+  };
+  outputs = { ... }: {};
+}"#,
+        )
+        .unwrap();
+
+        let siblings: Vec<&Path> = vec![&sibling];
+        let overrides = probe_sibling_overrides(&target, &siblings);
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].0, "core");
+    }
+
+    #[test]
+    fn probe_sibling_overrides_skips_non_sibling_path_refs() {
+        // Input references `path:../other` but `other` isn't one of the
+        // siblings we know about on disk → no override emitted. Safer than
+        // emitting a bogus path and triggering a second nix failure.
+        let tmp = tempdir().expect("tempdir");
+        let target = tmp.path().join("ui");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(
+            target.join("flake.nix"),
+            r#"{ inputs.other.url = "path:../other"; outputs = {}: {}; }"#,
+        )
+        .unwrap();
+
+        assert!(probe_sibling_overrides(&target, &[]).is_empty());
+    }
+
+    #[test]
+    fn probe_sibling_overrides_skips_non_path_inputs() {
+        let tmp = tempdir().expect("tempdir");
+        let target = tmp.path().join("ui");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(
+            target.join("flake.nix"),
+            r#"{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs";
+  inputs.lib.url = "path:./lib";
+  outputs = {...}: {};
+}"#,
+        )
+        .unwrap();
+        assert!(probe_sibling_overrides(&target, &[]).is_empty());
+    }
+
+    #[test]
+    fn probe_sibling_overrides_returns_empty_when_no_flake_nix() {
+        let tmp = tempdir().expect("tempdir");
+        assert!(probe_sibling_overrides(tmp.path(), &[]).is_empty());
+    }
+
+    #[test]
+    fn parse_path_dotdot_inputs_extracts_input_name_and_sibling_stem() {
+        let got = parse_path_dotdot_inputs(
+            r#"{
+  inputs.foo.url = "path:../foo";
+  inputs = {
+    bar_baz.url = "path:../shared-bar-baz";
+  };
+}"#,
+        );
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&("foo".to_string(), "foo".to_string())));
+        assert!(got.contains(&("bar_baz".to_string(), "shared-bar-baz".to_string())));
     }
 
     // ---- `basecamp modules` helpers (manifest walking + dep resolution) ----

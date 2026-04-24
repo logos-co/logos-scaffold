@@ -107,6 +107,19 @@ surface empty avoids carrying ceremonial compatibility code through the
 feature branch, and the PR author is the only user who could be affected by
 the break.
 
+## Sibling `--override-input` Resolves By Declared Input Name
+
+Multi-sub-flake projects rely on `--override-input <input> path:<sibling-abs>` so a sub-flake's `path:../<sibling>` inputs resolve to the developer's working tree instead of whatever `github:` ref is in its lock. The first implementation keyed overrides by the **sibling directory name on disk** — a convention where input names are expected to match directory names. Two problems:
+
+- Projects with snake_case input names and kebab-case directory names (e.g. `inputs.tictactoe_solo_ai.url = "path:../logos-tictactoe-solo-ai"`) fail: nix emits `input has an override for a non-existent input <dirname>`, drops the override, falls through to the original `path:..` URL, and errors out under pure-eval.
+- The convention isn't visible at call sites: there's no error telling the developer to rename either the input or the directory; the break appears as a nix lock-resolution error from inside the store copy.
+
+Scaffold now reads the target sub-flake's `flake.nix` at both probe time (`basecamp modules`) and build time (`basecamp install` / `build-portable`), looking for `<name>.url = "path:../<sibling>"` patterns, and emits `--override-input <name> path:<sibling-abs>` — keyed by the **declared input name**, not the directory name. Directory and input names no longer need to match.
+
+The parser is line-level and recognizes the common single-line declarative forms (`<name>.url = "…"` and `inputs.<name>.url = "…"`). Multi-line nested-attrset forms (`inputs.x = { url = "…"; flake = false; };` split across lines) are out of scope — they fall through silently and the probe or build may fail with the raw pure-eval error. Widening the parser is cheaper than adding a nix-based input enumerator, since the latter also hits pure-eval constraints on the very inputs we're trying to unstick.
+
+The tradeoff: adding a minimal flake.nix text parser to scaffold. The upside: one less convention the user has to learn to get their project building, and the error mode goes away for legitimate non-convention projects. Build-time filtering via `flake_declared_inputs` (nix flake metadata) remains as defense-in-depth; after this change, the parser's output is already constrained to declared names, so the filter is redundant on the common path and only fires when the metadata fetch itself succeeded against some nix setup the parser didn't.
+
 ## Flake Attribute Selection is a Resolver Parameter
 
 `install` and `build-portable` share a single source-resolution routine that is

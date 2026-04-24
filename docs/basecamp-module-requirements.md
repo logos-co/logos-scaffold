@@ -60,26 +60,30 @@ Resolved deps are inserted into `[basecamp.modules]` with `role = "dependency"`.
 
 Implication for module authors: **declare each runtime dep as a flake input in your module's `flake.nix`**, even if your module doesn't technically build-link against it. It's the cleanest way to give scaffold an authoritative pin (step 3 above) without hitting the scaffold default.
 
-## Conventions that matter for local development
+## Local sibling sub-flakes
 
-Multi-flake projects (e.g. a `tictactoe` core plus `tictactoe-ui-cpp` and `tictactoe-ui-qml` sibling flakes) rely on one convention:
+Multi-flake projects (e.g. a `tictactoe` core plus `tictactoe-ui-cpp` and `tictactoe-ui-qml` sibling flakes) need a way for each sub-flake to resolve its `path:../<sibling>` inputs against the developer's working tree rather than whatever `github:` pin is in its lock.
 
-**Sibling sub-flakes are auto-overridden by directory name.** When scaffold builds a sub-flake, it passes `--override-input <dir-name> path:<sibling-abs-path>` for every other path-flake that shares the same parent directory — but only if the target flake actually declares `<dir-name>` as one of its inputs.
+**Scaffold reads each sub-flake's `flake.nix` to discover its `path:../<sibling>` inputs and emits the matching `--override-input <input_name> path:<abs>` args at both probe and build time.** The input name used in the override is the one declared in `flake.nix` — not the sibling directory name on disk. Directory and input names do not need to match.
 
 Concretely:
 
-- Directory layout `my-module/{core,ui-cpp,ui-qml}` with `flake.nix` in each.
-- `ui-cpp/flake.nix` must declare `inputs.core.url = "path:../core";` (the input name must match the sibling directory name).
-- When scaffold builds `ui-cpp#lgx`, it automatically passes `--override-input core path:/abs/path/to/my-module/core`, so you get a local-source build rather than the pinned `github:` ref.
-- If `ui-cpp` does not declare `core` as an input, the override is silently dropped (no nix warning). If `ui-cpp` declares `core-lib` instead, rename the input to `core` to match the directory, or rename the directory to `core-lib`.
+- Directory layout `my-module/{tictactoe,tictactoe-ui-cpp,tictactoe-ui-qml}` with `flake.nix` in each.
+- `tictactoe-ui-cpp/flake.nix` declares e.g. `inputs.tictactoe_core.url = "path:../tictactoe";` — the input is named `tictactoe_core`, the sibling directory is `tictactoe`.
+- Scaffold parses the `flake.nix`, notices the `path:../tictactoe` URL, matches `tictactoe` against the sibling directories on disk, and emits `--override-input tictactoe_core path:/abs/path/to/my-module/tictactoe`.
+- At both `basecamp modules` (auto-discovery probe) and `basecamp install` / `build-portable` (the actual build), the same overrides apply; evaluation and build see the same local sibling sources.
 
-Non-path flake refs (e.g. `github:…`) and `.lgx` path sources are never auto-overridden.
+Only `path:../<sibling>` inputs are rewritten. `path:./sub`, `github:…`, `git+…` and similar schemes pass through untouched — scaffold has no opinion on them.
+
+### Parser limits
+
+The flake.nix parse is line-level and recognizes `<name>.url = "path:../<sibling>"` and `inputs.<name>.url = "path:../<sibling>"`. Multi-line value forms (e.g. `inputs.x = { url = "…"; flake = false; };` with `url` on its own line inside the nested attrset) are not detected today. If you hit a projects with such a declaration and sibling-override fails, flatten the declaration to the single-line form, or report it and we'll widen the parser.
 
 ### Transitive inputs must `follows` the top-level `logos-module-builder`
 
 Multi-sub-flake projects that pull in modules which themselves depend on `logos-module-builder` (e.g. `delivery_module` → `logos-module-builder`) **must** unify that transitive reference onto the project's top-level pin using a `follows` entry.
 
-Without it, your sub-flake's `flake.lock` ends up with two `logos-module-builder` entries: the one you pinned and a second one pulled in transitively (typically off the upstream's `main` branch, which may be incompatible with the `basecamp v0.1.1` wire format or with the tutorial-sanctioned contract). When scaffold then runs `nix build path:<sibling> --override-input <dir-name> path:<this-sub-flake>`, nix resolves transitive inputs through **this sub-flake's lock**, and the stale second entry silently wins — builds that work with a direct `nix build .#lgx` fail with opaque errors when invoked through scaffold.
+Without it, your sub-flake's `flake.lock` ends up with two `logos-module-builder` entries: the one you pinned and a second one pulled in transitively (typically off the upstream's `main` branch, which may be incompatible with the `basecamp v0.1.1` wire format or with the tutorial-sanctioned contract). When scaffold then runs `nix build path:<sibling> --override-input <input-name> path:<this-sub-flake>`, nix resolves transitive inputs through **this sub-flake's lock**, and the stale second entry silently wins — builds that work with a direct `nix build .#lgx` fail with opaque errors when invoked through scaffold.
 
 Concrete fix: in each sub-flake that declares both `logos-module-builder` and a module with its own `logos-module-builder` input, add the `follows`:
 
@@ -157,6 +161,6 @@ If a flake exposes only `lgx` (not `lgx-portable`), `build-portable` fails with 
 - [ ] `scaffold.toml` exists at the project root.
 - [ ] `logos-scaffold basecamp setup` has been run.
 - [ ] Each sub-flake exposes `packages.<system>.lgx`.
-- [ ] Sibling input names match sibling directory names, if applicable.
+- [ ] Sibling sub-flake URLs use the `path:../<sibling-dir>` form, declared on a single `<name>.url = "…"` line (not split across multiple lines inside a nested attrset — parser limitation).
 - [ ] Transitive `logos-module-builder` references are unified with a `follows` onto the top-level pin (see "Transitive inputs must `follows` …" above).
 - [ ] No project relies on `lgx-portable` as the only output without passing `--flake` explicitly.
