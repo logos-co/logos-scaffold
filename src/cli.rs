@@ -123,7 +123,12 @@ struct NewArgs {
 }
 
 #[derive(Debug, clap::Args)]
-struct SetupArgs {}
+struct SetupArgs {
+    /// Download prebuilt binaries instead of compiling from source.
+    /// Falls back to source build if no prebuilt exists for the pinned commit.
+    #[arg(long, default_value_t = false)]
+    prebuilt: bool,
+}
 
 #[derive(Debug, clap::Args)]
 struct BuildArgs {
@@ -302,7 +307,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             cache_root: args.cache_root,
             template: args.template,
         }),
-        Some(Commands::Setup(_)) => cmd_setup(),
+        Some(Commands::Setup(args)) => cmd_setup(args.prebuilt),
         Some(Commands::Build(args)) => match args.subcommand {
             Some(BuildSubcommand::Idl(sub)) => cmd_idl(
                 &sub.project_path
