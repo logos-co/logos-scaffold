@@ -1907,6 +1907,144 @@ risc0_dev_mode = true
         .stderr(predicate::str::contains("unknown profile `charlie`"));
 }
 
+#[cfg(unix)]
+#[test]
+fn basecamp_launch_bails_when_no_modules_captured() {
+    // launch without --no-clean scrubs and replays the captured module set.
+    // If [basecamp.modules] is empty, the replay is silently a no-op — the
+    // profile comes up with zero modules installed, which violates the
+    // clean-slate guarantee. Surface as an error with a concrete hint.
+    let temp = tempdir().expect("tempdir");
+    let project = temp.path();
+    fs::write(
+        project.join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = ""
+port_base = 60000
+port_stride = 10
+"#,
+    )
+    .expect("write scaffold.toml");
+
+    // Fake a completed setup and a seeded alice profile dir so launch passes
+    // the early gates and reaches the modules check.
+    let state_dir = project.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).expect("mkdir state");
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/bin/true\nlgpm_bin=/bin/echo\n",
+    )
+    .expect("write state");
+    fs::create_dir_all(project.join(".scaffold/basecamp/profiles/alice")).expect("mkdir profile");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(project)
+        .arg("basecamp")
+        .arg("launch")
+        .arg("alice")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("basecamp modules"))
+        .stderr(predicate::str::contains("--no-clean"));
+}
+
+#[cfg(unix)]
+#[test]
+fn basecamp_launch_no_clean_bypasses_empty_modules_check() {
+    // --no-clean is the documented escape hatch for keeping whatever's already
+    // installed in the profile. It must skip the empty-modules check entirely.
+    // We don't run launch to completion (basecamp_bin is /bin/true), but the
+    // command should get past the modules check and fail later — not fail on
+    // an "install modules first" hint.
+    let temp = tempdir().expect("tempdir");
+    let project = temp.path();
+    fs::write(
+        project.join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = ""
+port_base = 60000
+port_stride = 10
+"#,
+    )
+    .expect("write scaffold.toml");
+    let state_dir = project.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).expect("mkdir state");
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/bin/true\nlgpm_bin=/bin/echo\n",
+    )
+    .expect("write state");
+    fs::create_dir_all(project.join(".scaffold/basecamp/profiles/alice")).expect("mkdir profile");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(project)
+        .arg("basecamp")
+        .arg("launch")
+        .arg("alice")
+        .arg("--no-clean")
+        .output()
+        .expect("run launch");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("basecamp modules") || !stderr.contains("--no-clean"),
+        "--no-clean should not trigger the empty-modules hint, got stderr:\n{stderr}"
+    );
+}
+
 #[test]
 fn basecamp_launch_outside_project_errors() {
     let temp = tempdir().expect("tempdir");

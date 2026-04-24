@@ -260,6 +260,18 @@ fn cmd_basecamp_launch(project: Project, profile: String, no_clean: bool) -> Dyn
         let _ = fs::remove_file(&launch_state_path);
     }
 
+    // Clean-slate launch replays `[basecamp.modules]` into the freshly-scrubbed
+    // profile. An empty capture set would make that replay a silent no-op, so the
+    // profile would come up with zero modules — violating the clean-slate
+    // guarantee. Fail fast with a hint. `--no-clean` skips this check because
+    // that mode deliberately preserves whatever's already installed.
+    if !no_clean && total_captured_modules(&project) == 0 {
+        bail!(
+            "no modules captured — run `logos-scaffold basecamp modules` before launching, \
+             or pass `--no-clean` to keep the currently-installed module set."
+        );
+    }
+
     // seed_profiles is idempotent (tested) and cheap — always run it so a prior
     // crash mid-scrub doesn't leave the profile without its xdg subdirs.
     seed_profiles(&profiles_root, &[profile.as_str()])?;
