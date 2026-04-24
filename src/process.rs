@@ -146,10 +146,7 @@ pub(crate) fn run_logged(cmd: &mut Command, step: &str, log_path: &Path) -> DynR
         Ok(())
     } else {
         finish_spinner_err(bar, step, &duration);
-        let mut detail = format!(
-            "{step} failed with {status}; see {}",
-            log_path.display()
-        );
+        let mut detail = format!("{step} failed with {status}; see {}", log_path.display());
         if log_indicates_truncated_trace(log_path) {
             detail.push_str(&format!(
                 "\nhint: nix elided part of the eval trace — re-run with --show-trace for full detail: {} --show-trace",

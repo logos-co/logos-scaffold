@@ -654,7 +654,11 @@ fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
         .with_context(|| format!("create {}", portable_dir.display()))?;
 
     let mut outputs: Vec<PathBuf> = Vec::new();
-    for (index, (name, src)) in ordered_names.iter().zip(portable_sources.iter()).enumerate() {
+    for (index, (name, src)) in ordered_names
+        .iter()
+        .zip(portable_sources.iter())
+        .enumerate()
+    {
         let store_paths: Vec<PathBuf> = match src {
             BasecampSource::Path(p) => vec![build_portable_resolve_path(Path::new(p))?],
             BasecampSource::Flake(flake_ref) => {
@@ -1075,9 +1079,7 @@ fn cmd_basecamp_modules(
     }
 
     let Some(bc) = project.config.basecamp.as_mut() else {
-        bail!(
-            "no [basecamp] section in scaffold.toml; run `logos-scaffold basecamp setup` first"
-        );
+        bail!("no [basecamp] section in scaffold.toml; run `logos-scaffold basecamp setup` first");
     };
 
     let explicit = !paths.is_empty() || !flakes.is_empty();
@@ -1153,10 +1155,7 @@ fn cmd_basecamp_modules(
     Ok(())
 }
 
-fn print_modules_table(
-    header: &str,
-    modules: &std::collections::BTreeMap<String, ModuleEntry>,
-) {
+fn print_modules_table(header: &str, modules: &std::collections::BTreeMap<String, ModuleEntry>) {
     println!("{header}:");
     if modules.is_empty() {
         println!("  (none)");
@@ -1241,7 +1240,9 @@ pub(crate) fn derive_module_name(
             // Non-path flake (github:, git+, …) — guess from the ref itself.
             let inferred = guess_name_from_github_ref(flake_ref).unwrap_or_else(|| {
                 // Last-ditch: use whatever is after the final '/' before '#'
-                let before_frag = flake_ref.split_once('#').map_or(flake_ref.as_str(), |(b, _)| b);
+                let before_frag = flake_ref
+                    .split_once('#')
+                    .map_or(flake_ref.as_str(), |(b, _)| b);
                 before_frag
                     .rsplit('/')
                     .next()
@@ -3593,7 +3594,10 @@ mod tests {
             "only".to_string(),
             entry_for(&format!("path:{}#lgx", d.display())),
         );
-        assert_eq!(topo_order_project_modules(&modules), vec!["only".to_string()]);
+        assert_eq!(
+            topo_order_project_modules(&modules),
+            vec!["only".to_string()]
+        );
     }
 
     #[test]
@@ -3896,7 +3900,9 @@ mod tests {
 
         let captured = std::collections::BTreeMap::new();
         let new_entries = resolve_manifest_dependencies(&[project], &captured).expect("ok");
-        let entry = new_entries.get("delivery_module").expect("delivery resolved");
+        let entry = new_entries
+            .get("delivery_module")
+            .expect("delivery resolved");
         assert_eq!(entry.role, ModuleRole::Dependency);
         assert!(
             entry.flake.contains("logos-delivery-module"),
@@ -4071,19 +4077,12 @@ port_stride = 10
         let flake = format!("path:{}#lgx", src_dir.display());
         let project = seed_basecamp_project(root);
         let probe = FakeProbe::new(&[]);
-        cmd_basecamp_modules(
-            project,
-            Vec::new(),
-            vec![flake.clone()],
-            false,
-            &probe,
-        )
-        .expect("first run");
+        cmd_basecamp_modules(project, Vec::new(), vec![flake.clone()], false, &probe)
+            .expect("first run");
 
         let first = fs::read_to_string(root.join("scaffold.toml")).unwrap();
         let project2 = load_project_at(root);
-        cmd_basecamp_modules(project2, Vec::new(), vec![flake], false, &probe)
-            .expect("second run");
+        cmd_basecamp_modules(project2, Vec::new(), vec![flake], false, &probe).expect("second run");
         let second = fs::read_to_string(root.join("scaffold.toml")).unwrap();
 
         assert_eq!(first, second, "re-running modules should be a no-op");
@@ -4152,7 +4151,10 @@ role = "dependency"
         let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
         let (name, note) = derive_module_name(&src).expect("derive ok");
         assert_eq!(name, "tictactoe_core");
-        assert!(note.is_none(), "no assumption note when metadata is present");
+        assert!(
+            note.is_none(),
+            "no assumption note when metadata is present"
+        );
     }
 
     #[test]
@@ -4298,5 +4300,4 @@ role = "dependency"
             Some("tictactoe_ui_cpp".to_string())
         );
     }
-
 }
