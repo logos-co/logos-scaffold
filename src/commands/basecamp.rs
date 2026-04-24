@@ -1152,6 +1152,119 @@ fn print_modules_list(
     }
 }
 
+/// Captured at `basecamp modules` time when scaffold infers a `module_name`
+/// for a source whose `metadata.json` wasn't readable locally (github flake,
+/// `.lgx` file without a sibling manifest). Printed once to stderr via
+/// `assumption_note_line`, then the inferred name is written to scaffold.toml
+/// where the user can correct it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AssumptionNote {
+    pub(crate) flake_ref: String,
+    pub(crate) inferred_name: String,
+}
+
+/// Derive a `module_name` for a captured source. Returns `(name, Option<note>)`:
+/// - `Some(note)` when the name had to be guessed (github repo slug, or
+///   `.lgx` filename stem when no sibling `metadata.json` exists).
+/// - `None` when the name was read directly from a `metadata.json.name` on
+///   the local filesystem.
+///
+/// `path:` flakes without a readable `metadata.json` return an error, not a
+/// fallback — the source directory is on disk and the file is part of the
+/// module contract; a missing file is user-fixable, not guessable.
+pub(crate) fn derive_module_name(
+    src: &BasecampSource,
+) -> DynResult<(String, Option<AssumptionNote>)> {
+    match src {
+        BasecampSource::Flake(flake_ref) => {
+            if let Some(local) = flake_path_prefix(flake_ref) {
+                let metadata_path = Path::new(local).join("metadata.json");
+                let text = fs::read_to_string(&metadata_path).with_context(|| {
+                    format!(
+                        "read metadata.json for {flake_ref}: {} missing or unreadable",
+                        metadata_path.display()
+                    )
+                })?;
+                let json: serde_json::Value = serde_json::from_str(&text)
+                    .with_context(|| format!("parse {}", metadata_path.display()))?;
+                let name = json
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{} missing `name` field required for module identity",
+                            metadata_path.display()
+                        )
+                    })?
+                    .to_string();
+                return Ok((name, None));
+            }
+            // Non-path flake (github:, git+, …) — guess from the ref itself.
+            let inferred = guess_name_from_github_ref(flake_ref).unwrap_or_else(|| {
+                // Last-ditch: use whatever is after the final '/' before '#'
+                let before_frag = flake_ref.split_once('#').map_or(flake_ref.as_str(), |(b, _)| b);
+                before_frag
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(before_frag)
+                    .replace('-', "_")
+            });
+            Ok((
+                inferred.clone(),
+                Some(AssumptionNote {
+                    flake_ref: flake_ref.clone(),
+                    inferred_name: inferred,
+                }),
+            ))
+        }
+        BasecampSource::Path(p) => {
+            let pb = PathBuf::from(p);
+            let sibling_metadata = pb.parent().map(|d| d.join("metadata.json"));
+            if let Some(metadata_path) = &sibling_metadata {
+                if let Ok(text) = fs::read_to_string(metadata_path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Some(name) = json.get("name").and_then(|v| v.as_str()) {
+                            return Ok((name.to_string(), None));
+                        }
+                    }
+                }
+            }
+            let stem = pb
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Ok((
+                stem.clone(),
+                Some(AssumptionNote {
+                    flake_ref: p.clone(),
+                    inferred_name: stem,
+                }),
+            ))
+        }
+    }
+}
+
+/// Format the user-facing note printed once per heuristic guess. Names the
+/// flake ref and the inferred `module_name`, and points at `scaffold.toml`
+/// as the place to correct it.
+pub(crate) fn assumption_note_line(note: &AssumptionNote) -> String {
+    format!(
+        "note: flake `{}` — assumed module_name = `{}`. If wrong, edit `[basecamp.modules]` in scaffold.toml.",
+        note.flake_ref, note.inferred_name,
+    )
+}
+
+/// Best-guess `module_name` from a `github:<owner>/<repo>[/<ref>][#<attr>]`
+/// flake ref: repo slug, strip `logos-` prefix, replace `-` with `_`. Returns
+/// `None` for non-github refs.
+fn guess_name_from_github_ref(flake_ref: &str) -> Option<String> {
+    let rest = flake_ref.strip_prefix("github:")?;
+    let before_frag = rest.split_once('#').map_or(rest, |(b, _)| b);
+    let repo = before_frag.split('/').nth(1)?;
+    Some(repo.trim_start_matches("logos-").replace('-', "_"))
+}
+
 /// Read `metadata.json` from a flake source's local filesystem path and
 /// collect its `dependencies: [...]` array. Returns empty for remote flakes
 /// (no local path to read) or path-sources (`.lgx` files are build artefacts,
@@ -3240,6 +3353,96 @@ mod tests {
     fn github_flake_ref_rev_returns_none_for_non_github() {
         assert_eq!(github_flake_ref_rev("path:/abs#lgx"), None);
         assert_eq!(github_flake_ref_rev("github:foo/bar#lgx"), None);
+    }
+
+    fn write_metadata(dir: &Path, name: &str) {
+        fs::write(
+            dir.join("metadata.json"),
+            format!("{{\"name\": \"{name}\", \"dependencies\": []}}"),
+        )
+        .expect("write metadata.json");
+    }
+
+    #[test]
+    fn derive_module_name_reads_path_flake_metadata_name() {
+        let tmp = tempdir().expect("tempdir");
+        write_metadata(tmp.path(), "tictactoe_core");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let (name, note) = derive_module_name(&src).expect("derive ok");
+        assert_eq!(name, "tictactoe_core");
+        assert!(note.is_none(), "no assumption note when metadata is present");
+    }
+
+    #[test]
+    fn derive_module_name_path_flake_without_metadata_errors() {
+        let tmp = tempdir().expect("tempdir");
+        let src = BasecampSource::Flake(format!("path:{}#lgx", tmp.path().display()));
+        let err = derive_module_name(&src).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("metadata.json"),
+            "expected metadata.json in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn derive_module_name_lgx_file_reads_sibling_metadata() {
+        let tmp = tempdir().expect("tempdir");
+        write_metadata(tmp.path(), "my_module");
+        let lgx = tmp.path().join("my_module.lgx");
+        fs::write(&lgx, b"stub").expect("write lgx");
+        let src = BasecampSource::Path(lgx.display().to_string());
+        let (name, note) = derive_module_name(&src).expect("derive ok");
+        assert_eq!(name, "my_module");
+        assert!(note.is_none());
+    }
+
+    #[test]
+    fn derive_module_name_lgx_file_without_metadata_falls_back_to_stem_with_note() {
+        let tmp = tempdir().expect("tempdir");
+        let lgx = tmp.path().join("stem_only.lgx");
+        fs::write(&lgx, b"stub").expect("write lgx");
+        let src = BasecampSource::Path(lgx.display().to_string());
+        let (name, note) = derive_module_name(&src).expect("derive ok");
+        assert_eq!(name, "stem_only");
+        let note = note.expect("expected assumption note on stem fallback");
+        assert_eq!(note.inferred_name, "stem_only");
+        assert!(note.flake_ref.contains("stem_only.lgx"));
+    }
+
+    #[test]
+    fn derive_module_name_github_strips_logos_prefix_and_snake_cases() {
+        let src =
+            BasecampSource::Flake("github:logos-co/logos-delivery-module/abc123#lgx".to_string());
+        let (name, note) = derive_module_name(&src).expect("derive ok");
+        assert_eq!(name, "delivery_module");
+        let note = note.expect("assumption note expected for github flake");
+        assert_eq!(note.inferred_name, "delivery_module");
+    }
+
+    #[test]
+    fn derive_module_name_github_non_logos_prefix_replaces_dashes_only() {
+        let src = BasecampSource::Flake("github:jimmy/claw-module/def#lgx".to_string());
+        let (name, note) = derive_module_name(&src).expect("derive ok");
+        assert_eq!(name, "claw_module");
+        assert!(note.is_some());
+    }
+
+    #[test]
+    fn assumption_note_line_contains_flake_ref_and_inferred_name() {
+        let note = AssumptionNote {
+            flake_ref: "github:logos-co/logos-foo/abc#lgx".to_string(),
+            inferred_name: "foo".to_string(),
+        };
+        let line = assumption_note_line(&note);
+        assert!(
+            line.contains("github:logos-co/logos-foo/abc#lgx") && line.contains("foo"),
+            "note line missing ref or name: {line}"
+        );
+        assert!(
+            line.contains("scaffold.toml"),
+            "note line should point user at scaffold.toml: {line}"
+        );
     }
 
     #[test]
