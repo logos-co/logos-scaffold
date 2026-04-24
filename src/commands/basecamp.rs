@@ -1728,14 +1728,22 @@ fn list_lgx(dir: &Path) -> DynResult<Vec<PathBuf>> {
 struct NixLgxProbe;
 
 impl LgxFlakeProbe for NixLgxProbe {
-    fn package_names(&self, flake_ref: &str) -> DynResult<Vec<String>> {
+    fn package_names(
+        &self,
+        flake_ref: &str,
+        overrides: &[(String, String)],
+    ) -> DynResult<Vec<String>> {
         let target = format!("{flake_ref}#packages.{}", nix_current_system());
-        let out = Command::new("nix")
-            .arg("eval")
+        let mut cmd = Command::new("nix");
+        cmd.arg("eval")
             .arg("--json")
             .arg("--apply")
             .arg("x: builtins.attrNames x")
-            .arg(&target)
+            .arg(&target);
+        for (name, value) in overrides {
+            cmd.arg("--override-input").arg(name).arg(value);
+        }
+        let out = cmd
             .output()
             .with_context(|| format!("spawn nix eval {target}"))?;
         if !out.status.success() {
@@ -2197,10 +2205,22 @@ fn collect_api_headers(alice_modules: &Path, module_name: &str) -> Vec<PathBuf> 
     out
 }
 
-/// Probes a flake ref for the set of package names it exposes under the current system.
-/// Returned list is used to detect `.#lgx` / `.#lgx-portable` in source resolution.
+/// Probes a flake ref for the set of package names it exposes under the current
+/// system. Returned list is used to detect `.#lgx` / `.#lgx-portable` in source
+/// resolution.
+///
+/// `overrides` is the list of `(input_name, flake_ref)` pairs to pass as
+/// `--override-input` to `nix eval`. Sub-flakes that declare inputs of the form
+/// `path:../<sibling>` cannot be evaluated in pure mode without those overrides
+/// — nix copies the flake into the store before evaluating, and `..` then
+/// resolves under `/nix/store/` rather than the real project tree. Mirrors the
+/// sibling-override plumbing already applied at build time.
 trait LgxFlakeProbe {
-    fn package_names(&self, flake_ref: &str) -> DynResult<Vec<String>>;
+    fn package_names(
+        &self,
+        flake_ref: &str,
+        overrides: &[(String, String)],
+    ) -> DynResult<Vec<String>>;
 }
 
 /// Resolves the set of `.lgx` sources to install from explicit args and project auto-discovery.
@@ -2239,17 +2259,28 @@ fn resolve_install_sources(
     let mut alt_only_dirs = Vec::new();
     let root_flake = project_root.join("flake.nix");
     if root_flake.is_file() {
+        // Root flake: no sibling overrides. The root's `path:./sub` inputs
+        // stay inside the store copy; sibling-of-parent resolution doesn't
+        // apply at this level.
         classify_flake_dir(
             project_root,
             probe,
             attr,
             alt_attr,
+            &[],
             &mut found,
             &mut alt_only_dirs,
         )?;
     }
 
     if found.is_empty() {
+        // Collect every flake-bearing sub-directory first so each probe call
+        // knows its filesystem siblings (the other sub-flakes). Probing
+        // `sub-a/flake.nix` with an input like `path:../sub-b` needs
+        // `--override-input sub-b path:<abs>/sub-b`, otherwise nix copies
+        // sub-a into the store and `..` resolves outside the store copy —
+        // pure-eval rejects it.
+        let mut sub_dirs: Vec<PathBuf> = Vec::new();
         for entry in fs::read_dir(project_root)
             .with_context(|| format!("read {}", project_root.display()))?
         {
@@ -2267,8 +2298,26 @@ fn resolve_install_sources(
                 continue;
             }
             if path.join("flake.nix").is_file() {
-                classify_flake_dir(&path, probe, attr, alt_attr, &mut found, &mut alt_only_dirs)?;
+                sub_dirs.push(path);
             }
+        }
+        sub_dirs.sort();
+
+        for dir in &sub_dirs {
+            let siblings: Vec<&Path> = sub_dirs
+                .iter()
+                .filter(|&d| d != dir)
+                .map(|p| p.as_path())
+                .collect();
+            classify_flake_dir(
+                dir,
+                probe,
+                attr,
+                alt_attr,
+                &siblings,
+                &mut found,
+                &mut alt_only_dirs,
+            )?;
         }
     }
 
@@ -2299,6 +2348,7 @@ fn classify_flake_dir(
     probe: &dyn LgxFlakeProbe,
     attr: &str,
     alt_attr: &str,
+    siblings: &[&Path],
     found: &mut Vec<BasecampSource>,
     alt_only_dirs: &mut Vec<String>,
 ) -> DynResult<()> {
@@ -2308,7 +2358,8 @@ fn classify_flake_dir(
          would be unreachable and alt-only detection silently broken"
     );
     let flake_ref = format!("path:{}", dir.display());
-    let names = probe.package_names(&flake_ref)?;
+    let overrides = probe_sibling_overrides(siblings);
+    let names = probe.package_names(&flake_ref, &overrides)?;
     // A flake that exposes only `alt_attr` (not the requested `attr`) is a failure case
     // handled by the caller with a targeted hint.
     if names.iter().any(|n| n == attr) {
@@ -2317,6 +2368,26 @@ fn classify_flake_dir(
         alt_only_dirs.push(dir.display().to_string());
     }
     Ok(())
+}
+
+/// Build the `--override-input <dir-name> path:<abs-path>` pairs for every
+/// sibling flake directory at probe time. Unfiltered: we pass all siblings
+/// and accept that nix may warn about unknown inputs — probe-time correctness
+/// (unlock the evaluation) takes priority over probe-time noise (the warning
+/// doesn't mask the result). Build-time filtering via `flake_declared_inputs`
+/// still suppresses noise at the `nix build` step.
+fn probe_sibling_overrides(siblings: &[&Path]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for sibling in siblings {
+        let Some(name) = sibling.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let abs = sibling
+            .canonicalize()
+            .unwrap_or_else(|_| sibling.to_path_buf());
+        out.push((name.to_string(), format!("path:{}", abs.display())));
+    }
+    out
 }
 
 pub(crate) fn flake_ref(src: &BasecampSource) -> String {
@@ -2416,7 +2487,11 @@ mod tests {
     }
 
     impl LgxFlakeProbe for FakeProbe {
-        fn package_names(&self, flake_ref: &str) -> DynResult<Vec<String>> {
+        fn package_names(
+            &self,
+            flake_ref: &str,
+            _overrides: &[(String, String)],
+        ) -> DynResult<Vec<String>> {
             Ok(self
                 .answers
                 .borrow()
@@ -3117,6 +3192,35 @@ mod tests {
         let got =
             resolve_sibling_overrides(&only, std::slice::from_ref(&only), "path:/abs/alone#lgx");
         assert!(got.is_empty(), "no siblings → no overrides");
+    }
+
+    #[test]
+    fn probe_sibling_overrides_emits_path_override_per_sibling() {
+        // Sub-flake probes need `--override-input <dirname> path:<abs>` for
+        // every filesystem sibling so `path:../<sibling>` inputs in the target
+        // flake resolve under pure-eval. This helper is the probe-time
+        // equivalent of `sibling_overrides_for` at build time.
+        let tmp = tempdir().expect("tempdir");
+        let a = tmp.path().join("alpha");
+        let b = tmp.path().join("beta");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let siblings: Vec<&Path> = vec![&a, &b];
+        let overrides = probe_sibling_overrides(&siblings);
+        assert_eq!(overrides.len(), 2);
+        let names: Vec<&str> = overrides.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"alpha") && names.contains(&"beta"));
+        for (_, value) in &overrides {
+            assert!(
+                value.starts_with("path:/"),
+                "expected absolute path: scheme, got {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn probe_sibling_overrides_empty_for_no_siblings() {
+        assert!(probe_sibling_overrides(&[]).is_empty());
     }
 
     // ---- `basecamp modules` helpers (manifest walking + dep resolution) ----
