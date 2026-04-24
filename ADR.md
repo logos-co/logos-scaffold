@@ -120,17 +120,6 @@ captured module set becomes reviewable in version control and diff tooling
 lookups become deterministic key matches — the "is this dep covered by
 something I already captured?" question has an unambiguous answer.
 
-## No Migration for In-Flight Basecamp Subcommand
-
-The whole `basecamp` subcommand is unreleased — it lands in a single PR, so
-there is no user-visible schema to migrate from. Iterations inside the PR
-drop older on-disk shapes without preservation: earlier `basecamp.state`
-files, earlier `[basecamp.dependencies]` tables, and any intermediate formats
-are discarded by a fresh `basecamp modules` run. Keeping the migration
-surface empty avoids carrying ceremonial compatibility code through the
-feature branch, and the PR author is the only user who could be affected by
-the break.
-
 ## Sibling `--override-input` Resolves By Declared Input Name
 
 Multi-sub-flake projects rely on `--override-input <input> path:<sibling-abs>` so a sub-flake's `path:../<sibling>` inputs resolve to the developer's working tree instead of whatever `github:` ref is in its lock. The first implementation keyed overrides by the **sibling directory name on disk** — a convention where input names are expected to match directory names. Two problems:
