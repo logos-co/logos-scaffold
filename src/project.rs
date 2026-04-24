@@ -40,7 +40,7 @@ pub(crate) fn run_in_project_dir(
 pub(crate) fn save_project_config(project: &Project) -> DynResult<()> {
     write_text_atomic(
         &project.root.join("scaffold.toml"),
-        &serialize_config(&project.config),
+        &serialize_config(&project.config)?,
     )
 }
 

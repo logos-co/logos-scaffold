@@ -125,7 +125,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     if template_variant == FRAMEWORK_KIND_LEZ_FRAMEWORK {
         cleanup_lez_hello_artifacts(&target)?;
     }
-    write_text(&target.join("scaffold.toml"), &serialize_config(&cfg))?;
+    write_text(&target.join("scaffold.toml"), &serialize_config(&cfg)?)?;
 
     let old_getting_started = target.join("GETTING_STARTED.md");
     if old_getting_started.exists() {

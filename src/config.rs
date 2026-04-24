@@ -237,7 +237,19 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     })
 }
 
-pub(crate) fn serialize_config(cfg: &Config) -> String {
+pub(crate) fn serialize_config(cfg: &Config) -> DynResult<String> {
+    check_toml_value("version", &cfg.version)?;
+    check_toml_value("cache_root", &cfg.cache_root)?;
+    check_toml_value("repos.lez.url", &cfg.lez.url)?;
+    check_toml_value("repos.lez.source", &cfg.lez.source)?;
+    check_toml_value("repos.lez.path", &cfg.lez.path)?;
+    check_toml_value("repos.lez.pin", &cfg.lez.pin)?;
+    check_toml_value("wallet.home_dir", &cfg.wallet_home_dir)?;
+    check_toml_value("framework.kind", &cfg.framework.kind)?;
+    check_toml_value("framework.version", &cfg.framework.version)?;
+    check_toml_value("framework.idl.spec", &cfg.framework.idl.spec)?;
+    check_toml_value("framework.idl.path", &cfg.framework.idl.path)?;
+
     let cache_root_line = if cfg.cache_root.is_empty() {
         // Documentation block for the default (unset) case. Keeping it in
         // scaffold.toml means devs discover the override without reading docs.
@@ -271,6 +283,9 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
     );
 
     if let Some(bc) = &cfg.basecamp {
+        check_toml_value("basecamp.pin", &bc.pin)?;
+        check_toml_value("basecamp.source", &bc.source)?;
+        check_toml_value("basecamp.lgpm_flake", &bc.lgpm_flake)?;
         out.push_str(&format!(
             "\n[basecamp]\npin = \"{}\"\nsource = \"{}\"\nlgpm_flake = \"{}\"\nport_base = {}\nport_stride = {}\n",
             escape_toml_string(&bc.pin),
@@ -280,6 +295,8 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
             bc.port_stride,
         ));
         for (name, entry) in &bc.modules {
+            check_toml_value(&format!("basecamp.modules.{name}"), name)?;
+            check_toml_value(&format!("basecamp.modules.{name}.flake"), &entry.flake)?;
             let role_str = match entry.role {
                 ModuleRole::Project => "project",
                 ModuleRole::Dependency => "dependency",
@@ -293,7 +310,27 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
         }
     }
 
-    out
+    Ok(out)
+}
+
+/// Reject any value containing a newline, CR, tab, or other C0 control
+/// character — the line-oriented parser in `parse_config` treats newlines as
+/// record separators, so an embedded one would forge a new key/section. Used
+/// as defense-in-depth alongside `normalize_and_validate_module_name`; the
+/// only remaining attacker surface after module-name validation is
+/// `--flake`-derived or config-sourced values.
+fn check_toml_value(key: &str, value: &str) -> DynResult<()> {
+    if let Some(bad) = value
+        .chars()
+        .find(|c| *c == '\n' || *c == '\r' || *c == '\t' || (*c as u32) < 0x20)
+    {
+        bail!(
+            "scaffold.toml `{key}` contains control character {:?} which would \
+             corrupt the line-oriented serializer: {value:?}",
+            bad
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn unquote(value: &str) -> String {
@@ -385,7 +422,7 @@ pin = "deadbeef"
     #[test]
     fn basecamp_absent_roundtrips_as_none() {
         let cfg = base_config();
-        let serialized = serialize_config(&cfg);
+        let serialized = serialize_config(&cfg).expect("serialize");
         assert!(
             !serialized.contains("[basecamp]"),
             "basecamp section should be omitted when None, got:\n{serialized}"
@@ -407,7 +444,7 @@ pin = "deadbeef"
             modules: std::collections::BTreeMap::new(),
         });
 
-        let serialized = serialize_config(&cfg);
+        let serialized = serialize_config(&cfg).expect("serialize");
         assert!(serialized.contains("[basecamp]"));
 
         let parsed = parse_config(&serialized).expect("parse");
@@ -432,7 +469,7 @@ pin = "deadbeef"
             modules: std::collections::BTreeMap::new(),
         });
 
-        let serialized = serialize_config(&cfg);
+        let serialized = serialize_config(&cfg).expect("serialize");
         assert!(
             !serialized.contains("[basecamp.modules"),
             "empty modules map should omit sub-sections, got:\n{serialized}"
@@ -466,7 +503,7 @@ pin = "deadbeef"
             modules: modules.clone(),
         });
 
-        let serialized = serialize_config(&cfg);
+        let serialized = serialize_config(&cfg).expect("serialize");
         assert!(
             serialized.contains("[basecamp.modules.tictactoe]"),
             "expected [basecamp.modules.tictactoe] in:\n{serialized}"
@@ -548,6 +585,74 @@ role = "project"
             err.to_string().contains("flake"),
             "expected flake-missing error, got: {err}"
         );
+    }
+
+    #[test]
+    fn serialize_rejects_newline_in_bc_source() {
+        let mut cfg = base_config();
+        cfg.basecamp = Some(BasecampConfig {
+            pin: "abc".to_string(),
+            source: "https://example\n[basecamp.modules.evil]\nflake = \"evil\"".to_string(),
+            lgpm_flake: String::new(),
+            port_base: 60000,
+            port_stride: 10,
+            modules: std::collections::BTreeMap::new(),
+        });
+        let err = serialize_config(&cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("newline") || msg.contains("control") || msg.contains("\\n"),
+            "expected control-char error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn serialize_rejects_carriage_return_in_pin() {
+        let mut cfg = base_config();
+        cfg.basecamp = Some(BasecampConfig {
+            pin: "a\rbad".to_string(),
+            source: String::new(),
+            lgpm_flake: String::new(),
+            port_base: 60000,
+            port_stride: 10,
+            modules: std::collections::BTreeMap::new(),
+        });
+        let err = serialize_config(&cfg).unwrap_err();
+        assert!(err.to_string().contains("pin"), "{err}");
+    }
+
+    #[test]
+    fn serialize_rejects_newline_in_module_entry_flake() {
+        let mut cfg = base_config();
+        let mut modules = std::collections::BTreeMap::new();
+        modules.insert(
+            "legit".to_string(),
+            ModuleEntry {
+                flake: "path:/p#lgx\n[basecamp.modules.attacker]\nflake = evil".to_string(),
+                role: ModuleRole::Project,
+            },
+        );
+        cfg.basecamp = Some(BasecampConfig {
+            pin: "abc".to_string(),
+            source: String::new(),
+            lgpm_flake: String::new(),
+            port_base: 60000,
+            port_stride: 10,
+            modules,
+        });
+        let err = serialize_config(&cfg).unwrap_err();
+        assert!(
+            err.to_string().contains("flake") && err.to_string().contains("legit"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn serialize_rejects_tab_in_lez_url() {
+        let mut cfg = base_config();
+        cfg.lez.url = "https://example\tevil".to_string();
+        let err = serialize_config(&cfg).unwrap_err();
+        assert!(err.to_string().contains("url"), "{err}");
     }
 
     #[test]

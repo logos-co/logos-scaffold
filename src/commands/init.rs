@@ -58,7 +58,7 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
         basecamp: None,
     };
 
-    write_text(&scaffold_path, &serialize_config(&cfg))?;
+    write_text(&scaffold_path, &serialize_config(&cfg)?)?;
     fs::create_dir_all(target.join(".scaffold/state"))
         .with_context(|| format!("creating {}/.scaffold/state", target.display()))?;
     fs::create_dir_all(target.join(".scaffold/logs"))
