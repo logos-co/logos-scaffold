@@ -66,6 +66,7 @@ logos-scaffold localnet start [--timeout-sec N]
 logos-scaffold localnet stop
 logos-scaffold localnet status [--json]
 logos-scaffold localnet logs [--tail N]
+logos-scaffold localnet reset [--reset-wallet] [--dry-run] [--verify-timeout-sec N]
 logos-scaffold wallet list [--long]
 logos-scaffold wallet topup [<address> | --address <address-ref>] [--dry-run]
 logos-scaffold wallet default set <address-ref>
@@ -77,15 +78,18 @@ logos-scaffold completions <bash|zsh>
 logos-scaffold help
 ```
 
+Each subcommand documents copy-paste examples under `--help`. Global `-q` / `--quiet` (or `LOGOS_SCAFFOLD_QUIET=1`) suppresses echoed external commands.
+
 ## Command Semantics
 
 - `create` and `new` are aliases.
 - `init` writes `scaffold.toml` with defaults into the current directory so an existing project can use the scaffold workflow. It creates `.scaffold/{state,logs}` and appends `.scaffold` to `.gitignore`. It refuses to overwrite an existing `scaffold.toml`. Run `setup` next.
 - `setup` syncs LEZ to pinned commit, builds the standalone `sequencer_service` and `wallet` binaries locally inside the LEZ tree, and seeds a deterministic default wallet from preconfigured public accounts when none is set. Wallet binaries are project-local and are not installed to PATH — use `logos-scaffold wallet ...` commands to interact with the wallet.
 - `build [project-path]` runs `setup` and then `cargo build --workspace`.
-- `deploy [program-name]` deploys one or all guest programs discovered in `methods/guest/src/bin/*.rs` using prebuilt `.bin` artifacts.
+- `deploy [program-name]` deploys one or all guest programs discovered in `methods/guest/src/bin/*.rs` using prebuilt `.bin` artifacts. Use `--json` for machine-readable output (recommended for automation).
 - `localnet start` waits until localnet is actually ready (`pid alive` + `127.0.0.1:3040` reachable), otherwise fails with diagnostics.
 - `localnet status` distinguishes managed process, stale state, and foreign listeners.
+- `localnet reset` stops the sequencer, clears sequencer chain state, restarts, and verifies blocks; `--dry-run` prints the plan without changing anything; `--reset-wallet` also deletes the project wallet home and default-address state.
 - `wallet list` shows known wallet accounts (`wallet account list`).
 - `wallet topup` checks account state first (`wallet account get --account-id ...`), runs `wallet auth-transfer init --account-id ...` only when the destination is uninitialized, then performs Piñata faucet claim (`wallet pinata claim --to ...`). If address is omitted, scaffold uses project default wallet from `.scaffold/state/wallet.state`.
 - `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.

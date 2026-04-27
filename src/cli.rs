@@ -16,7 +16,15 @@ use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
 use crate::commands::setup::cmd_setup;
 use crate::commands::wallet::{cmd_wallet, WalletAction};
+use crate::cli_help::{
+    EXAMPLES_BUILD, EXAMPLES_COMPLETIONS, EXAMPLES_CREATE, EXAMPLES_DEPLOY, EXAMPLES_DOCTOR,
+    EXAMPLES_INIT, EXAMPLES_LOCALNET_LOGS, EXAMPLES_LOCALNET_RESET, EXAMPLES_LOCALNET_START,
+    EXAMPLES_LOCALNET_STATUS, EXAMPLES_LOCALNET_STOP, EXAMPLES_REPORT, EXAMPLES_ROOT,
+    EXAMPLES_SETUP, EXAMPLES_WALLET, EXAMPLES_WALLET_DEFAULT_SET, EXAMPLES_WALLET_LIST,
+    EXAMPLES_WALLET_TOPUP,
+};
 use crate::constants::VERSION;
+use crate::process::set_command_echo;
 use crate::template::project::available_templates;
 use crate::DynResult;
 
@@ -39,9 +47,17 @@ static NEW_ABOUT: LazyLock<String> = LazyLock::new(|| {
 #[command(
     name = "logos-scaffold",
     version = VERSION,
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    after_long_help = EXAMPLES_ROOT
 )]
 struct Cli {
+    #[arg(
+        short,
+        long,
+        global = true,
+        help = "Suppress echoed external commands (lines starting with `$`). Same effect as LOGOS_SCAFFOLD_QUIET=1."
+    )]
+    quiet: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -67,8 +83,10 @@ enum Commands {
         long_about = "Print a shell completion script to stdout.\n\n\
                       Run `lgs completions <shell> --help` for per-shell install instructions."
     )]
+    #[command(after_long_help = EXAMPLES_COMPLETIONS)]
     Completions(CompletionsArgs),
     #[command(about = "Initialize scaffold.toml in the current directory")]
+    #[command(after_long_help = EXAMPLES_INIT)]
     Init,
     #[command(hide = true)]
     Help,
@@ -110,6 +128,7 @@ enum CompletionsShell {
 }
 
 #[derive(Debug, clap::Args)]
+#[command(after_long_help = EXAMPLES_CREATE)]
 struct NewArgs {
     name: String,
     #[arg(long)]
@@ -123,9 +142,11 @@ struct NewArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[command(after_long_help = EXAMPLES_SETUP)]
 struct SetupArgs {}
 
 #[derive(Debug, clap::Args)]
+#[command(after_long_help = EXAMPLES_BUILD)]
 struct BuildArgs {
     #[command(subcommand)]
     subcommand: Option<BuildSubcommand>,
@@ -146,23 +167,28 @@ struct BuildSubArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[command(after_long_help = EXAMPLES_DEPLOY)]
 struct DeployArgs {
     program_name: Option<String>,
     /// Path to a custom ELF binary to deploy directly (bypasses auto-discovery)
     #[arg(long, value_name = "PATH")]
     program_path: Option<PathBuf>,
-    /// Output result as JSON
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Emit deploy results as JSON on stdout (recommended for automation)."
+    )]
     json: bool,
 }
 
 #[derive(Debug, clap::Args)]
+#[command(after_long_help = EXAMPLES_DOCTOR)]
 struct DoctorArgs {
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Debug, clap::Args)]
+#[command(after_long_help = EXAMPLES_REPORT)]
 struct ReportArgs {
     #[arg(long)]
     out: Option<PathBuf>,
@@ -178,10 +204,15 @@ struct LocalnetArgs {
 
 #[derive(Debug, Subcommand)]
 enum LocalnetSubcommand {
+    #[command(after_long_help = EXAMPLES_LOCALNET_START)]
     Start(LocalnetStartArgs),
+    #[command(after_long_help = EXAMPLES_LOCALNET_STOP)]
     Stop,
+    #[command(after_long_help = EXAMPLES_LOCALNET_STATUS)]
     Status(LocalnetStatusArgs),
+    #[command(after_long_help = EXAMPLES_LOCALNET_LOGS)]
     Logs(LocalnetLogsArgs),
+    #[command(after_long_help = EXAMPLES_LOCALNET_RESET)]
     Reset(LocalnetResetArgs),
 }
 
@@ -210,6 +241,8 @@ struct LocalnetLogsArgs {
 /// delete wallet keypairs and wallet state.
 #[derive(Debug, clap::Args)]
 struct LocalnetResetArgs {
+    #[arg(long, help = "Print planned reset steps and paths without stopping, deleting, or restarting.")]
+    dry_run: bool,
     /// Also delete the wallet home directory and wallet state. Destructive:
     /// keypairs are not recoverable after this.
     #[arg(long)]
@@ -221,6 +254,7 @@ struct LocalnetResetArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[command(after_long_help = EXAMPLES_WALLET)]
 struct WalletArgs {
     #[command(subcommand)]
     command: WalletSubcommand,
@@ -229,8 +263,10 @@ struct WalletArgs {
 #[derive(Debug, Subcommand)]
 enum WalletSubcommand {
     #[command(about = "List wallet accounts (same as `wallet account list`)")]
+    #[command(after_long_help = EXAMPLES_WALLET_LIST)]
     List(WalletListArgs),
     #[command(about = "Top up wallet using pinata faucet claim")]
+    #[command(after_long_help = EXAMPLES_WALLET_TOPUP)]
     Topup(WalletTopupArgs),
     #[command(about = "Manage project default wallet")]
     Default(WalletDefaultArgs),
@@ -260,6 +296,7 @@ struct WalletDefaultArgs {
 
 #[derive(Debug, Subcommand)]
 enum WalletDefaultSubcommand {
+    #[command(after_long_help = EXAMPLES_WALLET_DEFAULT_SET)]
     Set(WalletDefaultSetArgs),
 }
 
@@ -272,7 +309,12 @@ struct WalletDefaultSetArgs {
 }
 
 pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
-    if let Some(action) = wallet_passthrough_action(&args)? {
+    apply_quiet_from_env();
+    let passthrough_start = leading_global_flags_end(&args);
+    if passthrough_start > 1 {
+        set_command_echo(false);
+    }
+    if let Some(action) = wallet_passthrough_action(&args, passthrough_start)? {
         return cmd_wallet(action);
     }
 
@@ -293,6 +335,10 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             _ => return Err(anyhow!(err.to_string())),
         },
     };
+
+    if cli.quiet {
+        set_command_echo(false);
+    }
 
     match cli.command {
         Some(Commands::Create(args)) | Some(Commands::New(args)) => cmd_new(NewCommand {
@@ -326,6 +372,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 LocalnetSubcommand::Status(args) => LocalnetAction::Status { json: args.json },
                 LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
                 LocalnetSubcommand::Reset(args) => LocalnetAction::Reset {
+                    dry_run: args.dry_run,
                     reset_wallet: args.reset_wallet,
                     verify_timeout_sec: args.verify_timeout_sec,
                 },
@@ -381,20 +428,39 @@ pub(crate) fn print_help(bin_name: &str) -> DynResult<()> {
     Ok(())
 }
 
-fn wallet_passthrough_action(args: &[String]) -> DynResult<Option<WalletAction>> {
-    if args.len() < 3 {
+fn apply_quiet_from_env() {
+    if std::env::var("LOGOS_SCAFFOLD_QUIET")
+        .map(|v| {
+            matches!(v.as_str(), "1" | "true" | "yes") || v.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false)
+    {
+        set_command_echo(false);
+    }
+}
+
+fn leading_global_flags_end(args: &[String]) -> usize {
+    let mut i = 1;
+    while i < args.len() && (args[i] == "--quiet" || args[i] == "-q") {
+        i += 1;
+    }
+    i
+}
+
+fn wallet_passthrough_action(args: &[String], start: usize) -> DynResult<Option<WalletAction>> {
+    if args.len() <= start + 1 {
         return Ok(None);
     }
 
-    if args[1] == "wallet" && args[2] == "--" {
-        if args.len() == 3 {
+    if args[start] == "wallet" && args[start + 1] == "--" {
+        if args.len() == start + 2 {
             return Err(anyhow!(
-                "wallet passthrough requires at least one argument after `--`. Example: `logos-scaffold wallet -- account list`"
+                "wallet passthrough requires at least one argument after `--`. Example: `logos-scaffold wallet -- account list`. Discover inner flags with: `logos-scaffold wallet -- --help` (from a project directory)."
             ));
         }
 
         return Ok(Some(WalletAction::Proxy {
-            args: args[3..].to_vec(),
+            args: args[start + 2..].to_vec(),
         }));
     }
 

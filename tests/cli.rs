@@ -23,6 +23,111 @@ const GUEST_BIN_REL_PATH: &str =
     "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
 
 #[test]
+fn root_help_lists_quiet_flag_and_examples() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--quiet")
+                .and(predicate::str::contains("Examples:"))
+                .and(predicate::str::contains("LOGOS_SCAFFOLD_QUIET")),
+        );
+}
+
+#[test]
+fn deploy_help_documents_json_for_automation() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("deploy")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--json")
+                .and(predicate::str::contains("Machine-readable output"))
+                .and(predicate::str::contains("LOGOS_SCAFFOLD_WALLET_PASSWORD")),
+        );
+}
+
+#[test]
+fn localnet_reset_help_lists_dry_run() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("localnet")
+        .arg("reset")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn localnet_reset_dry_run_prints_plan_without_mutations() {
+    let temp = tempdir().expect("tempdir");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lez path");
+    write_scaffold_toml(temp.path(), &lez_path);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("localnet")
+        .arg("reset")
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("dry-run: localnet reset")
+                .and(predicate::str::contains("planned: delete sequencer DB")),
+        );
+
+    let rocksdb = lez_path.join("rocksdb");
+    assert!(
+        !rocksdb.exists(),
+        "dry-run must not create or require rocksdb at {}",
+        rocksdb.display()
+    );
+}
+
+#[test]
+fn wallet_help_documents_inner_cli_discovery() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("wallet")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wallet -- --help"));
+}
+
+#[test]
+fn wallet_passthrough_works_with_leading_quiet_flag() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("--quiet")
+        .arg("wallet")
+        .arg("--")
+        .arg("account")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Preconfigured Public/"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("-q")
+        .arg("wallet")
+        .arg("--")
+        .arg("account")
+        .arg("list")
+        .assert()
+        .success();
+}
+
+#[test]
 fn create_help_does_not_mutate_filesystem() {
     let temp = tempdir().expect("tempdir");
 
