@@ -43,6 +43,51 @@ mkdir -p "$SCRATCH_ROOT"
 
 You may replace `"$SCAFFOLD_BIN"` with `logos-scaffold` when the install path itself is part of what you are validating.
 
+## Raspberry Pi Docker Dogfooding
+
+Use this path when dogfooding on Raspberry Pi OS or another ARM host where
+RISC0-related tooling cannot run natively. The AI agent runs on the Pi host and
+launches a disposable `linux/amd64` Docker lab for the scaffold package and
+generated applications.
+
+From the repository root on the Pi:
+
+```bash
+./dogfood/run-container.sh
+```
+
+The launcher builds an amd64 lab image, mounts the source checkout read-only,
+mounts `.dogfood/` read-write, and mounts `/var/run/docker.sock` so guest-build
+containers can be started from inside the lab. This socket gives the lab control
+of the host Docker daemon; use it only for trusted local dogfooding.
+
+Inside the lab, read the agent brief:
+
+```bash
+sed -n '1,220p' "$REPO_SOURCE/dogfood/AGENT.md"
+```
+
+Minimum preflight before long-running scenarios:
+
+```bash
+uname -m
+rustc -V
+cargo -V
+docker version
+docker run --rm --platform linux/amd64 debian:bookworm uname -m
+```
+
+Expected architecture output is `x86_64`. If nested Docker cannot run
+`linux/amd64`, record that as a host setup blocker before continuing.
+
+All copied worktrees, generated projects, caches, and evidence should stay under
+`.dogfood/`. A typical run writes:
+
+- `.dogfood/work/<run-id>/logos-scaffold` for the copied repository under test.
+- `.dogfood/work/<run-id>/generated` for generated scaffold projects.
+- `.dogfood/artifacts/<run-id>/summary.md`, `commands.ndjson`, `findings.md`,
+  and raw scenario evidence.
+
 ## Execution Contexts
 
 | Context | Purpose | Typical commands |
