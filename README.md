@@ -46,10 +46,14 @@ lgs completions bash --help
 lgs completions zsh --help
 ```
 
-## DOGFOODING
+## Dogfooding
 
 Canonical dogfooding scenarios live in [DOGFOODING.md](./DOGFOODING.md).
 Keep that runbook updated whenever first-class commands, templates, or supported workflows change.
+
+If you need to validate on Raspberry Pi OS, use the Docker dogfooding workflow
+documented there. The normal install and first-success commands below are still
+the best starting point for new users.
 
 ## CLI
 
