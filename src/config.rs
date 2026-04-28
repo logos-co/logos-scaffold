@@ -79,6 +79,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     let mut framework_idl_path = String::new();
 
     let mut run_restart_localnet: Option<bool> = None;
+    let mut run_reset_localnet: Option<bool> = None;
     let mut run_post_deploy: Vec<String> = Vec::new();
 
     for raw in text.lines() {
@@ -152,6 +153,8 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
             "run" => {
                 if key == "restart_localnet" {
                     run_restart_localnet = Some(value != "false" && value != "0");
+                } else if key == "reset_localnet" {
+                    run_reset_localnet = Some(value != "false" && value != "0");
                 } else if key == "post_deploy" {
                     if raw_value.starts_with('[') {
                         run_post_deploy = parse_inline_string_array(&raw_value)?;
@@ -217,6 +220,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         },
         run: RunConfig {
             restart_localnet: run_restart_localnet.unwrap_or(false),
+            reset_localnet: run_reset_localnet.unwrap_or(false),
             post_deploy: run_post_deploy,
         },
     })
@@ -240,10 +244,10 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
         cfg.localnet.risc0_dev_mode,
     );
 
-    if cfg.run.restart_localnet || !cfg.run.post_deploy.is_empty() {
+    if cfg.run.restart_localnet || cfg.run.reset_localnet || !cfg.run.post_deploy.is_empty() {
         out.push_str(&format!(
-            "\n[run]\nrestart_localnet = {}\n",
-            cfg.run.restart_localnet,
+            "\n[run]\nrestart_localnet = {}\nreset_localnet = {}\n",
+            cfg.run.restart_localnet, cfg.run.reset_localnet,
         ));
         let quoted: Vec<String> = cfg
             .run
@@ -449,6 +453,48 @@ pin = "deadbeef"
         assert!(serialized.contains("[run]"));
         assert!(serialized.contains("restart_localnet = true"));
         assert!(serialized.contains("spel --idl foo.json"));
+    }
+
+    #[test]
+    fn parse_config_with_reset_localnet_true() {
+        let toml = minimal_scaffold_toml() + "[run]\nreset_localnet = true\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert!(cfg.run.reset_localnet);
+    }
+
+    #[test]
+    fn parse_config_reset_localnet_defaults_to_false() {
+        let cfg = parse_config(&minimal_scaffold_toml()).expect("parse");
+        assert!(!cfg.run.reset_localnet);
+    }
+
+    #[test]
+    fn serialize_config_emits_reset_localnet_when_set() {
+        let toml = minimal_scaffold_toml() + "[run]\nreset_localnet = true\n";
+        let cfg = parse_config(&toml).expect("parse");
+        let out = serialize_config(&cfg);
+        assert!(out.contains("reset_localnet = true"), "got: {out}");
+    }
+
+    #[test]
+    fn serialize_config_omits_reset_localnet_when_default() {
+        let cfg = parse_config(&minimal_scaffold_toml()).expect("parse");
+        let out = serialize_config(&cfg);
+        assert!(
+            !out.contains("reset_localnet"),
+            "should omit reset_localnet at default, got: {out}"
+        );
+    }
+
+    #[test]
+    fn reset_localnet_round_trips_through_parse_serialize() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\nrestart_localnet = false\nreset_localnet = true\npost_deploy = [\"echo a\"]\n";
+        let cfg1 = parse_config(&toml).expect("parse");
+        let serialized = serialize_config(&cfg1);
+        let cfg2 = parse_config(&serialized).expect("re-parse");
+        assert_eq!(cfg1.run.reset_localnet, cfg2.run.reset_localnet);
+        assert!(cfg2.run.reset_localnet);
     }
 
     #[test]

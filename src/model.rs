@@ -164,5 +164,6 @@ pub(crate) struct FrameworkIdlConfig {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RunConfig {
     pub(crate) restart_localnet: bool,
+    pub(crate) reset_localnet: bool,
     pub(crate) post_deploy: Vec<String>,
 }
