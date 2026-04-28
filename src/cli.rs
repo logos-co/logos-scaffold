@@ -4,6 +4,13 @@ use std::sync::LazyLock;
 use anyhow::anyhow;
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::cli_help::{
+    EXAMPLES_BUILD, EXAMPLES_COMPLETIONS, EXAMPLES_CREATE, EXAMPLES_DEPLOY, EXAMPLES_DOCTOR,
+    EXAMPLES_INIT, EXAMPLES_LOCALNET_LOGS, EXAMPLES_LOCALNET_RESET, EXAMPLES_LOCALNET_START,
+    EXAMPLES_LOCALNET_STATUS, EXAMPLES_LOCALNET_STOP, EXAMPLES_REPORT, EXAMPLES_ROOT,
+    EXAMPLES_SETUP, EXAMPLES_WALLET, EXAMPLES_WALLET_DEFAULT_SET, EXAMPLES_WALLET_LIST,
+    EXAMPLES_WALLET_TOPUP,
+};
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::client::cmd_client;
 use crate::commands::completions::cmd_completions;
@@ -16,13 +23,6 @@ use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
 use crate::commands::setup::cmd_setup;
 use crate::commands::wallet::{cmd_wallet, WalletAction};
-use crate::cli_help::{
-    EXAMPLES_BUILD, EXAMPLES_COMPLETIONS, EXAMPLES_CREATE, EXAMPLES_DEPLOY, EXAMPLES_DOCTOR,
-    EXAMPLES_INIT, EXAMPLES_LOCALNET_LOGS, EXAMPLES_LOCALNET_RESET, EXAMPLES_LOCALNET_START,
-    EXAMPLES_LOCALNET_STATUS, EXAMPLES_LOCALNET_STOP, EXAMPLES_REPORT, EXAMPLES_ROOT,
-    EXAMPLES_SETUP, EXAMPLES_WALLET, EXAMPLES_WALLET_DEFAULT_SET, EXAMPLES_WALLET_LIST,
-    EXAMPLES_WALLET_TOPUP,
-};
 use crate::constants::VERSION;
 use crate::process::set_command_echo;
 use crate::template::project::available_templates;
@@ -241,7 +241,10 @@ struct LocalnetLogsArgs {
 /// delete wallet keypairs and wallet state.
 #[derive(Debug, clap::Args)]
 struct LocalnetResetArgs {
-    #[arg(long, help = "Print planned reset steps and paths without stopping, deleting, or restarting.")]
+    #[arg(
+        long,
+        help = "Print planned reset steps and paths without stopping, deleting, or restarting."
+    )]
     dry_run: bool,
     /// Also delete the wallet home directory and wallet state. Destructive:
     /// keypairs are not recoverable after this.
@@ -430,9 +433,7 @@ pub(crate) fn print_help(bin_name: &str) -> DynResult<()> {
 
 fn apply_quiet_from_env() {
     if std::env::var("LOGOS_SCAFFOLD_QUIET")
-        .map(|v| {
-            matches!(v.as_str(), "1" | "true" | "yes") || v.eq_ignore_ascii_case("on")
-        })
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes") || v.eq_ignore_ascii_case("on"))
         .unwrap_or(false)
     {
         set_command_echo(false);
