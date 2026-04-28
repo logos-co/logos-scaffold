@@ -2133,6 +2133,30 @@ fn run_rejects_both_restart_flags() {
 }
 
 #[test]
+fn run_rejects_both_reset_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("run")
+        .arg("--reset-localnet")
+        .arg("--no-reset-localnet")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn run_help_lists_reset_localnet_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("run")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--reset-localnet")
+                .and(predicate::str::contains("--no-reset-localnet")),
+        );
+}
+
+#[test]
 fn run_fails_at_build_step_in_mock_project() {
     // The run command calls cmd_build_shortcut which runs cargo build --workspace.
     // In a mock project without a real Cargo workspace, this fails at step 1.

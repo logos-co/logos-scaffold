@@ -12,7 +12,13 @@ use crate::model::LocalnetOwnership;
 use crate::project::load_project;
 use crate::DynResult;
 
-pub(crate) fn cmd_run(restart_localnet: Option<bool>) -> DynResult<()> {
+pub(crate) fn cmd_run(
+    restart_localnet: Option<bool>,
+    reset_localnet: Option<bool>,
+) -> DynResult<()> {
+    // reset_localnet wiring lands in task 5; accepting it here so the CLI
+    // signature is stable.
+    let _ = reset_localnet;
     let project = load_project()?;
     let hooks = project.config.run.post_deploy.clone();
     let has_hooks = !hooks.is_empty();

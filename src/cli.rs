@@ -181,6 +181,12 @@ struct RunArgs {
     /// Skip localnet restart even if scaffold.toml says true
     #[arg(long, conflicts_with = "restart_localnet")]
     no_restart_localnet: bool,
+    /// Wipe rocksdb + wallet, then start localnet from scratch (overrides scaffold.toml)
+    #[arg(long)]
+    reset_localnet: bool,
+    /// Skip localnet reset even if scaffold.toml says true
+    #[arg(long, conflicts_with = "reset_localnet")]
+    no_reset_localnet: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -376,7 +382,14 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             } else {
                 None
             };
-            cmd_run(restart)
+            let reset = if args.reset_localnet {
+                Some(true)
+            } else if args.no_reset_localnet {
+                Some(false)
+            } else {
+                None
+            };
+            cmd_run(restart, reset)
         }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
