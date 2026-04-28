@@ -72,12 +72,11 @@ symlinks point at live nix-store paths; the store entries themselves are
 retained by their `result-lgx-portable` GC root at each flake root, so
 scaffold's symlink does not itself pin the artefacts.
 
-Tradeoffs: scaffold now writes under `.scaffold/basecamp/portable/` at
-`build-portable` time, which contradicts the original v0.3 claim that
-`build-portable` "never writes under `.scaffold/`" (the v0.3 FURPS has
-been updated accordingly). The upside is operator ergonomics for the
-one actual friction point in the AppImage test flow — no more hunting
-through the nix store in a file picker.
+Tradeoffs: scaffold writes under `.scaffold/basecamp/portable/` at
+`build-portable` time, relaxing an earlier design goal that
+`build-portable` never touch `.scaffold/`. The upside is operator
+ergonomics for the one actual friction point in the AppImage test
+flow — no more hunting through the nix store in a file picker.
 
 ## AppImage Path is Outside Scaffold's Scope
 
