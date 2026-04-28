@@ -2220,12 +2220,93 @@ fn run_config_restart_localnet_is_parsed() {
 }
 
 fn append_run_config(project_root: &Path, restart_localnet: bool, post_deploy: &[&str]) {
+    append_run_config_full(project_root, restart_localnet, false, post_deploy);
+}
+
+fn append_run_config_full(
+    project_root: &Path,
+    restart_localnet: bool,
+    reset_localnet: bool,
+    post_deploy: &[&str],
+) {
     let toml_path = project_root.join("scaffold.toml");
     let mut content = fs::read_to_string(&toml_path).expect("read scaffold.toml");
     let quoted: Vec<String> = post_deploy.iter().map(|c| format!("\"{c}\"")).collect();
     content.push_str(&format!(
-        "\n[run]\nrestart_localnet = {restart_localnet}\npost_deploy = [{}]\n",
+        "\n[run]\nrestart_localnet = {restart_localnet}\nreset_localnet = {reset_localnet}\npost_deploy = [{}]\n",
         quoted.join(", ")
     ));
     fs::write(toml_path, content).expect("write scaffold.toml");
+}
+
+#[test]
+fn run_with_reset_localnet_flag_starts_pipeline() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .arg("--reset-localnet")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/5] Building..."));
+}
+
+#[test]
+fn run_with_reset_localnet_in_config_starts_pipeline() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config_full(temp.path(), false, true, &[]);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/5] Building..."));
+}
+
+#[test]
+fn run_with_both_reset_and_restart_starts_pipeline_without_warning() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config_full(temp.path(), true, true, &[]);
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .output()
+        .expect("run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("[1/5] Building..."),
+        "expected pipeline to start, stdout: {stdout}"
+    );
+    let combined = format!("{stdout}\n{stderr}");
+    let lower = combined.to_lowercase();
+    assert!(
+        !lower.contains("conflict") && !lower.contains("supersed"),
+        "expected no warning about reset+restart conflict, got: {combined}"
+    );
+}
+
+#[test]
+fn run_no_reset_flag_overrides_config_reset_true() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config_full(temp.path(), false, true, &[]);
+
+    // --no-reset-localnet must beat the config field (CLI overrides config).
+    // We can't observe the reset wasn't called from a mock project, but we
+    // can confirm the pipeline starts (no panic from conflicting parses).
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .arg("--no-reset-localnet")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/5] Building..."));
 }

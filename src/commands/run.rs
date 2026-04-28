@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{bail, Context};
@@ -5,26 +6,31 @@ use anyhow::{bail, Context};
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::deploy::cmd_deploy;
 use crate::commands::idl::build_idl_for_current_project;
-use crate::commands::localnet::{build_localnet_status_for_project, cmd_localnet, LocalnetAction};
+use crate::commands::localnet::{
+    build_localnet_status_for_project, cmd_localnet, cmd_localnet_reset, LocalnetAction,
+};
 use crate::commands::wallet::{cmd_wallet_topup_inner, TopupOutcome};
 use crate::constants::GUEST_BIN_REL_PATH;
 use crate::model::LocalnetOwnership;
 use crate::project::load_project;
 use crate::DynResult;
 
+/// Number of seconds to wait for block production after a reset before
+/// considering the freshly-started localnet healthy. Matches the upper
+/// envelope of `cmd_localnet_reset`'s default verification timeout.
+const RESET_VERIFY_TIMEOUT_SEC: u64 = 30;
+
 pub(crate) fn cmd_run(
     restart_localnet: Option<bool>,
     reset_localnet: Option<bool>,
 ) -> DynResult<()> {
-    // reset_localnet wiring lands in task 5; accepting it here so the CLI
-    // signature is stable.
-    let _ = reset_localnet;
     let project = load_project()?;
     let hooks = project.config.run.post_deploy.clone();
     let has_hooks = !hooks.is_empty();
     // Steps: build, build idl, localnet, topup, deploy, [+1 if hooks]
     let total_steps: u32 = if has_hooks { 6 } else { 5 };
     let effective_restart = restart_localnet.unwrap_or(project.config.run.restart_localnet);
+    let effective_reset = reset_localnet.unwrap_or(project.config.run.reset_localnet);
 
     // Step 1: Build (chains setup internally)
     println!("[1/{total_steps}] Building...");
@@ -34,9 +40,16 @@ pub(crate) fn cmd_run(
     println!("[2/{total_steps}] Building IDL...");
     build_idl_for_current_project()?;
 
-    // Step 3: Ensure localnet
-    println!("[3/{total_steps}] Ensuring localnet...");
-    ensure_localnet(&project, effective_restart)?;
+    // Step 3: Reset OR ensure localnet. Reset and restart are orthogonal
+    // inputs; when reset is true, restart's value is irrelevant because
+    // cmd_localnet_reset already includes a stop+start. Not a conflict.
+    if effective_reset {
+        println!("[3/{total_steps}] Resetting localnet (wipes sequencer + wallet)...");
+        reset_localnet_for_run(&project)?;
+    } else {
+        println!("[3/{total_steps}] Ensuring localnet...");
+        ensure_localnet(&project, effective_restart)?;
+    }
 
     // Step 4: Wallet topup
     println!("[4/{total_steps}] Topping up wallet...");
@@ -62,6 +75,22 @@ pub(crate) fn cmd_run(
     }
 
     Ok(())
+}
+
+fn reset_localnet_for_run(project: &crate::model::Project) -> DynResult<()> {
+    let lez = PathBuf::from(&project.config.lez.path);
+    let state_path = project.root.join(".scaffold/state/localnet.state");
+    let log_path = project.root.join(".scaffold/logs/sequencer.log");
+    let localnet_addr = format!("127.0.0.1:{}", project.config.localnet.port);
+    cmd_localnet_reset(
+        project,
+        &lez,
+        &state_path,
+        &log_path,
+        &localnet_addr,
+        true, // reset_wallet — full wipe per design (see docs/specs/run-reset.md)
+        RESET_VERIFY_TIMEOUT_SEC,
+    )
 }
 
 fn ensure_localnet(project: &crate::model::Project, restart: bool) -> DynResult<()> {
