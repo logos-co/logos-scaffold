@@ -4,6 +4,7 @@ use anyhow::{bail, Context};
 
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::deploy::cmd_deploy;
+use crate::commands::idl::build_idl_for_current_project;
 use crate::commands::localnet::{build_localnet_status_for_project, cmd_localnet, LocalnetAction};
 use crate::commands::wallet::{cmd_wallet_topup_inner, TopupOutcome};
 use crate::constants::GUEST_BIN_REL_PATH;
@@ -13,33 +14,43 @@ use crate::DynResult;
 
 pub(crate) fn cmd_run(restart_localnet: Option<bool>) -> DynResult<()> {
     let project = load_project()?;
-    let has_hook = !project.config.run.post_deploy.is_empty();
-    let total_steps: u32 = if has_hook { 5 } else { 4 };
+    let hooks = project.config.run.post_deploy.clone();
+    let has_hooks = !hooks.is_empty();
+    // Steps: build, build idl, localnet, topup, deploy, [+1 if hooks]
+    let total_steps: u32 = if has_hooks { 6 } else { 5 };
     let effective_restart = restart_localnet.unwrap_or(project.config.run.restart_localnet);
 
     // Step 1: Build (chains setup internally)
     println!("[1/{total_steps}] Building...");
     cmd_build_shortcut(None)?;
 
-    // Step 2: Ensure localnet
-    println!("[2/{total_steps}] Ensuring localnet...");
+    // Step 2: Build IDL (no-op for non-lez-framework projects)
+    println!("[2/{total_steps}] Building IDL...");
+    build_idl_for_current_project()?;
+
+    // Step 3: Ensure localnet
+    println!("[3/{total_steps}] Ensuring localnet...");
     ensure_localnet(&project, effective_restart)?;
 
-    // Step 3: Wallet topup
-    println!("[3/{total_steps}] Topping up wallet...");
+    // Step 4: Wallet topup
+    println!("[4/{total_steps}] Topping up wallet...");
     let outcome = cmd_wallet_topup_inner(&project, None, false)?;
     if outcome == TopupOutcome::ConfirmationTimeout {
         bail!("wallet topup confirmation timed out; aborting run to avoid deploying with uncertain funding.\nHint: retry `logos-scaffold run` or run `logos-scaffold wallet topup` manually.");
     }
 
-    // Step 4: Deploy
-    println!("[4/{total_steps}] Deploying programs...");
+    // Step 5: Deploy
+    println!("[5/{total_steps}] Deploying programs...");
     cmd_deploy(None, None, false)?;
 
-    // Step 5: Post-deploy hook (or summary)
-    if has_hook {
-        println!("[5/{total_steps}] Running post-deploy hook...");
-        run_post_deploy_hook(&project, &project.config.run.post_deploy.clone())?;
+    // Step 6: Post-deploy hooks (or summary)
+    if has_hooks {
+        let n = hooks.len();
+        println!("[6/{total_steps}] Running {n} post-deploy hook(s)...");
+        for (i, hook) in hooks.iter().enumerate() {
+            println!("      hook {}/{n}: {hook}", i + 1);
+            run_post_deploy_hook(&project, hook)?;
+        }
     } else {
         print_deploy_summary(&project)?;
     }

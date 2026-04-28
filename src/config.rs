@@ -9,7 +9,55 @@ use crate::model::{
 };
 use crate::DynResult;
 
+/// Joins multi-line TOML inline arrays onto a single line so the
+/// line-oriented parser below can read them as one logical entry.
+fn fold_multiline_arrays(text: &str) -> String {
+    let mut out = String::new();
+    let mut accumulator = String::new();
+    let mut accumulating = false;
+
+    for raw in text.lines() {
+        if accumulating {
+            accumulator.push(' ');
+            accumulator.push_str(raw.trim());
+            if raw.contains(']') {
+                out.push_str(&accumulator);
+                out.push('\n');
+                accumulator.clear();
+                accumulating = false;
+            }
+            continue;
+        }
+
+        let trimmed = raw.trim_start();
+        // Detect "<key> = [" where the closing `]` is not on the same line.
+        // Section headers like `[run]` already balance on a single line.
+        if let Some(eq_idx) = trimmed.find('=') {
+            let after_eq = trimmed[eq_idx + 1..].trim_start();
+            if after_eq.starts_with('[') && !raw.contains(']') {
+                accumulator.clear();
+                accumulator.push_str(raw);
+                accumulating = true;
+                continue;
+            }
+        }
+
+        out.push_str(raw);
+        out.push('\n');
+    }
+
+    if accumulating {
+        // Unterminated array — fall through; downstream parser will report.
+        out.push_str(&accumulator);
+        out.push('\n');
+    }
+
+    out
+}
+
 pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
+    let folded = fold_multiline_arrays(text);
+    let text = folded.as_str();
     let mut section = String::new();
 
     let mut version = String::new();
@@ -31,7 +79,7 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     let mut framework_idl_path = String::new();
 
     let mut run_restart_localnet: Option<bool> = None;
-    let mut run_post_deploy = String::new();
+    let mut run_post_deploy: Vec<String> = Vec::new();
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -46,7 +94,8 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 
         let mut parts = line.splitn(2, '=');
         let key = parts.next().unwrap_or("").trim();
-        let value = unquote(parts.next().unwrap_or("").trim());
+        let raw_value = parts.next().unwrap_or("").trim().to_string();
+        let value = unquote(&raw_value);
 
         match section.as_str() {
             "scaffold" => {
@@ -104,7 +153,11 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                 if key == "restart_localnet" {
                     run_restart_localnet = Some(value != "false" && value != "0");
                 } else if key == "post_deploy" {
-                    run_post_deploy = value;
+                    if raw_value.starts_with('[') {
+                        run_post_deploy = parse_inline_string_array(&raw_value)?;
+                    } else if !value.is_empty() {
+                        run_post_deploy = vec![value];
+                    }
                 }
             }
             _ => {}
@@ -189,13 +242,75 @@ pub(crate) fn serialize_config(cfg: &Config) -> String {
 
     if cfg.run.restart_localnet || !cfg.run.post_deploy.is_empty() {
         out.push_str(&format!(
-            "\n[run]\nrestart_localnet = {}\npost_deploy = \"{}\"\n",
+            "\n[run]\nrestart_localnet = {}\n",
             cfg.run.restart_localnet,
-            escape_toml_string(&cfg.run.post_deploy),
         ));
+        let quoted: Vec<String> = cfg
+            .run
+            .post_deploy
+            .iter()
+            .map(|h| format!("\"{}\"", escape_toml_string(h)))
+            .collect();
+        out.push_str(&format!("post_deploy = [{}]\n", quoted.join(", ")));
     }
 
     out
+}
+
+fn parse_inline_string_array(raw: &str) -> DynResult<Vec<String>> {
+    let trimmed = raw.trim();
+    let inner = trimmed
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .ok_or_else(|| anyhow::anyhow!("malformed array (expected `[\"...\", ...]`): {trimmed}"))?;
+
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut item_open = false;
+    let mut chars = inner.chars();
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            match c {
+                '\\' => match chars.next() {
+                    Some('n') => current.push('\n'),
+                    Some('t') => current.push('\t'),
+                    Some('\\') => current.push('\\'),
+                    Some('"') => current.push('"'),
+                    Some(other) => current.push(other),
+                    None => bail!("trailing backslash in array string: {trimmed}"),
+                },
+                '"' => {
+                    items.push(std::mem::take(&mut current));
+                    in_string = false;
+                    item_open = false;
+                }
+                _ => current.push(c),
+            }
+        } else {
+            match c {
+                '"' => {
+                    if item_open {
+                        bail!("expected `,` between array items: {trimmed}");
+                    }
+                    in_string = true;
+                    item_open = true;
+                }
+                ',' => {
+                    item_open = false;
+                }
+                ' ' | '\t' | '\n' | '\r' => {}
+                _ => bail!("unexpected character `{c}` in array: {trimmed}"),
+            }
+        }
+    }
+
+    if in_string {
+        bail!("unterminated string in array: {trimmed}");
+    }
+
+    Ok(items)
 }
 
 pub(crate) fn unquote(value: &str) -> String {
@@ -268,12 +383,51 @@ pin = "deadbeef"
     }
 
     #[test]
-    fn parse_config_with_run_section() {
+    fn parse_config_with_run_section_legacy_string() {
         let toml = minimal_scaffold_toml()
             + "[run]\nrestart_localnet = true\npost_deploy = \"echo hello\"\n";
         let cfg = parse_config(&toml).expect("parse");
         assert!(cfg.run.restart_localnet);
-        assert_eq!(cfg.run.post_deploy, "echo hello");
+        assert_eq!(cfg.run.post_deploy, vec!["echo hello".to_string()]);
+    }
+
+    #[test]
+    fn parse_config_with_run_section_array() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\npost_deploy = [\"echo one\", \"echo two\", \"echo three\"]\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert_eq!(
+            cfg.run.post_deploy,
+            vec![
+                "echo one".to_string(),
+                "echo two".to_string(),
+                "echo three".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_config_with_multiline_array() {
+        let toml =
+            minimal_scaffold_toml() + "[run]\npost_deploy = [\n  \"echo a\",\n  \"echo b\",\n]\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert_eq!(
+            cfg.run.post_deploy,
+            vec!["echo a".to_string(), "echo b".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_config_run_section_empty_array() {
+        let toml = minimal_scaffold_toml() + "[run]\npost_deploy = []\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert!(cfg.run.post_deploy.is_empty());
+    }
+
+    #[test]
+    fn parse_config_rejects_malformed_array() {
+        let toml = minimal_scaffold_toml() + "[run]\npost_deploy = [\"unterminated\n";
+        assert!(parse_config(&toml).is_err());
     }
 
     #[test]
@@ -289,7 +443,7 @@ pin = "deadbeef"
     #[test]
     fn serialize_config_includes_run_section_when_non_default() {
         let toml = minimal_scaffold_toml()
-            + "[run]\nrestart_localnet = true\npost_deploy = \"spel --idl foo.json\"\n";
+            + "[run]\nrestart_localnet = true\npost_deploy = [\"spel --idl foo.json\"]\n";
         let cfg = parse_config(&toml).expect("parse");
         let serialized = serialize_config(&cfg);
         assert!(serialized.contains("[run]"));
@@ -300,11 +454,12 @@ pin = "deadbeef"
     #[test]
     fn run_config_round_trips_through_parse_serialize() {
         let toml = minimal_scaffold_toml()
-            + "[run]\nrestart_localnet = true\npost_deploy = \"echo test\"\n";
+            + "[run]\nrestart_localnet = true\npost_deploy = [\"echo a\", \"echo b\"]\n";
         let cfg1 = parse_config(&toml).expect("parse");
         let serialized = serialize_config(&cfg1);
         let cfg2 = parse_config(&serialized).expect("re-parse");
         assert_eq!(cfg1.run.restart_localnet, cfg2.run.restart_localnet);
         assert_eq!(cfg1.run.post_deploy, cfg2.run.post_deploy);
+        assert_eq!(cfg2.run.post_deploy.len(), 2);
     }
 }

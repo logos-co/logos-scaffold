@@ -2145,22 +2145,37 @@ fn run_fails_at_build_step_in_mock_project() {
         .arg("run")
         .assert()
         .failure()
-        .stdout(predicate::str::contains("[1/4] Building..."));
+        .stdout(predicate::str::contains("[1/5] Building..."));
 }
 
 #[test]
-fn run_with_post_deploy_hook_shows_5_steps_in_output() {
-    // When a post_deploy hook is configured, the step counter should show [1/5].
+fn run_with_post_deploy_hook_shows_6_steps_in_output() {
+    // When a post_deploy hook is configured, the step counter shows /6.
     let temp = tempdir().expect("tempdir");
     setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
-    append_run_config(temp.path(), false, "echo hello");
+    append_run_config(temp.path(), false, &["echo hello"]);
 
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
         .arg("run")
         .assert()
         .failure() // still fails at build
-        .stdout(predicate::str::contains("[1/5] Building..."));
+        .stdout(predicate::str::contains("[1/6] Building..."));
+}
+
+#[test]
+fn run_with_multiple_post_deploy_hooks_uses_array_form() {
+    // Multiple hooks are configured as a TOML inline array; pipeline still has 6 steps.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config(temp.path(), false, &["echo one", "echo two"]);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .assert()
+        .failure() // still fails at build
+        .stdout(predicate::str::contains("[1/6] Building..."));
 }
 
 #[test]
@@ -2169,7 +2184,7 @@ fn run_config_restart_localnet_is_parsed() {
     // The command will fail at build, but the config should be parsed.
     let temp = tempdir().expect("tempdir");
     setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
-    append_run_config(temp.path(), true, "");
+    append_run_config(temp.path(), true, &[]);
 
     // Just verify it starts (config parsed without error) and hits the build step.
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
@@ -2177,14 +2192,16 @@ fn run_config_restart_localnet_is_parsed() {
         .arg("run")
         .assert()
         .failure()
-        .stdout(predicate::str::contains("[1/4] Building..."));
+        .stdout(predicate::str::contains("[1/5] Building..."));
 }
 
-fn append_run_config(project_root: &Path, restart_localnet: bool, post_deploy: &str) {
+fn append_run_config(project_root: &Path, restart_localnet: bool, post_deploy: &[&str]) {
     let toml_path = project_root.join("scaffold.toml");
     let mut content = fs::read_to_string(&toml_path).expect("read scaffold.toml");
+    let quoted: Vec<String> = post_deploy.iter().map(|c| format!("\"{c}\"")).collect();
     content.push_str(&format!(
-        "\n[run]\nrestart_localnet = {restart_localnet}\npost_deploy = \"{post_deploy}\"\n"
+        "\n[run]\nrestart_localnet = {restart_localnet}\npost_deploy = [{}]\n",
+        quoted.join(", ")
     ));
     fs::write(toml_path, content).expect("write scaffold.toml");
 }

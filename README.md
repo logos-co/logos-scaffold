@@ -140,17 +140,24 @@ cd my-app
 lgs run
 ```
 
-To run a post-deploy hook automatically (e.g. submit a transaction with
-[spel](https://github.com/logos-co/spel)), add a `[run]` section to
-`scaffold.toml`:
+To run one or more post-deploy hooks automatically (e.g. submit a transaction
+with [spel](https://github.com/logos-co/spel)), add a `[run]` section to
+`scaffold.toml`. `post_deploy` is a list of shell commands executed in order;
+the run aborts at the first non-zero exit:
 
 ```toml
 [run]
 restart_localnet = false
-post_deploy = "spel --idl $SCAFFOLD_IDL_DIR/my_program.json -p target/riscv-guest/*/riscv32im-risc0-zkvm-elf/release/my_program.bin my_instruction --arg1 value1"
+post_deploy = [
+  "spel --idl $SCAFFOLD_IDL_DIR/my_program.json -p target/riscv-guest/*/riscv32im-risc0-zkvm-elf/release/my_program.bin init",
+  "spel --idl $SCAFFOLD_IDL_DIR/my_program.json -p target/riscv-guest/*/riscv32im-risc0-zkvm-elf/release/my_program.bin increment --by 5",
+]
 ```
 
-The hook runs via `sh -c` with these environment variables pre-set:
+A single command may also be written as a plain string for brevity:
+`post_deploy = "echo done"`.
+
+Each hook runs via `sh -c` with these environment variables pre-set:
 
 | Variable | Value |
 |---|---|
