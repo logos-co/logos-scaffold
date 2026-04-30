@@ -11,7 +11,7 @@
 5. Build command auto-compiles `methods/Cargo.toml` when present, so projects whose parent workspace excludes the Risc0 guest crate produce guest binaries via `lgs build` without a separate `cargo build --manifest-path methods/Cargo.toml`.
 6. Deploy outputs the deployed program's on-chain ID (the risc0 image ID) for every successful submission, in both the human-readable output and the `--json` output, so users can hand the value to a client without rerunning a separate inspection tool.
 7. Scaffold vendors the `spel` CLI per project — clones `logos-co/spel` to a project-local path, pinned via `[repos.spel]` in `scaffold.toml`, and builds it during `setup` — mirroring the LEZ vendoring pattern. `deploy` invokes the project-local binary; no global `spel` install is required.
-8. `logos-scaffold spel <args...>` (and the `lgs spel <args...>` alias) proxies trailing arguments to the project-vendored `spel` binary, so any spel command (`inspect`, `pda`, `generate-idl`, etc.) runs against the project's pinned version without a global install. Exit codes are forwarded.
+8. `logos-scaffold spel -- <args...>` (and the `lgs spel -- <args...>` alias) proxies trailing arguments to the project-vendored `spel` binary, so any spel command (`inspect`, `pda`, `generate-idl`, etc.) runs against the project's pinned version without a global install. Exit codes are forwarded.
 
 ### Usability
 
