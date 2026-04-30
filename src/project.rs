@@ -172,6 +172,12 @@ mod tests {
                     path: String::new(),
                     pin: String::new(),
                 },
+                spel: RepoRef {
+                    url: String::new(),
+                    source: String::new(),
+                    path: String::new(),
+                    pin: String::new(),
+                },
                 wallet_home_dir: ".scaffold/wallet".into(),
                 framework: FrameworkConfig {
                     kind: String::new(),

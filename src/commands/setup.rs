@@ -16,14 +16,20 @@ use super::wallet_support::{
 pub(crate) fn cmd_setup() -> DynResult<()> {
     let mut project = load_project()?;
     let lez = PathBuf::from(&project.config.lez.path);
+    let spel = PathBuf::from(&project.config.spel.path);
     let (cache_root, _) = resolve_cache_root(&project)?;
-    let sync_opts = if is_cache_managed_repo_path(&cache_root, &lez) {
+    let lez_sync_opts = if is_cache_managed_repo_path(&cache_root, &lez) {
+        RepoSyncOptions::auto_reclone_cache_repo()
+    } else {
+        RepoSyncOptions::fail_on_source_mismatch()
+    };
+    let spel_sync_opts = if is_cache_managed_repo_path(&cache_root, &spel) {
         RepoSyncOptions::auto_reclone_cache_repo()
     } else {
         RepoSyncOptions::fail_on_source_mismatch()
     };
 
-    sync_repo_to_pin(&mut project.config.lez, "lez", sync_opts)?;
+    sync_repo_to_pin(&mut project.config.lez, "lez", lez_sync_opts)?;
 
     ensure_dir_exists(&lez, "lez")?;
 
@@ -47,6 +53,18 @@ pub(crate) fn cmd_setup() -> DynResult<()> {
             .arg("-p")
             .arg("wallet"),
         "build wallet",
+    )?;
+
+    sync_repo_to_pin(&mut project.config.spel, "spel", spel_sync_opts)?;
+    ensure_dir_exists(&spel, "spel")?;
+    run_checked(
+        Command::new("cargo")
+            .current_dir(&spel)
+            .arg("build")
+            .arg("--release")
+            .arg("-p")
+            .arg("spel"),
+        "build spel",
     )?;
 
     let wallet_home = project.root.join(&project.config.wallet_home_dir);

@@ -18,6 +18,11 @@ pub(crate) const SEQUENCER_BIN_REL_PATH: &str = "target/release/sequencer_servic
 pub(crate) const METHODS_DIR: &str = "methods";
 pub(crate) const SEQUENCER_CONFIG_REL_PATH: &str =
     "sequencer/service/configs/debug/sequencer_config.json";
+pub(crate) const SPEL_URL: &str = "https://github.com/logos-co/spel.git";
+/// Default `spel` commit pin — `logos-co/spel` tag `v0.2.0`.
+/// Projects can override via `[repos.spel].pin` in `scaffold.toml`.
+pub(crate) const DEFAULT_SPEL_PIN: &str = "72fc22673b1c36e1dde19948491cd85931bda89c";
+pub(crate) const SPEL_BIN_REL_PATH: &str = "target/release/spel";
 pub(crate) const BASECAMP_URL: &str = "https://github.com/logos-co/logos-basecamp.git";
 /// Basecamp commit pin — `logos-basecamp` tag `v0.1.1`.
 /// Projects can override via `[basecamp].pin` in `scaffold.toml`.
