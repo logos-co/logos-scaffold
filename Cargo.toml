@@ -40,6 +40,7 @@ tar = "0.4.44"
 tempfile = "3.18.0"
 thiserror = "2.0"
 ureq = { version = "2.12", features = ["json"] }
+walkdir = "2"
 
 [dev-dependencies]
 assert_cmd = "2.0.16"
