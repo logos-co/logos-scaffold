@@ -198,14 +198,23 @@ fn cmd_localnet_start(
     // parent's cwd.  `current_dir(lez)` applies before exec, so a parent-
     // relative path like `.scaffold/cache/repos/lez/target/release/…`
     // would be resolved inside lez and fail with ENOENT.
-    let sequencer_pid = spawn_to_log(
-        Command::new(format!("./{SEQUENCER_BIN_REL_PATH}"))
-            .current_dir(lez)
-            .arg(SEQUENCER_CONFIG_REL_PATH)
-            .env("RUST_LOG", "info")
-            .env("RISC0_DEV_MODE", if risc0_dev_mode { "1" } else { "0" }),
-        log_path,
-    )?;
+    let mut sequencer_cmd = Command::new(format!("./{SEQUENCER_BIN_REL_PATH}"));
+    sequencer_cmd
+        .current_dir(lez)
+        .arg(SEQUENCER_CONFIG_REL_PATH)
+        .env("RUST_LOG", "info")
+        .env("RISC0_DEV_MODE", if risc0_dev_mode { "1" } else { "0" });
+
+    // Auto-detect r0vm path from rzup installation if RISC0_SERVER_PATH is not set.
+    // On macOS, rzup installs r0vm under ~/.risc0/extensions/<version>/r0vm but does
+    // not add it to PATH. The sequencer needs RISC0_SERVER_PATH to locate it.
+    if std::env::var("RISC0_SERVER_PATH").is_err() {
+        if let Some(r0vm_path) = find_r0vm_path() {
+            sequencer_cmd.env("RISC0_SERVER_PATH", r0vm_path);
+        }
+    }
+
+    let sequencer_pid = spawn_to_log(&mut sequencer_cmd, log_path)?;
 
     state.sequencer_pid = Some(sequencer_pid);
     write_localnet_state(state_path, &state)?;
@@ -617,6 +626,25 @@ fn verify_block_production(localnet_addr: &str, timeout_sec: u64) -> DynResult<(
 
         thread::sleep(Duration::from_millis(500));
     }
+}
+
+/// Search for the r0vm binary installed by rzup.
+/// rzup installs r0vm under ~/.risc0/extensions/<version>/r0vm but does not add it to PATH.
+fn find_r0vm_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let risc0_ext = std::path::Path::new(&home)
+        .join(".risc0")
+        .join("extensions");
+
+    // Walk extension dirs and return first r0vm found
+    let entries = std::fs::read_dir(&risc0_ext).ok()?;
+    for entry in entries.flatten() {
+        let r0vm = entry.path().join("r0vm");
+        if r0vm.exists() {
+            return Some(r0vm);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
