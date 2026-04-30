@@ -149,4 +149,4 @@ The deploy command must work for any scaffolded project regardless of its name.
 Binary discovery should derive paths from the actual project structure, not assume the template's naming.
 Use a two-tier strategy: walk `methods/target/` for program-name-matched `.bin` files in `riscv32im` paths (primary),
 with the hardcoded template path as a backward-compatible fallback.
-This keeps the scaffold general and avoids coupling to spel configuration formats.
+This keeps the scaffold general and avoids coupling to specific build-tool configuration formats.

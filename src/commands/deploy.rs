@@ -352,16 +352,31 @@ fn find_binary_path(project_root: &Path, program: &str) -> Option<PathBuf> {
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
-        if path.file_name().and_then(|f| f.to_str()) == Some(expected_filename.as_str()) {
-            let path_str = path.to_string_lossy();
-            if path_str.contains("riscv32im") {
-                if path_str.contains("/release/") || path_str.contains("\\release\\") {
-                    return Some(path.to_path_buf());
-                }
-                if release_candidate.is_none() {
-                    release_candidate = Some(path.to_path_buf());
+        if path.file_name().and_then(|f| f.to_str()) != Some(expected_filename.as_str()) {
+            continue;
+        }
+        let mut has_riscv32im = false;
+        let mut has_release = false;
+        for component in path.components() {
+            if let std::path::Component::Normal(name) = component {
+                if let Some(name) = name.to_str() {
+                    if name.starts_with("riscv32im") {
+                        has_riscv32im = true;
+                    }
+                    if name == "release" {
+                        has_release = true;
+                    }
                 }
             }
+        }
+        if !has_riscv32im {
+            continue;
+        }
+        if has_release {
+            return Some(path.to_path_buf());
+        }
+        if release_candidate.is_none() {
+            release_candidate = Some(path.to_path_buf());
         }
     }
     release_candidate
@@ -429,5 +444,35 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let long_name = "a".repeat(200);
         assert!(find_binary_path(tmp.path(), &long_name).is_none());
+    }
+
+    #[test]
+    fn prefers_release_over_debug() {
+        let tmp = TempDir::new().unwrap();
+        let debug_dir = tmp
+            .path()
+            .join("methods/target/some_crate/riscv32im-risc0-zkvm-elf/debug");
+        let release_dir = tmp
+            .path()
+            .join("methods/target/some_crate/riscv32im-risc0-zkvm-elf/release");
+        fs::create_dir_all(&debug_dir).unwrap();
+        fs::create_dir_all(&release_dir).unwrap();
+        fs::write(debug_dir.join("my_program.bin"), b"debug").unwrap();
+        fs::write(release_dir.join("my_program.bin"), b"release").unwrap();
+
+        let result = find_binary_path(tmp.path(), "my_program").unwrap();
+        assert!(result.components().any(|c| c.as_os_str() == "release"));
+    }
+
+    #[test]
+    fn rejects_substring_only_riscv32im_components() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp
+            .path()
+            .join("methods/target/not-riscv32im-foo/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("my_program.bin"), b"fake").unwrap();
+
+        assert!(find_binary_path(tmp.path(), "my_program").is_none());
     }
 }
