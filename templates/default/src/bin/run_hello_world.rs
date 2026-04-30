@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 use example_program_deployment_methods::HELLO_WORLD_ELF;
+use common::transaction::NSSATransaction;
 use nssa::{
     PublicTransaction,
     public_transaction::{Message, WitnessSet},

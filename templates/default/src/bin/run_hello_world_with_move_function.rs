@@ -103,8 +103,8 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .map_err(|err| anyhow::anyhow!("failed to submit private transaction: {err}"))?;
             println!(
-                "submitted transaction: tx_hash={}",
-                response
+                "submitted transaction: status={} tx_hash={}",
+                response.status, response.tx_hash
             );
             println!("verification hint: wallet account sync-private");
         }
@@ -158,8 +158,8 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .map_err(|err| anyhow::anyhow!("failed to submit private transaction: {err}"))?;
             println!(
-                "submitted transaction: tx_hash={}",
-                response
+                "submitted transaction: status={} tx_hash={}",
+                response.status, response.tx_hash
             );
             println!("verification hint: wallet account sync-private");
         }

@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 use example_program_deployment_methods::SIMPLE_TAIL_CALL_ELF;
+use common::transaction::NSSATransaction;
 use nssa::{
     PublicTransaction,
     public_transaction::{Message, WitnessSet},
@@ -30,8 +31,6 @@ async fn main() -> anyhow::Result<()> {
     )?;
     let account_id = parse_account_id(&cli.account_id)?;
 
-    let message = Message::try_new(program.id(), vec![account_id], nonces, ())
-        .context("failed to build tail-call transaction message")?;
     let nonces = wallet_core
         .get_accounts_nonces(vec![account_id])
         .await
@@ -39,6 +38,8 @@ async fn main() -> anyhow::Result<()> {
     let signing_key = wallet_core
         .get_account_public_signing_key(account_id)
         .context("no signing key for account — must be a public account owned by this wallet")?;
+    let message = Message::try_new(program.id(), vec![account_id], nonces, ())
+        .context("failed to build tail-call transaction message")?;
     let witness_set = WitnessSet::for_message(&message, &[signing_key]);
     let tx = PublicTransaction::new(message, witness_set);
 
