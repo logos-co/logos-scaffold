@@ -169,6 +169,13 @@ value the sequencer will use. The pin is a scaffold-shipped default
 overridable via `[repos.spel].pin` in `scaffold.toml`; `doctor` reports
 drift the same way it does for LEZ.
 
+The image ID is computed locally from the submitted ELF — scaffold does
+not (yet) verify on-chain inclusion. LEZ wallet/RPC don't currently
+surface deploy receipts; once they do, scaffold can add an inclusion
+check after submission and the human-output caveat note can retire.
+Until then, the deploy summary explicitly distinguishes "wallet
+accepted" from "chain confirmed."
+
 The tradeoff is that `setup` now does an extra multi-minute build on first
 run and the deploy path forks a subprocess to recover a value that could
 in principle be computed inline. The upside: scaffold has zero risc0 dep

@@ -1412,13 +1412,18 @@ fn deploy_prints_program_id_from_vendored_spel() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("OK  hello submitted")
-                .and(predicate::str::contains(format!("Program ID: {expected}"))),
+            predicate::str::contains("OK  hello submitted").and(predicate::str::contains(format!(
+                "  program_id: {expected}"
+            ))),
         );
 }
 
 #[test]
-fn deploy_summary_repeats_program_id_per_program() {
+fn deploy_plain_output_has_single_program_id_line_per_program() {
+    // The OK block carries program_id per program; the Summary block no
+    // longer repeats it. With N programs deployed, exactly N lines should
+    // match `^  program_id: …` so a single grep/awk pattern works whether
+    // the user deploys one program or many.
     let temp = tempdir().expect("tempdir");
     let rpc = RpcStub::start();
     setup_wallet_project(temp.path(), Some(&rpc.url));
@@ -1426,20 +1431,22 @@ fn deploy_summary_repeats_program_id_per_program() {
     write_guest_program(temp.path(), "beta");
     write_guest_binary(temp.path(), "alpha");
     write_guest_binary(temp.path(), "beta");
-    let alpha_id = expected_stub_program_id("alpha.bin");
-    let beta_id = expected_stub_program_id("beta.bin");
 
-    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(temp.path())
         .arg("deploy")
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("alpha: submitted")
-                .and(predicate::str::contains("beta: submitted"))
-                .and(predicate::str::contains(format!("program_id: {alpha_id}")))
-                .and(predicate::str::contains(format!("program_id: {beta_id}"))),
-        );
+        .output()
+        .expect("run deploy");
+    assert!(output.status.success(), "deploy must succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let count = stdout
+        .lines()
+        .filter(|line| line.starts_with("  program_id: "))
+        .count();
+    assert_eq!(
+        count, 2,
+        "expected exactly one `  program_id:` line per deployed program (2 total); got {count} in:\n{stdout}"
+    );
 }
 
 #[test]
@@ -1483,9 +1490,70 @@ fn deploy_program_id_unavailable_when_spel_missing() {
         .success()
         .stdout(
             predicate::str::contains("OK  hello submitted")
-                .and(predicate::str::contains("Program ID: unavailable"))
+                .and(predicate::str::contains("program_id: unavailable"))
                 .and(predicate::str::contains("logos-scaffold setup")),
         );
+}
+
+#[test]
+fn deploy_json_output_is_pure_json_no_command_echo() {
+    // --json must produce a single JSON line on stdout; the wallet
+    // subprocess command-echo (`$ .../wallet deploy-program …`) belongs
+    // off-channel so consumers can pipe directly to `jq`.
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    let custom = temp.path().join("custom.bin");
+    fs::write(&custom, b"stub-program-bin").expect("write custom bin");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("--program-path")
+        .arg(&custom)
+        .arg("--json")
+        .output()
+        .expect("run deploy --json");
+    assert!(output.status.success(), "deploy --json must succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with('{') && trimmed.ends_with('}'),
+        "stdout must be pure JSON; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("$ "),
+        "stdout must not carry the `$ <cmd>` command echo; got:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.lines().filter(|l| !l.is_empty()).count(),
+        1,
+        "stdout must be a single non-empty JSON line; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn deploy_json_omits_tx_when_wallet_returns_none() {
+    // Wallet stub today emits a `tx_hash=…` line. To prove the JSON shape
+    // omits `tx` when no value is available, set WALLET_NO_TX=1 — the stub
+    // honors that and skips the tx line. Result: presence of the `tx` key
+    // should now imply a real value (not `null`).
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    let custom = temp.path().join("custom.bin");
+    fs::write(&custom, b"stub-program-bin").expect("write custom bin");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("WALLET_NO_TX", "1")
+        .arg("deploy")
+        .arg("--program-path")
+        .arg(&custom)
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"tx\":").not());
 }
 
 #[test]
@@ -2389,6 +2457,11 @@ if [ "$#" -ge 2 ] && [ "$1" = "deploy-program" ]; then
   if [ "${FAIL_PROGRAM:-}" = "$bin_name" ]; then
     echo "simulated deploy failure for $bin_name" >&2
     exit 2
+  fi
+  # WALLET_NO_TX=1: simulate the wallet not surfacing a tx identifier so
+  # tests can assert the deploy JSON omits the `tx` key when None.
+  if [ "${WALLET_NO_TX:-0}" = "1" ]; then
+    exit 0
   fi
   echo "tx_hash=deploy-$bin_name"
   exit 0

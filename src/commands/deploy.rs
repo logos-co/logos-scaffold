@@ -7,7 +7,7 @@ use anyhow::{bail, Context};
 use walkdir::WalkDir;
 
 use crate::constants::SPEL_BIN_REL_PATH;
-use crate::process::run_with_stdin;
+use crate::process::{run_with_stdin, set_command_echo};
 use crate::project::load_project;
 use crate::DynResult;
 
@@ -98,8 +98,6 @@ pub(crate) fn cmd_deploy(
                 program,
                 status: DeployStatus::Failed,
                 detail: "missing program binary".to_string(),
-                tx: None,
-                program_id: None,
             });
             continue;
         };
@@ -122,8 +120,6 @@ pub(crate) fn cmd_deploy(
                     program,
                     status: DeployStatus::Failed,
                     detail: format!("wallet command invocation failed: {err}"),
-                    tx: None,
-                    program_id: None,
                 });
                 continue;
             }
@@ -142,8 +138,6 @@ pub(crate) fn cmd_deploy(
                     program,
                     status: DeployStatus::Failed,
                     detail: format!("{summary}; sequencer connectivity failure"),
-                    tx,
-                    program_id: None,
                 });
             } else {
                 println!("  Hint: inspect sequencer logs and retry.");
@@ -151,8 +145,6 @@ pub(crate) fn cmd_deploy(
                     program,
                     status: DeployStatus::Failed,
                     detail: summary,
-                    tx,
-                    program_id: None,
                 });
             }
             continue;
@@ -161,16 +153,14 @@ pub(crate) fn cmd_deploy(
         let program_id = extract_program_id(&spel_bin, &binary_path);
 
         println!("OK  {program} submitted");
-        if let Some(tx) = tx.clone() {
-            println!("  Tx: {tx}");
+        if let Some(tx) = &tx {
+            println!("  tx: {tx}");
         }
         print_program_id_line(&program_id);
         results.push(DeployResult {
             program,
             status: DeployStatus::Submitted,
             detail: "wallet submission command exited successfully".to_string(),
-            tx,
-            program_id,
         });
     }
 
@@ -183,23 +173,16 @@ pub(crate) fn cmd_deploy(
         .filter(|result| matches!(result.status, DeployStatus::Failed))
         .count();
 
-    println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LEZ wallet/RPC for scaffold.");
+    println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LEZ wallet/RPC for scaffold. Program ID is computed locally from the submitted ELF.");
     println!("Summary:");
     println!("  Succeeded: {success_count}");
     println!("  Failed: {failed_count}");
     println!("  Results:");
     for result in &results {
-        // Stack tx and program_id on their own indented lines instead of
-        // packing them into the trailing `(...)` — a 64-char tx plus a
-        // 64-char program_id wraps on most terminals. Single-program output
-        // already stacks; this keeps the two paths consistent.
+        // Per-program details (program_id, tx) are printed once in the OK
+        // block above. Summary only carries the status label + detail to
+        // stay terse and avoid grep ambiguity ("which line is canonical?").
         println!("    {}: {}", result.program, result.status.label());
-        if let Some(tx) = &result.tx {
-            println!("      tx: {tx}");
-        }
-        if let Some(pid) = &result.program_id {
-            println!("      program_id: {pid}");
-        }
         println!("      {}", result.detail);
     }
 
@@ -302,15 +285,25 @@ fn deploy_single_program(
         .arg("deploy-program")
         .arg(binary_path);
 
-    let output = run_with_stdin(
+    // Suppress the `$ <cmd>` echo on stdout for --json so the output is a
+    // pure JSON object that pipes cleanly into `jq`. Mirror the pattern
+    // `cmd_doctor` uses: capture-then-restore, even on error, before
+    // propagating with `?`.
+    if json {
+        set_command_echo(false);
+    }
+    let output_result = run_with_stdin(
         command,
         format!(
             "{}
 ",
             wallet_password()
         ),
-    )
-    .context("failed to execute wallet deploy-program command")?;
+    );
+    if json {
+        set_command_echo(true);
+    }
+    let output = output_result.context("failed to execute wallet deploy-program command")?;
 
     let tx = extract_tx_identifier(&output.stdout, &output.stderr);
 
@@ -335,22 +328,31 @@ fn deploy_single_program(
     let program_id = extract_program_id(spel_bin, binary_path);
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "status": "submitted",
-                "program": program_name,
-                "tx": tx,
-                "program_id": program_id,
-            })
-        );
+        // Omit absent fields entirely rather than emitting `null`. Presence
+        // implies a real value; consumers test `has("tx")` / `has("program_id")`
+        // instead of branching on null. (LEZ doesn't surface tx receipts yet,
+        // so today `tx` is always absent — keeping a guaranteed-null key would
+        // train scripts to depend on it.)
+        let mut payload = serde_json::Map::new();
+        payload.insert("status".into(), "submitted".into());
+        payload.insert("program".into(), program_name.into());
+        if let Some(tx) = &tx {
+            payload.insert("tx".into(), tx.clone().into());
+        }
+        if let Some(id) = &program_id {
+            payload.insert("program_id".into(), id.clone().into());
+        }
+        println!("{}", serde_json::Value::Object(payload));
     } else {
         println!("OK  {program_name} submitted");
         println!("  Binary: {}", binary_path.display());
         if let Some(tx) = &tx {
-            println!("  Tx: {tx}");
+            println!("  tx: {tx}");
         }
         print_program_id_line(&program_id);
+        println!(
+            "  Note: Program ID is computed locally; on-chain inclusion is not yet verifiable."
+        );
     }
 
     Ok(())
@@ -420,10 +422,13 @@ fn extract_program_id(spel_bin: &Path, binary_path: &Path) -> Option<String> {
 }
 
 fn print_program_id_line(program_id: &Option<String>) {
+    // Lowercase, snake_case key with 2-space indent so the same awk/grep
+    // pattern matches in single-program and multi-program plain output and
+    // mirrors the JSON key. Single canonical line per deployed program.
     match program_id {
-        Some(id) => println!("  Program ID: {id}"),
+        Some(id) => println!("  program_id: {id}"),
         None => println!(
-            "  Program ID: unavailable (run `logos-scaffold setup` to build the vendored spel)"
+            "  program_id: unavailable (run `logos-scaffold setup` to build the vendored spel)"
         ),
     }
 }
@@ -433,8 +438,6 @@ struct DeployResult {
     program: String,
     status: DeployStatus,
     detail: String,
-    tx: Option<String>,
-    program_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
