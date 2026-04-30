@@ -6,7 +6,10 @@ use anyhow::bail;
 
 use super::wallet_support::wallet_password;
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
-use crate::constants::{DEFAULT_LEZ_PIN, SEQUENCER_BIN_REL_PATH, WALLET_BIN_REL_PATH};
+use crate::constants::{
+    DEFAULT_LEZ_PIN, DEFAULT_SPEL_PIN, SEQUENCER_BIN_REL_PATH, SPEL_BIN_REL_PATH,
+    WALLET_BIN_REL_PATH,
+};
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
     check_standalone_support, one_line, print_rows,
@@ -71,6 +74,7 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
 pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     let project = load_project()?;
     let lez = PathBuf::from(&project.config.lez.path);
+    let spel = PathBuf::from(&project.config.spel.path);
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     let localnet_state_path = project.root.join(".scaffold/state/localnet.state");
 
@@ -86,13 +90,16 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
 
     rows.push(check_repo("lez", &lez, &project.config.lez.pin));
 
+    // Drift check vs. the scaffold-shipped default — distinct from
+    // `check_repo("lez", …)` above, which only validates the on-disk clone
+    // is at the *configured* pin (whatever the user wrote in scaffold.toml).
     rows.push(CheckRow {
         status: if project.config.lez.pin == DEFAULT_LEZ_PIN {
             CheckStatus::Pass
         } else {
             CheckStatus::Warn
         },
-        name: "lez standalone pin".to_string(),
+        name: "lez pin matches scaffold default".to_string(),
         detail: format!(
             "configured pin={} expected={}",
             project.config.lez.pin, DEFAULT_LEZ_PIN
@@ -108,6 +115,35 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     });
 
     rows.push(check_standalone_support(&lez));
+
+    rows.push(check_repo("spel", &spel, &project.config.spel.pin));
+
+    rows.push(CheckRow {
+        status: if project.config.spel.pin == DEFAULT_SPEL_PIN {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Warn
+        },
+        name: "spel pin matches scaffold default".to_string(),
+        detail: format!(
+            "configured pin={} expected={}",
+            project.config.spel.pin, DEFAULT_SPEL_PIN
+        ),
+        remediation: if project.config.spel.pin == DEFAULT_SPEL_PIN {
+            None
+        } else {
+            Some(format!(
+                "Set repos.spel.pin in scaffold.toml to {} and run `{}`",
+                DEFAULT_SPEL_PIN, STEP_SETUP
+            ))
+        },
+    });
+
+    rows.push(check_path(
+        "spel binary",
+        &spel.join(SPEL_BIN_REL_PATH),
+        "Run `logos-scaffold setup`",
+    ));
 
     let (resolved_cache_root, cache_root_source) = resolve_cache_root(&project)?;
     rows.push(CheckRow {

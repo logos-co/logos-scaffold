@@ -4026,6 +4026,12 @@ source = "s"
 path = "p"
 pin = "q"
 
+[repos.spel]
+url = "u"
+source = "s"
+path = "p"
+pin = "q"
+
 [basecamp]
 pin = "deadbeef"
 source = "https://example/basecamp"
@@ -4118,6 +4124,12 @@ version = "0.1.0"
 cache_root = "cache"
 
 [repos.lez]
+url = "u"
+source = "s"
+path = "p"
+pin = "q"
+
+[repos.spel]
 url = "u"
 source = "s"
 path = "p"

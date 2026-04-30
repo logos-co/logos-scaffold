@@ -653,6 +653,12 @@ mod tests {
                 path: lez_dir.display().to_string(),
                 pin: String::new(),
             },
+            spel: RepoRef {
+                url: String::new(),
+                source: String::new(),
+                path: String::new(),
+                pin: String::new(),
+            },
             wallet_home_dir: ".scaffold/wallet".to_string(),
             framework: FrameworkConfig {
                 kind: String::new(),

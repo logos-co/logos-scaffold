@@ -6,6 +6,7 @@ use std::process::Command;
 use anyhow::{bail, Context};
 use walkdir::WalkDir;
 
+use crate::constants::SPEL_BIN_REL_PATH;
 use crate::process::run_with_stdin;
 use crate::project::load_project;
 use crate::DynResult;
@@ -23,6 +24,11 @@ use super::wallet_support::{
 const GUEST_BIN_SEARCH_ROOTS: &[&str] = &["target/riscv-guest", "methods/target"];
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
+/// `spel inspect` line prefix that carries the risc0 image ID — the value the
+/// sequencer uses as the on-chain program ID. Format is whitespace-tolerant:
+/// `   ImageID (hex bytes): <64 hex chars>`.
+const SPEL_IMAGE_ID_PREFIX: &str = "ImageID (hex bytes):";
+
 pub(crate) fn cmd_deploy(
     program_name: Option<String>,
     program_path: Option<PathBuf>,
@@ -32,6 +38,10 @@ pub(crate) fn cmd_deploy(
         "This command must be run inside a logos-scaffold project.\nNext step: cd into your scaffolded project directory and retry.",
     )?;
     let wallet = load_wallet_runtime(&project)?;
+    let spel_bin = project
+        .root
+        .join(&project.config.spel.path)
+        .join(SPEL_BIN_REL_PATH);
 
     let sequencer_addr = wallet
         .sequencer_addr
@@ -48,7 +58,14 @@ pub(crate) fn cmd_deploy(
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
-        return deploy_single_program(&wallet, &program_name, &custom_path, &sequencer_addr, json);
+        return deploy_single_program(
+            &wallet,
+            &program_name,
+            &custom_path,
+            &sequencer_addr,
+            &spel_bin,
+            json,
+        );
     }
 
     let available_programs = discover_deployable_programs(&project.root)?;
@@ -80,6 +97,7 @@ pub(crate) fn cmd_deploy(
                 status: DeployStatus::Failed,
                 detail: "missing program binary".to_string(),
                 tx: None,
+                program_id: None,
             });
             continue;
         };
@@ -103,6 +121,7 @@ pub(crate) fn cmd_deploy(
                     status: DeployStatus::Failed,
                     detail: format!("wallet command invocation failed: {err}"),
                     tx: None,
+                    program_id: None,
                 });
                 continue;
             }
@@ -122,6 +141,7 @@ pub(crate) fn cmd_deploy(
                     status: DeployStatus::Failed,
                     detail: format!("{summary}; sequencer connectivity failure"),
                     tx,
+                    program_id: None,
                 });
             } else {
                 println!("  Hint: inspect sequencer logs and retry.");
@@ -130,20 +150,25 @@ pub(crate) fn cmd_deploy(
                     status: DeployStatus::Failed,
                     detail: summary,
                     tx,
+                    program_id: None,
                 });
             }
             continue;
         }
 
+        let program_id = extract_program_id(&spel_bin, &binary_path);
+
         println!("OK  {program} submitted");
         if let Some(tx) = tx.clone() {
             println!("  Tx: {tx}");
         }
+        print_program_id_line(&program_id);
         results.push(DeployResult {
             program,
             status: DeployStatus::Submitted,
             detail: "wallet submission command exited successfully".to_string(),
             tx,
+            program_id,
         });
     }
 
@@ -162,11 +187,17 @@ pub(crate) fn cmd_deploy(
     println!("  Failed: {failed_count}");
     println!("  Results:");
     for result in &results {
-        let mut line = format!("    {}: {}", result.program, result.status.label());
+        // Stack tx and program_id on their own indented lines instead of
+        // packing them into the trailing `(...)` — a 64-char tx plus a
+        // 64-char program_id wraps on most terminals. Single-program output
+        // already stacks; this keeps the two paths consistent.
+        println!("    {}: {}", result.program, result.status.label());
         if let Some(tx) = &result.tx {
-            line.push_str(&format!(" (tx: {tx})"));
+            println!("      tx: {tx}");
         }
-        println!("{line}");
+        if let Some(pid) = &result.program_id {
+            println!("      program_id: {pid}");
+        }
         println!("      {}", result.detail);
     }
 
@@ -255,6 +286,7 @@ fn deploy_single_program(
     program_name: &str,
     binary_path: &Path,
     sequencer_addr: &str,
+    spel_bin: &Path,
     json: bool,
 ) -> DynResult<()> {
     preflight_sequencer_reachability(sequencer_addr)?;
@@ -294,14 +326,20 @@ fn deploy_single_program(
         bail!("deploy failed: {summary}");
     }
 
+    let program_id = extract_program_id(spel_bin, binary_path);
+
     if json {
         let tx_val = tx
             .as_deref()
             .map(|t| format!("\"{}\"", t))
             .unwrap_or_else(|| "null".to_string());
+        let pid_val = program_id
+            .as_deref()
+            .map(|p| format!("\"{}\"", p))
+            .unwrap_or_else(|| "null".to_string());
         println!(
-            "{{\"status\":\"submitted\",\"program\":\"{}\",\"tx\":{}}}",
-            program_name, tx_val
+            "{{\"status\":\"submitted\",\"program\":\"{}\",\"tx\":{},\"program_id\":{}}}",
+            program_name, tx_val, pid_val
         );
     } else {
         println!("OK  {program_name} submitted");
@@ -309,9 +347,82 @@ fn deploy_single_program(
         if let Some(tx) = &tx {
             println!("  Tx: {tx}");
         }
+        print_program_id_line(&program_id);
     }
 
     Ok(())
+}
+
+/// Wall-clock cap for `spel inspect`. The CLI typically returns in
+/// milliseconds; a hung binary should not block the deploy summary.
+/// Override with `LOGOS_SCAFFOLD_SPEL_INSPECT_TIMEOUT_MS` if needed.
+const SPEL_INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Run the project-vendored `spel inspect <binary>` and return the risc0
+/// image ID parsed from its output. Returns `None` on any failure (binary
+/// missing, non-zero exit, output unparseable, timeout). Callers print an
+/// "unavailable" hint instead of failing the deploy — the deploy itself has
+/// already succeeded by the time this runs.
+fn extract_program_id(spel_bin: &Path, binary_path: &Path) -> Option<String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    let timeout = std::env::var("LOGOS_SCAFFOLD_SPEL_INSPECT_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(SPEL_INSPECT_TIMEOUT);
+
+    let mut child = Command::new(spel_bin)
+        .arg("inspect")
+        .arg(binary_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut stdout = String::new();
+                if let Some(mut s) = child.stdout.take() {
+                    let _ = s.read_to_string(&mut stdout);
+                }
+                for line in stdout.lines() {
+                    if let Some((_, after)) = line.split_once(SPEL_IMAGE_ID_PREFIX) {
+                        let hex = after.trim();
+                        if !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                            return Some(hex.to_string());
+                        }
+                    }
+                }
+                return None;
+            }
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn print_program_id_line(program_id: &Option<String>) {
+    match program_id {
+        Some(id) => println!("  Program ID: {id}"),
+        None => println!(
+            "  Program ID: unavailable (run `logos-scaffold setup` to build the vendored spel)"
+        ),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -320,6 +431,7 @@ struct DeployResult {
     status: DeployStatus,
     detail: String,
     tx: Option<String>,
+    program_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
