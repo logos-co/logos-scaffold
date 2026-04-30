@@ -435,8 +435,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn lookup(root: &Path, program: &str) -> Option<PathBuf> {
-        discover_program_binaries(root, &[program.to_string()])
-            .remove(program)
+        discover_program_binaries(root, &[program.to_string()]).remove(program)
     }
 
     #[test]
@@ -551,9 +550,7 @@ mod tests {
     #[test]
     fn rejects_substring_only_riscv32im_components() {
         let tmp = TempDir::new().unwrap();
-        let bin_dir = tmp
-            .path()
-            .join("methods/target/not-riscv32im-foo/release");
+        let bin_dir = tmp.path().join("methods/target/not-riscv32im-foo/release");
         fs::create_dir_all(&bin_dir).unwrap();
         fs::write(bin_dir.join("my_program.bin"), b"fake").unwrap();
 
