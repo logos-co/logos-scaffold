@@ -40,4 +40,4 @@ Generic "this would be nice" does not count.
 - [ ] CI is green
 - [ ] Relevant DOGFOODING scenarios rerun (listed above)
 - [ ] Docs updated (`README.md`, `DOGFOODING.md`) if user-facing behavior changed
-- [ ] I have read [CONTRIBUTING.md](../blob/master/CONTRIBUTING.md) and this PR fits within the weekly contribution cap
+- [ ] I have read [CONTRIBUTING.md](/CONTRIBUTING.md) and this PR fits within the weekly contribution cap

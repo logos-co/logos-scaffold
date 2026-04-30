@@ -43,6 +43,8 @@ Exemptions:
 
 If you need to exceed the cap for a coordinated change, open an issue first.
 
+Reopening an auto-closed PR re-triggers the check and will close it again. To override, a maintainer must add the author to the allowlist, or the author must wait until older PRs fall outside the 7-day window.
+
 ## When Maintainers Close PRs
 
 Maintainers may close any PR that does not adhere to this guideline or does not add clear requested value, pointing back to this document. Closing is not a judgment of the contributor — it is a triage signal.

@@ -77,7 +77,14 @@ jobs:
               .toISOString()
               .split('T')[0];
             const q = `repo:${owner}/${repo} is:pr author:${login} created:>=${since}`;
-            const search = await github.rest.search.issuesAndPullRequests({ q, per_page: 100 });
+            let search;
+            try {
+              search = await github.rest.search.issuesAndPullRequests({ q, per_page: 100 });
+            } catch (err) {
+              // Fail open on transient API errors, mirroring the org-membership check above.
+              core.warning(`Search API failed with status ${err.status}; skipping rate limit enforcement for this PR.`);
+              return;
+            }
             let count = search.data.total_count;
             const currentIncluded = search.data.items.some(it => it.number === prNumber);
             if (!currentIncluded) {
