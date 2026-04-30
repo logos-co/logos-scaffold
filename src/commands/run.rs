@@ -7,7 +7,9 @@ use anyhow::{bail, Context};
 use notify::{RecursiveMode, Watcher};
 
 use crate::commands::build::cmd_build_shortcut;
-use crate::commands::deploy::cmd_deploy;
+use crate::commands::deploy::{
+    cmd_deploy, discover_deployable_programs, discover_program_binaries,
+};
 use crate::commands::idl::build_idl_for_current_project;
 use crate::commands::localnet::{
     build_localnet_status_for_project, cmd_localnet, cmd_localnet_reset, LocalnetAction,
@@ -16,7 +18,6 @@ use crate::commands::run_state::{
     compute_program_hashes, deploy_can_be_skipped, load_state, save_state, RunDeployState,
 };
 use crate::commands::wallet::{cmd_wallet_topup_inner, TopupOutcome};
-use crate::constants::GUEST_BIN_REL_PATH;
 use crate::model::{LocalnetOwnership, Project, RunProfile};
 use crate::project::load_project;
 use crate::DynResult;
@@ -275,21 +276,13 @@ fn print_deploy_summary(project: &crate::model::Project) -> DynResult<()> {
         return Ok(());
     }
 
-    let guest_bin_rel = GUEST_BIN_REL_PATH;
+    let programs = discover_deployable_programs(&project.root)?;
+    let binaries = discover_program_binaries(&project.root, &programs);
 
     println!();
     println!("Deployed programs:");
-    for entry in std::fs::read_dir(&programs_dir).context("failed to read programs directory")? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let binary_path = project.root.join(guest_bin_rel).join(format!("{stem}.bin"));
-        if binary_path.exists() {
+    for stem in &programs {
+        if let Some(binary_path) = binaries.get(stem) {
             println!("  {stem}");
             println!("    Binary: {}", binary_path.display());
         }
@@ -499,7 +492,11 @@ mod tests {
         std::fs::create_dir_all(&programs_dir).expect("create programs dir");
         std::fs::write(programs_dir.join("counter.rs"), "fn main() {}").expect("write source");
 
-        let binary_dir = temp.path().join(GUEST_BIN_REL_PATH);
+        // Mirror the layout `discover_program_binaries` walks for: a
+        // `riscv32im*/release/` segment under one of the search roots.
+        let binary_dir = temp
+            .path()
+            .join("target/riscv-guest/methods/programs/riscv32im-risc0-zkvm-elf/release");
         std::fs::create_dir_all(&binary_dir).expect("create binary dir");
         std::fs::write(binary_dir.join("counter.bin"), b"fake binary").expect("write binary");
 

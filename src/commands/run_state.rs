@@ -13,7 +13,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::constants::GUEST_BIN_REL_PATH;
+use crate::commands::deploy::{discover_deployable_programs, discover_program_binaries};
 use crate::model::Project;
 use crate::DynResult;
 
@@ -25,31 +25,17 @@ pub(crate) struct RunDeployState {
 }
 
 pub(crate) fn compute_program_hashes(project: &Project) -> DynResult<BTreeMap<String, String>> {
-    let programs_dir = project.root.join("methods/guest/src/bin");
-    let bin_dir = project.root.join(GUEST_BIN_REL_PATH);
     let mut out = BTreeMap::new();
+    let programs_dir = project.root.join("methods/guest/src/bin");
     if !programs_dir.exists() {
         return Ok(out);
     }
-    for entry in std::fs::read_dir(&programs_dir)
-        .with_context(|| format!("read {}", programs_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let bin_path = bin_dir.join(format!("{stem}.bin"));
-        if !bin_path.exists() {
-            // Missing artifact — caller treats this as "must deploy".
-            continue;
-        }
+    let programs = discover_deployable_programs(&project.root)?;
+    let binaries = discover_program_binaries(&project.root, &programs);
+    for (stem, bin_path) in binaries {
         let bytes = std::fs::read(&bin_path)
             .with_context(|| format!("read {} for hashing", bin_path.display()))?;
-        out.insert(stem.to_string(), hex_encode(&Sha256::digest(&bytes)));
+        out.insert(stem, hex_encode(&Sha256::digest(&bytes)));
     }
     Ok(out)
 }
