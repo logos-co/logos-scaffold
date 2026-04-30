@@ -9,13 +9,13 @@ use crate::project::load_project;
 use crate::DynResult;
 
 use super::wallet_support::{
-    extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block_id,
-    sequencer_unreachable_hint, summarize_command_failure, wallet_password, RpcReachabilityError,
+    default_sequencer_http_url_for_project, extract_tx_identifier, is_connectivity_failure,
+    load_wallet_runtime, rpc_get_last_block_id, sequencer_unreachable_hint,
+    summarize_command_failure, wallet_password, RpcReachabilityError,
 };
 
 const GUEST_BIN_REL_PATH: &str =
     "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
-const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
 pub(crate) fn cmd_deploy(
     program_name: Option<String>,
@@ -30,7 +30,7 @@ pub(crate) fn cmd_deploy(
     let sequencer_addr = wallet
         .sequencer_addr
         .clone()
-        .unwrap_or_else(|| DEFAULT_SEQUENCER_ADDR.to_string());
+        .unwrap_or_else(|| default_sequencer_http_url_for_project(&project));
 
     // --program-path: deploy a single custom ELF directly, skip auto-discovery
     if let Some(custom_path) = program_path {
