@@ -179,6 +179,10 @@ environment variables pre-set:
 | `SCAFFOLD_PROJECT_ROOT` | Absolute path to project root |
 | `SCAFFOLD_IDL_DIR` | Absolute path to IDL output directory |
 
+Each hook is bracketed in the log by `===> post_deploy[i/n]: <cmd>` and
+`<=== post_deploy[i/n] OK` markers so chatty hook output is easy to
+locate in scrollback.
+
 #### Named profiles
 
 For projects with multiple post-deploy workflows (play, e2e, smoke,
@@ -220,10 +224,13 @@ both override whatever the resolved profile defines.
 
 #### Deploy idempotence
 
-`run` skips the deploy step when every guest `.bin` hashes to the same
-value as the prior deploy. State lives at `.scaffold/state/run_deploy.json`.
-A `--reset-localnet` clears it (the on-chain state is gone, so a fresh
-deploy is required). Use `--force-deploy` to re-deploy unconditionally.
+`run` skips the deploy step when every guest `.bin` hashes (SHA-256) to
+the same value as the prior deploy. State lives at
+`.scaffold/state/run_deploy.json`. Adding or removing a program in
+`methods/guest/src/bin/` invalidates the cache and forces a deploy.
+A `--reset-localnet` clears the state file (on-chain state is gone, so
+a fresh deploy is required). Use `--force-deploy` to re-deploy
+unconditionally.
 
 #### Watch mode
 
