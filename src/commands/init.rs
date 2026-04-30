@@ -31,8 +31,8 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
         );
     }
 
-    let cache_root = default_cache_root()?;
-    let lez_path = cache_root
+    let (bootstrap_cache, _) = default_cache_root()?;
+    let lez_path = bootstrap_cache
         .join("repos/lez")
         .join(DEFAULT_LEZ_PIN)
         .display()
@@ -40,7 +40,7 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
 
     let cfg = Config {
         version: VERSION.to_string(),
-        cache_root: cache_root.display().to_string(),
+        cache_root: String::new(),
         lez: RepoRef {
             url: LEZ_URL.to_string(),
             source: LEZ_URL.to_string(),
@@ -58,9 +58,10 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
         },
         localnet: LocalnetConfig::default(),
         run: RunConfig::default(),
+        basecamp: None,
     };
 
-    write_text(&scaffold_path, &serialize_config(&cfg))?;
+    write_text(&scaffold_path, &serialize_config(&cfg)?)?;
     fs::create_dir_all(target.join(".scaffold/state"))
         .with_context(|| format!("creating {}/.scaffold/state", target.display()))?;
     fs::create_dir_all(target.join(".scaffold/logs"))
@@ -70,6 +71,9 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
     println!(
         "scaffold.toml created at {}. Run '{bin_name} setup' to clone LEZ and build dependencies.",
         scaffold_path.display()
+    );
+    println!(
+        "If this project is building modules for basecamp, run '{bin_name} basecamp setup' to pin + build basecamp + lgpm and seed alice/bob profiles."
     );
 
     Ok(())
@@ -97,6 +101,29 @@ mod tests {
         assert_eq!(cfg.wallet_home_dir, ".scaffold/wallet");
         assert_eq!(cfg.localnet.port, 3040);
         assert!(cfg.localnet.risc0_dev_mode);
+    }
+
+    #[test]
+    fn init_does_not_persist_cache_root() {
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        cmd_init_at(target, "lgs").expect("init");
+
+        let text = fs::read_to_string(target.join("scaffold.toml")).expect("read scaffold.toml");
+        let has_active_cache_root = text
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains("cache_root"));
+        assert!(
+            !has_active_cache_root,
+            "scaffold.toml should not pin cache_root by default; got:\n{text}"
+        );
+
+        let cfg = parse_config(&text).expect("parse scaffold.toml");
+        assert!(
+            cfg.cache_root.is_empty(),
+            "parsed cache_root should be empty; got {:?}",
+            cfg.cache_root
+        );
     }
 
     #[test]

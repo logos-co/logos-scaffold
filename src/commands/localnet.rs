@@ -667,6 +667,7 @@ mod tests {
                 risc0_dev_mode: false,
             },
             run: RunConfig::default(),
+            basecamp: None,
         };
 
         let project = Project {

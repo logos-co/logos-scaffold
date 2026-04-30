@@ -234,6 +234,7 @@ mod tests {
                     risc0_dev_mode: true,
                 },
                 run: RunConfig::default(),
+                basecamp: None,
             },
         }
     }

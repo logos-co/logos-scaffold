@@ -25,7 +25,6 @@ pub(crate) struct NewCommand {
     pub(crate) template: String,
     pub(crate) vendor_deps: bool,
     pub(crate) lez_path: Option<PathBuf>,
-    pub(crate) cache_root: Option<PathBuf>,
 }
 
 pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
@@ -54,11 +53,11 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     fs::create_dir_all(target.join(".scaffold/state"))?;
     fs::create_dir_all(target.join(".scaffold/logs"))?;
 
-    let cache_root = cmd.cache_root.unwrap_or(default_cache_root()?);
-    fs::create_dir_all(cache_root.join("repos"))?;
-    fs::create_dir_all(cache_root.join("state"))?;
-    fs::create_dir_all(cache_root.join("logs"))?;
-    fs::create_dir_all(cache_root.join("builds"))?;
+    let (bootstrap_cache, _) = default_cache_root()?;
+    fs::create_dir_all(bootstrap_cache.join("repos"))?;
+    fs::create_dir_all(bootstrap_cache.join("state"))?;
+    fs::create_dir_all(bootstrap_cache.join("logs"))?;
+    fs::create_dir_all(bootstrap_cache.join("builds"))?;
 
     let lez_source = cmd
         .lez_path
@@ -78,7 +77,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         )?;
         lez_vendor
     } else {
-        let lez_cached = cache_root.join("repos/lez").join(DEFAULT_LEZ_PIN);
+        let lez_cached = bootstrap_cache.join("repos/lez").join(DEFAULT_LEZ_PIN);
         sync_repo_to_pin_at_path_with_opts(
             &lez_cached,
             &lez_source,
@@ -91,7 +90,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
 
     let cfg = Config {
         version: VERSION.to_string(),
-        cache_root: cache_root.display().to_string(),
+        cache_root: String::new(),
         lez: RepoRef {
             url: LEZ_URL.to_string(),
             source: lez_source,
@@ -109,6 +108,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         },
         localnet: LocalnetConfig::default(),
         run: RunConfig::default(),
+        basecamp: None,
     };
 
     let template_root = lez_repo_path.join("examples/program_deployment");
@@ -128,7 +128,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     if template_variant == FRAMEWORK_KIND_LEZ_FRAMEWORK {
         cleanup_lez_hello_artifacts(&target)?;
     }
-    write_text(&target.join("scaffold.toml"), &serialize_config(&cfg))?;
+    write_text(&target.join("scaffold.toml"), &serialize_config(&cfg)?)?;
 
     let old_getting_started = target.join("GETTING_STARTED.md");
     if old_getting_started.exists() {
@@ -140,7 +140,6 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         template_root.display(),
         target.display()
     );
-    println!("Cache root: {}", cfg.cache_root);
     println!("Pinned lez: {}", cfg.lez.pin);
     println!("Template variant: {}", cfg.framework.kind);
 
