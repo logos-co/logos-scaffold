@@ -23,7 +23,6 @@ use crate::state::write_text;
 use crate::DynResult;
 
 const REPORT_WARNING: &str = "WARNING: This diagnostics bundle is sanitized on a best-effort basis and may still contain sensitive data. Inspect every file before sharing it publicly.";
-const GUEST_BIN_REL_PATH: &str = "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
 
 pub(crate) fn cmd_report(out: Option<PathBuf>, tail: usize) -> DynResult<()> {
     let project = load_project().context(
@@ -630,7 +629,6 @@ fn collect_build_evidence(
     sanitize_ctx: &SanitizeContext,
 ) -> BuildEvidenceReport {
     let guest_src_dir = project.root.join("methods/guest/src/bin");
-    let guest_bin_dir = project.root.join(GUEST_BIN_REL_PATH);
     let workspace_target = project.root.join("target");
 
     let mut guest_programs = Vec::new();
@@ -647,38 +645,34 @@ fn collect_build_evidence(
     }
     guest_programs.sort();
 
+    let discovered = super::deploy::discover_program_binaries(&project.root, &guest_programs);
+
     let mut expected_binaries = Vec::new();
     for program in &guest_programs {
-        let path = guest_bin_dir.join(format!("{program}.bin"));
+        let path = discovered
+            .get(program)
+            .cloned()
+            .unwrap_or_else(|| project.root.join(format!("{program}.bin")));
+        let exists = discovered.contains_key(program);
         expected_binaries.push(BinaryArtifactSummary {
             program: program.clone(),
             relative_path: scrub_path_string(&rel_path(&path, &project.root), sanitize_ctx),
-            exists: path.exists(),
-            modified_unix: file_mtime_unix(&path),
-            size_bytes: file_size_bytes(&path),
+            exists,
+            modified_unix: if exists { file_mtime_unix(&path) } else { None },
+            size_bytes: if exists { file_size_bytes(&path) } else { None },
         });
     }
 
-    let mut discovered_binaries = Vec::new();
-    if let Ok(entries) = fs::read_dir(&guest_bin_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("bin") {
-                continue;
-            }
-            discovered_binaries.push(BinaryArtifactSummary {
-                program: path
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
-                relative_path: scrub_path_string(&rel_path(&path, &project.root), sanitize_ctx),
-                exists: true,
-                modified_unix: file_mtime_unix(&path),
-                size_bytes: file_size_bytes(&path),
-            });
-        }
-    }
+    let mut discovered_binaries: Vec<BinaryArtifactSummary> = discovered
+        .iter()
+        .map(|(program, path)| BinaryArtifactSummary {
+            program: program.clone(),
+            relative_path: scrub_path_string(&rel_path(path, &project.root), sanitize_ctx),
+            exists: true,
+            modified_unix: file_mtime_unix(path),
+            size_bytes: file_size_bytes(path),
+        })
+        .collect();
     discovered_binaries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
     BuildEvidenceReport {
