@@ -211,6 +211,9 @@ struct ReportArgs {
 
 #[derive(Debug, clap::Args)]
 struct RunArgs {
+    /// Select a named profile from `[run.profiles.<name>]`
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
     /// Force localnet restart (overrides scaffold.toml)
     #[arg(long)]
     restart_localnet: bool,
@@ -223,6 +226,13 @@ struct RunArgs {
     /// Skip localnet reset even if scaffold.toml says true
     #[arg(long, conflicts_with = "reset_localnet")]
     no_reset_localnet: bool,
+    /// Skip post-deploy hooks even if the resolved profile defines them
+    #[arg(long)]
+    no_post_deploy: bool,
+    /// Override post-deploy hooks (repeatable). Replaces config-defined hooks
+    /// for this invocation. Conflicts with --no-post-deploy.
+    #[arg(long, value_name = "CMD", conflicts_with = "no_post_deploy")]
+    post_deploy: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -510,7 +520,14 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             } else {
                 None
             };
-            cmd_run(restart, reset)
+            let post_deploy = if args.no_post_deploy {
+                Some(Vec::new())
+            } else if !args.post_deploy.is_empty() {
+                Some(args.post_deploy)
+            } else {
+                None
+            };
+            cmd_run(args.profile, restart, reset, post_deploy)
         }
         Some(Commands::Basecamp(args)) => {
             let action = match args.command {

@@ -21,16 +21,24 @@ use crate::DynResult;
 const RESET_VERIFY_TIMEOUT_SEC: u64 = 30;
 
 pub(crate) fn cmd_run(
+    profile: Option<String>,
     restart_localnet: Option<bool>,
     reset_localnet: Option<bool>,
+    post_deploy_override: Option<Vec<String>>,
 ) -> DynResult<()> {
     let project = load_project()?;
-    let hooks = project.config.run.post_deploy.clone();
+    let resolved = project.config.run.resolve_profile(profile.as_deref())?;
+    if let Some(name) = profile.as_deref() {
+        println!("Using [run.profiles.{name}]");
+    } else if let Some(name) = project.config.run.default_profile.as_deref() {
+        println!("Using [run.profiles.{name}] (default_profile)");
+    }
+    let hooks = post_deploy_override.unwrap_or_else(|| resolved.post_deploy.clone());
     let has_hooks = !hooks.is_empty();
     // Steps: build, build idl, localnet, topup, deploy, [+1 if hooks]
     let total_steps: u32 = if has_hooks { 6 } else { 5 };
-    let effective_restart = restart_localnet.unwrap_or(project.config.run.restart_localnet);
-    let effective_reset = reset_localnet.unwrap_or(project.config.run.reset_localnet);
+    let effective_restart = restart_localnet.unwrap_or(resolved.restart_localnet);
+    let effective_reset = reset_localnet.unwrap_or(resolved.reset_localnet);
 
     // Step 1: Build (chains setup internally)
     println!("[1/{total_steps}] Building...");
@@ -67,8 +75,9 @@ pub(crate) fn cmd_run(
         let n = hooks.len();
         println!("[6/{total_steps}] Running {n} post-deploy hook(s)...");
         for (i, hook) in hooks.iter().enumerate() {
-            println!("      hook {}/{n}: {hook}", i + 1);
+            println!("===> post_deploy[{}/{n}]: {hook}", i + 1);
             run_post_deploy_hook(&project, hook)?;
+            println!("<=== post_deploy[{}/{n}] OK", i + 1);
         }
     } else {
         print_deploy_summary(&project)?;

@@ -71,7 +71,7 @@ logos-scaffold wallet topup [<address> | --address <address-ref>] [--dry-run]
 logos-scaffold wallet default set <address-ref>
 logos-scaffold wallet default set --address <address-ref>
 logos-scaffold wallet -- <wallet-command...>
-logos-scaffold run [--restart-localnet | --no-restart-localnet] [--reset-localnet | --no-reset-localnet]
+logos-scaffold run [--profile <name>] [--restart-localnet | --no-restart-localnet] [--reset-localnet | --no-reset-localnet] [--post-deploy <cmd>...] [--no-post-deploy]
 logos-scaffold basecamp setup
 logos-scaffold basecamp modules [--path PATH]... [--flake REF]... [--show]
 logos-scaffold basecamp install [--print-output]
@@ -97,7 +97,7 @@ logos-scaffold help
 - `wallet topup` checks account state first (`wallet account get --account-id ...`), runs `wallet auth-transfer init --account-id ...` only when the destination is uninitialized, then performs Piñata faucet claim (`wallet pinata claim --to ...`). If address is omitted, scaffold uses project default wallet from `.scaffold/state/wallet.state`.
 - `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.
 - `wallet -- ...` forwards raw wallet CLI arguments to the project-local wallet binary while preserving project wallet environment.
-- `run` combines build, IDL build, localnet start, wallet topup, and deploy into a single command. If a `[run]` section with `post_deploy` is present in `scaffold.toml`, each hook is executed after deploy via `sh -c` with `SEQUENCER_URL`, `NSSA_WALLET_HOME_DIR`, `SCAFFOLD_PROJECT_ROOT`, and `SCAFFOLD_IDL_DIR` environment variables. `--restart-localnet` forces a stop+start; `--no-restart-localnet` skips it. Without flags, the value from `scaffold.toml` (`restart_localnet`, default `false`) is used. If the localnet is already running, it is reused. `--reset-localnet` (or `[run].reset_localnet = true`) wipes rocksdb and the project wallet, then starts the sequencer fresh and verifies block production — for iteration cycles where stale on-chain state gets in the way. Reset and restart are orthogonal inputs: when reset is true, restart's value has no effect because reset already includes a stop+start.
+- `run` combines build, IDL build, localnet start, wallet topup, and deploy into a single command. If a `[run]` section with `post_deploy` is present in `scaffold.toml`, each hook is executed after deploy via `sh -c` (cwd = project root) with `SEQUENCER_URL`, `NSSA_WALLET_HOME_DIR`, `SCAFFOLD_PROJECT_ROOT`, and `SCAFFOLD_IDL_DIR` environment variables. `--restart-localnet` forces a stop+start; `--no-restart-localnet` skips it. Without flags, the value from `scaffold.toml` (`restart_localnet`, default `false`) is used. If the localnet is already running, it is reused. `--reset-localnet` (or `[run].reset_localnet = true`) wipes rocksdb and the project wallet, then starts the sequencer fresh and verifies block production — for iteration cycles where stale on-chain state gets in the way. Reset and restart are orthogonal inputs: when reset is true, restart's value has no effect because reset already includes a stop+start. `--profile <name>` selects a named profile from `[run.profiles.<name>]`; `[run].default_profile` sets a default. `--post-deploy <cmd>` (repeatable) overrides the resolved profile's hooks; `--no-post-deploy` skips them entirely.
 - `basecamp setup` pins basecamp + `lgpm`, builds both (logged to `.scaffold/logs/<timestamp>-setup-*.log`), and seeds per-profile XDG directories for `alice` and `bob` under `.scaffold/basecamp/profiles/`.
 - `basecamp modules` is the sole writer of the captured module set, which lives in `[basecamp.modules.<name>]` sub-sections of `scaffold.toml` (each with `flake` and `role = "project" | "dependency"`). Zero-arg runs auto-discovery: walks project flakes (root `.#lgx` first, else immediate sub-flakes), derives a `module_name` per source (from `metadata.json.name` for local paths; heuristic from the github repo slug for remote refs, with a one-line assumption note you can correct in `scaffold.toml`), then resolves each declared dep name by: (1) already keyed in `[basecamp.modules]`, (2) basecamp preinstall list, (3) the source's own `flake.lock`, (4) scaffold-default pin. Unresolved deps **fail fast** — no silent skip. `--flake <ref>` / `--path <file>` capture explicit project sources; `--show` prints the current set without mutating. Re-runs are idempotent: existing `[basecamp.modules]` entries are preserved so hand-edits survive. Project contract: see [docs/basecamp-module-requirements.md](./docs/basecamp-module-requirements.md).
 - `basecamp install` is pure replay: builds every captured source (dependencies first, then project modules — fail-fast on a broken companion pin) and installs them into both `alice` and `bob` via `lgpm`. No source-set flags. If the state is empty on first call it transparently invokes `basecamp modules` in auto-discover mode, prints what was captured, and proceeds. Each nix build logs to `.scaffold/logs/<timestamp>-install.log` with a one-line progress status (duration on both success and failure); `--print-output` (or `LOGOS_SCAFFOLD_PRINT_OUTPUT=1`) opts back into streaming nix output directly for CI.
@@ -169,7 +169,8 @@ post_deploy = [
 A single command may also be written as a plain string for brevity:
 `post_deploy = "echo done"`.
 
-Each hook runs via `sh -c` with these environment variables pre-set:
+Each hook runs via `sh -c` with cwd set to the project root and these
+environment variables pre-set:
 
 | Variable | Value |
 |---|---|
@@ -177,6 +178,45 @@ Each hook runs via `sh -c` with these environment variables pre-set:
 | `NSSA_WALLET_HOME_DIR` | Absolute path to project wallet directory |
 | `SCAFFOLD_PROJECT_ROOT` | Absolute path to project root |
 | `SCAFFOLD_IDL_DIR` | Absolute path to IDL output directory |
+
+#### Named profiles
+
+For projects with multiple post-deploy workflows (play, e2e, smoke,
+fuzz), define them as named profiles and select with `--profile`:
+
+```toml
+[run]
+default_profile = "play"
+
+[run.profiles.play]
+post_deploy = "scripts/post-deploy-play.sh"
+
+[run.profiles.e2e]
+reset_localnet = true
+post_deploy = "scripts/e2e-runs.sh"
+```
+
+```bash
+lgs run                # uses default_profile = "play"
+lgs run --profile e2e  # uses [run.profiles.e2e]
+```
+
+When `--profile` is not passed, scaffold picks `default_profile` if set,
+otherwise falls back to inline `[run]` keys (the legacy/unnamed slot).
+An unknown `--profile` name errors with the list of known profiles.
+
+#### One-off override / skip
+
+To run a different hook without editing `scaffold.toml`:
+
+```bash
+lgs run --post-deploy "scripts/smoke.sh"
+lgs run --post-deploy "step-a" --post-deploy "step-b"   # repeatable
+lgs run --no-post-deploy                                 # skip all hooks
+```
+
+`--post-deploy` and `--no-post-deploy` conflict with each other and
+both override whatever the resolved profile defines.
 
 For iteration cycles where stale on-chain state gets in the way (a
 counter you want to test from zero, accumulated test pollution, a

@@ -219,9 +219,53 @@ pub(crate) struct FrameworkIdlConfig {
     pub(crate) path: String,
 }
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct RunConfig {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RunProfile {
     pub(crate) restart_localnet: bool,
     pub(crate) reset_localnet: bool,
     pub(crate) post_deploy: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RunConfig {
+    /// Inline `[run]` values — the unnamed/legacy profile, used when no
+    /// `--profile` flag and no `default_profile` is set.
+    pub(crate) restart_localnet: bool,
+    pub(crate) reset_localnet: bool,
+    pub(crate) post_deploy: Vec<String>,
+    /// Name of a profile in `profiles` to use when no `--profile` flag is
+    /// passed. If `Some` and the named profile exists, it shadows the
+    /// inline values above.
+    pub(crate) default_profile: Option<String>,
+    /// Named profiles parsed from `[run.profiles.<name>]` sub-sections.
+    pub(crate) profiles: std::collections::BTreeMap<String, RunProfile>,
+}
+
+impl RunConfig {
+    /// Resolve the effective `RunProfile` for a given `--profile` selector.
+    /// `Some(name)` errors if the profile is absent. `None` falls back to
+    /// `default_profile` if set, else the inline values.
+    pub(crate) fn resolve_profile(&self, selector: Option<&str>) -> anyhow::Result<RunProfile> {
+        if let Some(name) = selector {
+            return self.profiles.get(name).cloned().ok_or_else(|| {
+                let known: Vec<&str> = self.profiles.keys().map(String::as_str).collect();
+                anyhow::anyhow!(
+                    "scaffold.toml has no [run.profiles.{name}] section. Known profiles: [{}]",
+                    known.join(", ")
+                )
+            });
+        }
+        if let Some(name) = self.default_profile.as_deref() {
+            return self.profiles.get(name).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "scaffold.toml `[run].default_profile = \"{name}\"` but no matching [run.profiles.{name}] section"
+                )
+            });
+        }
+        Ok(RunProfile {
+            restart_localnet: self.restart_localnet,
+            reset_localnet: self.reset_localnet,
+            post_deploy: self.post_deploy.clone(),
+        })
+    }
 }
