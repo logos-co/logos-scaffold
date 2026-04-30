@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use example_program_deployment_methods::HELLO_WORLD_WITH_MOVE_FUNCTION_ELF;
+use common::transaction::NSSATransaction;
 use nssa::{PublicTransaction, program::Program, public_transaction};
 use wallet::{PrivacyPreservingAccount, WalletCore};
 
@@ -58,23 +59,30 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let instruction: Instruction = (WRITE_FUNCTION_ID, greeting.into_bytes());
             let account_id = parse_account_id(&account_id)?;
+            let nonces = wallet_core
+                .get_accounts_nonces(vec![account_id])
+                .await
+                .context("failed to fetch account nonces")?;
+            let signing_key = wallet_core
+                .get_account_public_signing_key(account_id)
+                .context("no signing key for account")?;
             let message = public_transaction::Message::try_new(
                 program.id(),
                 vec![account_id],
-                vec![],
+                nonces,
                 instruction,
             )
             .context("failed to build write-public message")?;
-            let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+            let witness_set = public_transaction::WitnessSet::for_message(&message, &[signing_key]);
             let tx = PublicTransaction::new(message, witness_set);
             let response = wallet_core
                 .sequencer_client
-                .send_tx_public(tx)
+                .send_transaction(NSSATransaction::Public(tx))
                 .await
                 .context("failed to submit public transaction to localnet")?;
             println!(
-                "submitted transaction: status={} tx_hash={}",
-                response.status, response.tx_hash
+                "submitted transaction: tx_hash={}",
+                response
             );
             println!("verification hint: wallet account get --account-id {account_id}");
         }
@@ -104,23 +112,30 @@ async fn main() -> anyhow::Result<()> {
             let instruction: Instruction = (MOVE_DATA_FUNCTION_ID, vec![]);
             let from = parse_account_id(&from)?;
             let to = parse_account_id(&to)?;
+            let nonces = wallet_core
+                .get_accounts_nonces(vec![from, to])
+                .await
+                .context("failed to fetch account nonces")?;
+            let signing_key = wallet_core
+                .get_account_public_signing_key(from)
+                .context("no signing key for from account")?;
             let message = public_transaction::Message::try_new(
                 program.id(),
                 vec![from, to],
-                vec![],
+                nonces,
                 instruction,
             )
             .context("failed to build move-data-public-to-public message")?;
-            let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
+            let witness_set = public_transaction::WitnessSet::for_message(&message, &[signing_key]);
             let tx = PublicTransaction::new(message, witness_set);
             let response = wallet_core
                 .sequencer_client
-                .send_tx_public(tx)
+                .send_transaction(NSSATransaction::Public(tx))
                 .await
                 .context("failed to submit public transaction to localnet")?;
             println!(
-                "submitted transaction: status={} tx_hash={}",
-                response.status, response.tx_hash
+                "submitted transaction: tx_hash={}",
+                response
             );
             println!("verification hint: wallet account get --account-id {from}");
             println!("verification hint: wallet account get --account-id {to}");

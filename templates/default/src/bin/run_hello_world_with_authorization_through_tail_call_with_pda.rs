@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 use example_program_deployment_methods::TAIL_CALL_WITH_PDA_ELF;
+use common::transaction::NSSATransaction;
 use nssa::{
     AccountId, PublicTransaction,
     public_transaction::{Message, WitnessSet},
@@ -32,20 +33,29 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     let pda = AccountId::from((&program.id(), &PDA_SEED));
-    let message = Message::try_new(program.id(), vec![pda], vec![], ())
+    // Fetch nonces for the PDA account (the account being acted on)
+    // The signing key is from account_id (the wallet owner authorizing the tx)
+    let nonces = wallet_core
+        .get_accounts_nonces(vec![pda])
+        .await
+        .context("failed to fetch account nonces")?;
+    let signing_key = wallet_core
+        .get_account_public_signing_key(account_id)
+        .context("no signing key for account — must be a public account owned by this wallet")?;
+    let message = Message::try_new(program.id(), vec![pda], nonces, ())
         .context("failed to build pda transaction message")?;
-    let witness_set = WitnessSet::for_message(&message, &[]);
+    let witness_set = WitnessSet::for_message(&message, &[signing_key]);
     let tx = PublicTransaction::new(message, witness_set);
 
     let response = wallet_core
         .sequencer_client
-        .send_tx_public(tx)
+        .send_transaction(NSSATransaction::Public(tx))
         .await
         .context("failed to submit public transaction to localnet")?;
 
     println!(
-        "submitted transaction: status={} tx_hash={}",
-        response.status, response.tx_hash
+        "submitted transaction: tx_hash={}",
+        response
     );
     println!("the program derived account id is: {pda}");
 
