@@ -179,10 +179,6 @@ environment variables pre-set:
 | `SCAFFOLD_PROJECT_ROOT` | Absolute path to project root |
 | `SCAFFOLD_IDL_DIR` | Absolute path to IDL output directory |
 
-Each hook is bracketed in the log by `===> post_deploy[i/n]: <cmd>` and
-`<=== post_deploy[i/n] OK` markers so chatty hook output is easy to
-locate in scrollback.
-
 #### Named profiles
 
 For projects with multiple post-deploy workflows (play, e2e, smoke,
