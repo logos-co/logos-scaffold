@@ -71,7 +71,7 @@ logos-scaffold wallet topup [<address> | --address <address-ref>] [--dry-run]
 logos-scaffold wallet default set <address-ref>
 logos-scaffold wallet default set --address <address-ref>
 logos-scaffold wallet -- <wallet-command...>
-logos-scaffold run [--profile <name>] [--restart-localnet | --no-restart-localnet] [--reset-localnet | --no-reset-localnet] [--post-deploy <cmd>...] [--no-post-deploy]
+logos-scaffold run [--profile <name>] [--restart-localnet | --no-restart-localnet] [--reset-localnet | --no-reset-localnet] [--post-deploy <cmd>...] [--no-post-deploy] [--force-deploy] [--watch]
 logos-scaffold basecamp setup
 logos-scaffold basecamp modules [--path PATH]... [--flake REF]... [--show]
 logos-scaffold basecamp install [--print-output]
@@ -217,6 +217,26 @@ lgs run --no-post-deploy                                 # skip all hooks
 
 `--post-deploy` and `--no-post-deploy` conflict with each other and
 both override whatever the resolved profile defines.
+
+#### Deploy idempotence
+
+`run` skips the deploy step when every guest `.bin` hashes to the same
+value as the prior deploy. State lives at `.scaffold/state/run_deploy.json`.
+A `--reset-localnet` clears it (the on-chain state is gone, so a fresh
+deploy is required). Use `--force-deploy` to re-deploy unconditionally.
+
+#### Watch mode
+
+For tight inner-loop work, `--watch` re-runs build → IDL → deploy → hooks
+on every file change under the project root (ignoring `.scaffold/`,
+`target/`, and `.git/`). The initial run is the full pipeline; subsequent
+re-runs reuse the running localnet (restart and reset are suppressed).
+Hook failures don't end the loop — the watcher waits for the next change.
+
+```bash
+lgs run --watch                  # full pipeline, then iterate
+lgs run --profile play --watch   # iterate against the play profile
+```
 
 For iteration cycles where stale on-chain state gets in the way (a
 counter you want to test from zero, accumulated test pollution, a

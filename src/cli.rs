@@ -233,6 +233,14 @@ struct RunArgs {
     /// for this invocation. Conflicts with --no-post-deploy.
     #[arg(long, value_name = "CMD", conflicts_with = "no_post_deploy")]
     post_deploy: Vec<String>,
+    /// Re-deploy guest binaries even if their hashes match the prior deploy
+    #[arg(long)]
+    force_deploy: bool,
+    /// After the initial run, watch the project for file changes and
+    /// re-run the pipeline (build + idl + deploy + hooks) on each change.
+    /// Localnet is reused; restart/reset are skipped on re-runs.
+    #[arg(long)]
+    watch: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -527,7 +535,14 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             } else {
                 None
             };
-            cmd_run(args.profile, restart, reset, post_deploy)
+            cmd_run(
+                args.profile,
+                restart,
+                reset,
+                post_deploy,
+                args.force_deploy,
+                args.watch,
+            )
         }
         Some(Commands::Basecamp(args)) => {
             let action = match args.command {

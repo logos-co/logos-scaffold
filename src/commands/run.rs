@@ -1,7 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{bail, Context};
+use notify::{RecursiveMode, Watcher};
 
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::deploy::cmd_deploy;
@@ -9,11 +12,19 @@ use crate::commands::idl::build_idl_for_current_project;
 use crate::commands::localnet::{
     build_localnet_status_for_project, cmd_localnet, cmd_localnet_reset, LocalnetAction,
 };
+use crate::commands::run_state::{
+    compute_program_hashes, deploy_can_be_skipped, load_state, save_state, RunDeployState,
+};
 use crate::commands::wallet::{cmd_wallet_topup_inner, TopupOutcome};
 use crate::constants::GUEST_BIN_REL_PATH;
-use crate::model::LocalnetOwnership;
+use crate::model::{LocalnetOwnership, Project, RunProfile};
 use crate::project::load_project;
 use crate::DynResult;
+
+/// Debounce window for the watch loop. Filesystem events from a single
+/// editor save typically arrive in a flurry; sleep this long after the
+/// first event before re-running so we coalesce them.
+const WATCH_DEBOUNCE_MS: u64 = 500;
 
 /// Number of seconds to wait for block production after a reset before
 /// considering the freshly-started localnet healthy. Matches the upper
@@ -25,6 +36,8 @@ pub(crate) fn cmd_run(
     restart_localnet: Option<bool>,
     reset_localnet: Option<bool>,
     post_deploy_override: Option<Vec<String>>,
+    force_deploy: bool,
+    watch: bool,
 ) -> DynResult<()> {
     let project = load_project()?;
     let resolved = project.config.run.resolve_profile(profile.as_deref())?;
@@ -34,11 +47,49 @@ pub(crate) fn cmd_run(
         println!("Using [run.profiles.{name}] (default_profile)");
     }
     let hooks = post_deploy_override.unwrap_or_else(|| resolved.post_deploy.clone());
-    let has_hooks = !hooks.is_empty();
+
+    let mut params = PipelineParams {
+        resolved: resolved.clone(),
+        hooks: hooks.clone(),
+        restart_override: restart_localnet,
+        reset_override: reset_localnet,
+        force_deploy,
+    };
+
+    run_pipeline_once(&project, &params)?;
+
+    if watch {
+        // Subsequent iterations share the same hook/profile selection but
+        // never reset the localnet again — that would clobber the state
+        // hook code is verifying. Restart override is dropped for the
+        // same reason.
+        params.reset_override = Some(false);
+        params.restart_override = Some(false);
+        watch_loop(&project, &params)?;
+    }
+
+    Ok(())
+}
+
+#[derive(Clone)]
+struct PipelineParams {
+    resolved: RunProfile,
+    hooks: Vec<String>,
+    restart_override: Option<bool>,
+    reset_override: Option<bool>,
+    force_deploy: bool,
+}
+
+fn run_pipeline_once(project: &Project, params: &PipelineParams) -> DynResult<()> {
+    let has_hooks = !params.hooks.is_empty();
     // Steps: build, build idl, localnet, topup, deploy, [+1 if hooks]
     let total_steps: u32 = if has_hooks { 6 } else { 5 };
-    let effective_restart = restart_localnet.unwrap_or(resolved.restart_localnet);
-    let effective_reset = reset_localnet.unwrap_or(resolved.reset_localnet);
+    let effective_restart = params
+        .restart_override
+        .unwrap_or(params.resolved.restart_localnet);
+    let effective_reset = params
+        .reset_override
+        .unwrap_or(params.resolved.reset_localnet);
 
     // Step 1: Build (chains setup internally)
     println!("[1/{total_steps}] Building...");
@@ -53,37 +104,121 @@ pub(crate) fn cmd_run(
     // cmd_localnet_reset already includes a stop+start. Not a conflict.
     if effective_reset {
         println!("[3/{total_steps}] Resetting localnet (wipes sequencer + wallet)...");
-        reset_localnet_for_run(&project)?;
+        reset_localnet_for_run(project)?;
+        // A reset wipes on-chain state, so any prior deploy is gone:
+        // the next deploy must run regardless of hash equality.
+        let _ = std::fs::remove_file(project.root.join(".scaffold/state/run_deploy.json"));
     } else {
         println!("[3/{total_steps}] Ensuring localnet...");
-        ensure_localnet(&project, effective_restart)?;
+        ensure_localnet(project, effective_restart)?;
     }
 
     // Step 4: Wallet topup
     println!("[4/{total_steps}] Topping up wallet...");
-    let outcome = cmd_wallet_topup_inner(&project, None, false)?;
+    let outcome = cmd_wallet_topup_inner(project, None, false)?;
     if outcome == TopupOutcome::ConfirmationTimeout {
         bail!("wallet topup confirmation timed out; aborting run to avoid deploying with uncertain funding.\nHint: retry `logos-scaffold run` or run `logos-scaffold wallet topup` manually.");
     }
 
-    // Step 5: Deploy
-    println!("[5/{total_steps}] Deploying programs...");
-    cmd_deploy(None, None, false)?;
+    // Step 5: Deploy (idempotent: skip if all guest-bin hashes match prior).
+    let current_hashes = compute_program_hashes(project)?;
+    let prior = load_state(project);
+    if !params.force_deploy && deploy_can_be_skipped(&current_hashes, &prior.program_hashes) {
+        println!("[5/{total_steps}] Deploy skipped (guest binaries unchanged; --force-deploy to override)");
+    } else {
+        println!("[5/{total_steps}] Deploying programs...");
+        cmd_deploy(None, None, false)?;
+        // Re-hash after deploy in case build was triggered by setup chain.
+        let post_hashes = compute_program_hashes(project)?;
+        if !post_hashes.is_empty() {
+            save_state(
+                project,
+                &RunDeployState {
+                    program_hashes: post_hashes,
+                },
+            )?;
+        }
+    }
 
     // Step 6: Post-deploy hooks (or summary)
     if has_hooks {
-        let n = hooks.len();
+        let n = params.hooks.len();
         println!("[6/{total_steps}] Running {n} post-deploy hook(s)...");
-        for (i, hook) in hooks.iter().enumerate() {
+        for (i, hook) in params.hooks.iter().enumerate() {
             println!("===> post_deploy[{}/{n}]: {hook}", i + 1);
-            run_post_deploy_hook(&project, hook)?;
+            run_post_deploy_hook(project, hook)?;
             println!("<=== post_deploy[{}/{n}] OK", i + 1);
         }
     } else {
-        print_deploy_summary(&project)?;
+        print_deploy_summary(project)?;
     }
 
     Ok(())
+}
+
+fn watch_loop(project: &Project, params: &PipelineParams) -> DynResult<()> {
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    })
+    .context("create filesystem watcher")?;
+    watcher
+        .watch(&project.root, RecursiveMode::Recursive)
+        .context("watch project root")?;
+
+    println!();
+    println!(
+        "===> watching {} for changes (Ctrl-C to exit)",
+        project.root.display()
+    );
+
+    loop {
+        let event = match rx.recv() {
+            Ok(Ok(ev)) => ev,
+            Ok(Err(err)) => {
+                eprintln!("watch error: {err}");
+                continue;
+            }
+            Err(_) => break, // channel closed
+        };
+        if !is_watched_event(project, &event) {
+            continue;
+        }
+        // Debounce: sleep then drain the rest of the burst.
+        std::thread::sleep(Duration::from_millis(WATCH_DEBOUNCE_MS));
+        while rx.try_recv().is_ok() {}
+        println!();
+        println!("===> change detected, re-running pipeline");
+        if let Err(err) = run_pipeline_once(project, params) {
+            eprintln!("pipeline failed: {err:#}");
+            eprintln!("===> waiting for next change");
+        }
+    }
+
+    Ok(())
+}
+
+fn is_watched_event(project: &Project, event: &notify::Event) -> bool {
+    for path in &event.paths {
+        if !is_ignored_path(&project.root, path) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_ignored_path(project_root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(project_root) else {
+        // Paths outside project root: ignore.
+        return true;
+    };
+    for component in rel.components() {
+        let s = component.as_os_str().to_string_lossy();
+        if matches!(s.as_ref(), ".scaffold" | "target" | ".git") {
+            return true;
+        }
+    }
+    false
 }
 
 fn reset_localnet_for_run(project: &crate::model::Project) -> DynResult<()> {
