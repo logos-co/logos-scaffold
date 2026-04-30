@@ -7,7 +7,8 @@ use anyhow::{bail, Context};
 use crate::config::serialize_config;
 use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    DEFAULT_LEZ_PIN, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK, LEZ_URL, VERSION,
+    DEFAULT_LEZ_PIN, DEFAULT_SPEL_PIN, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK,
+    LEZ_URL, SPEL_URL, VERSION,
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
 use crate::project::default_cache_root;
@@ -86,6 +87,15 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         lez_cached
     };
 
+    // spel is recorded in scaffold.toml here but actually cloned + built by
+    // `setup` (mirroring how lez is configured at `new` time but compiled at
+    // `setup` time).
+    let spel_repo_path = if cmd.vendor_deps {
+        target.join(".scaffold/repos/spel")
+    } else {
+        bootstrap_cache.join("repos/spel").join(DEFAULT_SPEL_PIN)
+    };
+
     let cfg = Config {
         version: VERSION.to_string(),
         cache_root: String::new(),
@@ -94,6 +104,12 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
             source: lez_source,
             path: lez_repo_path.display().to_string(),
             pin: DEFAULT_LEZ_PIN.to_string(),
+        },
+        spel: RepoRef {
+            url: SPEL_URL.to_string(),
+            source: SPEL_URL.to_string(),
+            path: spel_repo_path.display().to_string(),
+            pin: DEFAULT_SPEL_PIN.to_string(),
         },
         wallet_home_dir: ".scaffold/wallet".to_string(),
         framework: FrameworkConfig {

@@ -8,6 +8,9 @@
 2. Integrate wallet generation as part of the scaffold workflow for bootstrap and interaction flows.
 3. Support native token topup for wallet operations on local and DevNet environments.
 4. Deploy command auto-discovers program binaries from `methods/target/` by matching program names, so non-template projects deploy without `--program-path`.
+5. Deploy outputs the deployed program's on-chain ID (the risc0 image ID) for every successful submission, in both the human-readable output and the `--json` output, so users can hand the value to a client without rerunning a separate inspection tool.
+6. Scaffold vendors the `spel` CLI per project — clones `logos-co/spel` to a project-local path, pinned via `[repos.spel]` in `scaffold.toml`, and builds it during `setup` — mirroring the LEZ vendoring pattern. `deploy` invokes the project-local binary; no global `spel` install is required.
+7. `logos-scaffold spel <args...>` (and the `lgs spel <args...>` alias) proxies trailing arguments to the project-vendored `spel` binary, so any spel command (`inspect`, `pda`, `generate-idl`, etc.) runs against the project's pinned version without a global install. Exit codes are forwarded.
 
 ### Usability
 
@@ -31,6 +34,8 @@
 1. Scaffold version and toolchain versions are explicit in generated output so projects remain buildable over time.
 2. Network configuration for local and DevNet deployment is .env based config.
 3. The scaffolded project includes command references for build, deploy, and interaction steps.
+4. `logos-scaffold doctor` reports the `spel` repo presence and pin status, mirroring the existing LEZ checks, so drift from `DEFAULT_SPEL_PIN` is surfaced before it bites at deploy time.
+5. `scaffold.toml` files predating the `[repos.spel]` section produce a targeted error from the config loader pointing at `logos-scaffold init` as the fix; `init` is safe to re-run and back-fills the missing section without overwriting customized fields.
 
 ### + (Privacy, Anonymity, Censorship-Resistance)
 
@@ -46,6 +51,7 @@
 - Logos Core DevEx for overall developer journey alignment and terminology.
 - Logos Blockchain and Logos Execution Environment for functionality.
 - Wallet Module for interactions with Logos Execution Environment.
+- `logos-co/spel` CLI — vendored per project at a pinned commit (`DEFAULT_SPEL_PIN`, currently tag `v0.2.0`); supplies the `spel inspect` output that `deploy` parses for the program ID.
 
 #### Runtime Dependencies
 

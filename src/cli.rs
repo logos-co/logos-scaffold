@@ -16,6 +16,7 @@ use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
 use crate::commands::setup::cmd_setup;
+use crate::commands::spel::cmd_spel;
 use crate::commands::wallet::{cmd_wallet, WalletAction};
 use crate::constants::VERSION;
 use crate::template::project::available_templates;
@@ -397,6 +398,9 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
     if let Some(action) = wallet_passthrough_action(&args)? {
         return cmd_wallet(action);
     }
+    if let Some(spel_args) = spel_passthrough_args(&args)? {
+        return cmd_spel(spel_args);
+    }
 
     let bin_name = args
         .first()
@@ -531,6 +535,35 @@ pub(crate) fn print_help(bin_name: &str) -> DynResult<()> {
     cmd.print_help()?;
     println!();
     Ok(())
+}
+
+/// Forward `lgs spel -- <args...>` to the project-vendored `spel` binary.
+/// Mirrors `wallet_passthrough_action` so the same `--` convention applies
+/// across passthroughs. When `spel` is invoked without `--`, intercept early
+/// and surface a hint pointing at the right form — clap's "unknown
+/// subcommand" message would otherwise leave the user guessing.
+fn spel_passthrough_args(args: &[String]) -> DynResult<Option<Vec<String>>> {
+    if args.len() < 2 || args[1] != "spel" {
+        return Ok(None);
+    }
+    if args.len() < 3 {
+        return Err(anyhow!(
+            "`spel` requires arguments. Use the passthrough form, e.g. `logos-scaffold spel -- inspect <bin>`."
+        ));
+    }
+    if args[2] != "--" {
+        return Err(anyhow!(
+            "`spel {0} ...` is not a scaffold subcommand. Did you mean `logos-scaffold spel -- {0} ...`? \
+             The `--` separator forwards every following argument to the project-vendored `spel` binary.",
+            args[2]
+        ));
+    }
+    if args.len() == 3 {
+        return Err(anyhow!(
+            "spel passthrough requires at least one argument after `--`. Example: `logos-scaffold spel -- inspect <bin>`"
+        ));
+    }
+    Ok(Some(args[3..].to_vec()))
 }
 
 fn wallet_passthrough_action(args: &[String]) -> DynResult<Option<WalletAction>> {
