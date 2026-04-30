@@ -20,7 +20,7 @@ use super::wallet_support::{
 /// (used by the scaffold template), while sub-crate builds can land in
 /// `methods/target/...`. Discovery walks both so renamed projects work
 /// regardless of which layout cargo/risc0 chose.
-const GUEST_BIN_SEARCH_ROOTS: &[&str] = &["target/riscv-guest", "methods/target"];
+pub(crate) const GUEST_BIN_SEARCH_ROOTS: &[&str] = &["target/riscv-guest", "methods/target"];
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
 pub(crate) fn cmd_deploy(
@@ -195,7 +195,7 @@ fn preflight_sequencer_reachability(sequencer_addr: &str) -> DynResult<()> {
     }
 }
 
-fn discover_deployable_programs(project_root: &Path) -> DynResult<Vec<String>> {
+pub(crate) fn discover_deployable_programs(project_root: &Path) -> DynResult<Vec<String>> {
     let programs_dir = project_root.join("methods/guest/src/bin");
     if !programs_dir.exists() {
         bail!(

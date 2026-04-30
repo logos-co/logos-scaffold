@@ -15,6 +15,7 @@ use crate::commands::init::cmd_init;
 use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
+use crate::commands::run::cmd_run;
 use crate::commands::setup::cmd_setup;
 use crate::commands::wallet::{cmd_wallet, WalletAction};
 use crate::constants::VERSION;
@@ -63,6 +64,8 @@ enum Commands {
     #[command(about = "Manage pre-seeded basecamp profiles for p2p dogfooding")]
     Basecamp(BasecampArgs),
     Doctor(DoctorArgs),
+    #[command(about = "Build, start localnet, top up wallet, deploy, and run post-deploy hook")]
+    Run(RunArgs),
     #[command(about = "Collect a sanitized diagnostics archive for issue reporting")]
     Report(ReportArgs),
     #[command(
@@ -204,6 +207,40 @@ struct ReportArgs {
     out: Option<PathBuf>,
     #[arg(long, default_value_t = 500)]
     tail: usize,
+}
+
+#[derive(Debug, clap::Args)]
+struct RunArgs {
+    /// Select a named profile from `[run.profiles.<name>]`
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
+    /// Force localnet restart (overrides scaffold.toml)
+    #[arg(long)]
+    restart_localnet: bool,
+    /// Skip localnet restart even if scaffold.toml says true
+    #[arg(long, conflicts_with = "restart_localnet")]
+    no_restart_localnet: bool,
+    /// Wipe rocksdb + wallet, then start localnet from scratch (overrides scaffold.toml)
+    #[arg(long)]
+    reset_localnet: bool,
+    /// Skip localnet reset even if scaffold.toml says true
+    #[arg(long, conflicts_with = "reset_localnet")]
+    no_reset_localnet: bool,
+    /// Skip post-deploy hooks even if the resolved profile defines them
+    #[arg(long)]
+    no_post_deploy: bool,
+    /// Override post-deploy hooks (repeatable). Replaces config-defined hooks
+    /// for this invocation. Conflicts with --no-post-deploy.
+    #[arg(long, value_name = "CMD", conflicts_with = "no_post_deploy")]
+    post_deploy: Vec<String>,
+    /// Re-deploy guest binaries even if their hashes match the prior deploy
+    #[arg(long)]
+    force_deploy: bool,
+    /// After the initial run, watch the project for file changes and
+    /// re-run the pipeline (build + idl + deploy + hooks) on each change.
+    /// Localnet is reused; restart/reset are skipped on re-runs.
+    #[arg(long)]
+    watch: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -475,6 +512,37 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 },
             };
             cmd_wallet(action)
+        }
+        Some(Commands::Run(args)) => {
+            let restart = if args.restart_localnet {
+                Some(true)
+            } else if args.no_restart_localnet {
+                Some(false)
+            } else {
+                None
+            };
+            let reset = if args.reset_localnet {
+                Some(true)
+            } else if args.no_reset_localnet {
+                Some(false)
+            } else {
+                None
+            };
+            let post_deploy = if args.no_post_deploy {
+                Some(Vec::new())
+            } else if !args.post_deploy.is_empty() {
+                Some(args.post_deploy)
+            } else {
+                None
+            };
+            cmd_run(
+                args.profile,
+                restart,
+                reset,
+                post_deploy,
+                args.force_deploy,
+                args.watch,
+            )
         }
         Some(Commands::Basecamp(args)) => {
             let action = match args.command {

@@ -75,6 +75,8 @@ The `lgs` binary is a short alias for `logos-scaffold` produced by the same crat
 | D4 | `default` | Core | Wallet management, default-address behavior, and passthrough UX | `wallet list`, `wallet default set`, `wallet topup --dry-run`, `wallet topup`, `wallet -- ...` |
 | D5 | `default` | Advanced | Diagnostics bundle and support artifact hygiene | `report`, `report --out`, `report --tail` |
 | D6 | `default` | Core | Example runner interaction and account state verification | `cargo run --bin run_hello_world`, `cargo run --bin run_hello_world_with_move_function`, `wallet -- account get` |
+| D7 | `default` | Core | One-step `run` pipeline, post-deploy hooks, and reset/restart precedence | `run`, `run --restart-localnet`, `run --reset-localnet`, `[run]` config |
+| D8 | `default` | Advanced | `run` profiles, post-deploy CLI overrides, deploy idempotence, watch loop | `run --profile`, `run --post-deploy`, `run --no-post-deploy`, `run --force-deploy`, `run --watch` |
 | L1 | `lez-framework` | Core | Fresh LEZ project bootstrap to ready state | `new --template lez-framework`, `setup`, `localnet start`, `doctor`, `build` |
 | L2 | `lez-framework` | Core | LEZ IDL regeneration | `build idl` |
 | L3 | `lez-framework` | Advanced | LEZ client generation from current IDL | `build client` |
@@ -439,6 +441,147 @@ The first runner (`run_hello_world`) submits a basic public transaction. The sec
 - `NSSA_WALLET_HOME_DIR` must be set for runners that initialize `WalletCore::from_env()`. The scaffold wallet commands set this automatically, but direct `cargo run` does not.
 - Use the fresh public account created in the preconditions rather than reusing accounts from other scenarios. This avoids confusion about pre-existing state.
 - If additional runners are available (e.g., `run_hello_world_private`, `run_hello_world_through_tail_call`), exercising them is valuable but not required for this scenario.
+
+## D7. `run` Pipeline and Post-Deploy Hooks
+
+### Goal
+
+Validate that `lgs run` collapses the build → IDL → localnet → topup → deploy chain into a single command, fires `[run].post_deploy` hooks with the documented environment, and respects the `restart_localnet` / `reset_localnet` precedence rules.
+
+### Preconditions
+
+- A default-template project exists at `$SCRATCH_ROOT/dogfood-default` with `setup` already complete.
+- No existing scaffold localnet running on the configured port (the scenario will start one). If one exists from a prior scenario, stop it first.
+- `wallet topup` has worked at least once for this project (D1 or D4 covers this).
+
+### Commands / Actions
+
+From the project root:
+
+```bash
+"$SCAFFOLD_BIN" run
+"$SCAFFOLD_BIN" run --restart-localnet
+"$SCAFFOLD_BIN" run --reset-localnet
+```
+
+Then add a `[run]` section to `scaffold.toml` and re-run:
+
+```toml
+[run]
+restart_localnet = false
+post_deploy = [
+  "echo 'sequencer:' $SEQUENCER_URL",
+  "echo 'idl:' $SCAFFOLD_IDL_DIR",
+  "echo 'project root:' $SCAFFOLD_PROJECT_ROOT",
+  "echo 'wallet home:' $NSSA_WALLET_HOME_DIR",
+]
+```
+
+```bash
+"$SCAFFOLD_BIN" run
+```
+
+### Expected Success Signals
+
+- The first `run` prints a numbered step header for each phase (`[1/5] Building...` through `[5/5] Deploying...`) and ends with a deployed-programs summary because no hooks are configured yet.
+- `run --restart-localnet` performs a stop+start of the sequencer regardless of `[run].restart_localnet`. With `[run].restart_localnet = false` (or unset) and no flag, a second `run` reuses the running localnet and prints `localnet already running (sequencer pid=...)`.
+- `run --reset-localnet` wipes RocksDB and the project wallet, restarts the sequencer, verifies block production, and clears `.scaffold/state/run_deploy.json` so the deploy step runs unconditionally.
+- After adding the `[run]` block, `run` reports `[6/6] Running 4 post-deploy hook(s)` and each hook prints a non-empty value for its env var. `cwd` for each hook is the project root (verifiable with a `pwd` hook).
+- A non-zero hook exit aborts the run with a clear `post-deploy hook exited with status N` message.
+
+### Failure Signals / Common Pitfalls
+
+- A `run` invocation without `--restart-localnet` that nonetheless restarts the sequencer is a regression in the localnet-reuse path.
+- Hooks running with `cwd` somewhere other than the project root, or missing any of `SEQUENCER_URL` / `NSSA_WALLET_HOME_DIR` / `SCAFFOLD_PROJECT_ROOT` / `SCAFFOLD_IDL_DIR`, is a regression in the env contract.
+- `run --reset-localnet --no-restart-localnet` should not error or warn — reset already includes a stop+start, so the restart override is intentionally a no-op.
+
+### Evidence to Capture
+
+- Console output of the first `run` showing the step headers and the deployed-programs summary.
+- Output of `run` after the `[run]` block is added, showing the `===> post_deploy[i/n]:` markers and the resolved env values.
+- Output of `run --reset-localnet` showing the wipe + verify-block-production lines.
+
+### Execution Notes
+
+- The CLI flag wins over the config: `--no-restart-localnet` overrides `[run].restart_localnet = true`, and vice versa.
+- Reset and restart are orthogonal inputs. Reset always implies a stop+start, so `--no-restart-localnet` plus reset does NOT prevent the sequencer from restarting.
+
+## D8. `run` Profiles, CLI Overrides, Idempotence, and Watch Loop
+
+### Goal
+
+Validate the advanced `run` surface introduced for multi-workflow projects: named `[run.profiles.<name>]` selection, ad-hoc `--post-deploy` / `--no-post-deploy` overrides, deploy idempotence keyed on guest-bin SHA-256, and the file-watch re-run loop.
+
+### Preconditions
+
+- D7 has been completed at least once for this project (so a deployed program exists and `.scaffold/state/run_deploy.json` is populated).
+- `inotify` filesystem events are available (Linux) or the platform's notify backend is functional. Headless CI without filesystem-event support can skip the `--watch` portion.
+
+### Commands / Actions
+
+Replace the inline `[run]` block from D7 with named profiles in `scaffold.toml`:
+
+```toml
+[run]
+default_profile = "play"
+
+[run.profiles.play]
+post_deploy = "echo profile=play"
+
+[run.profiles.e2e]
+reset_localnet = true
+post_deploy = ["echo profile=e2e step1", "echo profile=e2e step2"]
+```
+
+Then exercise:
+
+```bash
+"$SCAFFOLD_BIN" run                                  # uses default_profile = "play"
+"$SCAFFOLD_BIN" run --profile e2e                    # uses [run.profiles.e2e]
+"$SCAFFOLD_BIN" run --profile no-such-profile        # expect error listing known profiles
+"$SCAFFOLD_BIN" run --post-deploy "echo override"    # one-shot override
+"$SCAFFOLD_BIN" run --no-post-deploy                 # skip hooks
+"$SCAFFOLD_BIN" run --post-deploy "x" --no-post-deploy  # expect clap conflict error
+
+# Deploy idempotence
+"$SCAFFOLD_BIN" run                                  # second consecutive run with no source changes
+"$SCAFFOLD_BIN" run --force-deploy                   # forces deploy even when hashes match
+
+# Watch loop (interactive — Ctrl-C to exit)
+"$SCAFFOLD_BIN" run --watch
+# In another shell, touch a file under methods/ to trigger a re-run, then quit.
+```
+
+### Expected Success Signals
+
+- `run` with no `--profile` prints `Using [run.profiles.play] (default_profile)` and fires only the `play` hook.
+- `run --profile e2e` prints `Using [run.profiles.e2e]`, performs a localnet reset (because `reset_localnet = true` on that profile), and fires both `e2e` hooks in order.
+- `run --profile no-such-profile` errors with a message naming the profile and listing the known profiles `[play, e2e]`. Exit code is non-zero.
+- `--post-deploy "echo override"` ignores the resolved profile's hooks and runs only the override.
+- `--no-post-deploy` skips the post-deploy step entirely; the run prints the deployed-programs summary instead.
+- `--post-deploy` with `--no-post-deploy` errors at clap parse time with a `cannot be used with` message.
+- The second `run` (no `--force-deploy`) prints `Deploy skipped (guest binaries unchanged; --force-deploy to override)` and the `[5/N]` step is the skip message rather than a real deploy. `--force-deploy` re-deploys.
+- `run --watch` prints a `===> watching <project> for changes (Ctrl-C to exit)` line after the initial pipeline. Touching a file under `methods/` (or the project's source tree) triggers `===> change detected, re-running pipeline`, debounced ~500ms. Edits under `.scaffold/`, `target/`, or `.git/` do NOT trigger re-runs. Subsequent re-runs skip restart and reset regardless of the resolved profile's values. A failing hook prints the error and the watcher continues, waiting for the next change.
+
+### Failure Signals / Common Pitfalls
+
+- A run that silently falls back to inline `[run]` keys when `default_profile` is set but the named profile is missing is a regression — parse should fail with a clear error.
+- Deploy idempotence falsely skipping after the guest source changed (i.e., after a real `cargo build` produced a different `.bin`) is a regression. Verify by editing a guest source file, running `lgs build`, then `lgs run` — the deploy step should fire.
+- `--watch` re-running on every `target/` write would create a feedback loop. If you observe re-runs that you didn't trigger, capture the inciting file path.
+- Watch mode that tears down the localnet between iterations is a regression — only the initial iteration should ever (re)start the sequencer.
+
+### Evidence to Capture
+
+- Console output of `run` (default_profile path) and `run --profile e2e`, both showing the `Using [run.profiles.<name>]` banner.
+- Console output of the unknown-profile error showing the known-profiles list.
+- The two consecutive `run` invocations showing first a real deploy and then the skip message; the `--force-deploy` invocation showing a real deploy again.
+- A short transcript of `run --watch` showing one triggered re-run after a file edit.
+
+### Execution Notes
+
+- `--watch` is interactive and not suitable for unattended CI. Skip the watch step or replace it with a scripted background invocation that exits after one trigger.
+- Because the watch loop forces `restart=false` and `reset=false` on re-runs, a file edit that requires a clean localnet (e.g., new program initializer assumes empty state) needs a manual `lgs localnet reset` between iterations.
+- `--reset-localnet` on the profile path clears `.scaffold/state/run_deploy.json` so the next `run` deploys regardless of hash equality. Confirm by inspecting the state file before and after.
 
 ## L1. LEZ Template Bootstrap
 
@@ -1030,6 +1173,8 @@ ls .scaffold/basecamp/portable 2>/dev/null || find .scaffold -maxdepth 4 -name '
 - Changes to wallet flows or wallet-related defaults: rerun `D4`.
 - Changes to diagnostics, report contents, or redaction logic: rerun `D5`.
 - Changes to example runner binaries or template `src/bin/*` code: rerun `D6`.
+- Changes to `run` step ordering, post-deploy env vars, restart/reset precedence, or `[run]` config parsing: rerun `D7`.
+- Changes to `[run.profiles]` semantics, post-deploy CLI overrides, deploy idempotence (`run_deploy.json` schema, hash policy), or `--watch` behavior: rerun `D8`.
 - Changes to LEZ template scaffolding or generated outputs: rerun `L1`, `L2`, `L3`, and `L4`.
 - Changes to CLI argument parsing, help text, or error messages: rerun `E1`.
 - Changes to `create`/`new` flags or template selection logic: rerun `E2`.

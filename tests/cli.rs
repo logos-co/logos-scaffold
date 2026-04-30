@@ -2646,6 +2646,24 @@ fn completions_bash_help_shows_install_instructions() {
         );
 }
 
+// ─── run command tests ───────────────────────────────────────────────────────
+
+#[test]
+fn run_help_lists_restart_localnet_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("run")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--restart-localnet")
+                .and(predicate::str::contains("--no-restart-localnet"))
+                .and(predicate::str::contains(
+                    "Build, start localnet, top up wallet, deploy, and run post-deploy hook",
+                )),
+        );
+}
+
 #[test]
 fn completions_zsh_help_shows_install_instructions() {
     Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
@@ -2827,4 +2845,206 @@ fn completions_zsh_registers_both_names_in_pristine_shell() {
         stdout.contains("logos-scaffold=_lgs"),
         "expected logos-scaffold to be registered at compinit time, got: {stdout}"
     );
+}
+
+#[test]
+fn run_outside_project_fails_with_project_scoped_message() {
+    let temp = tempdir().expect("tempdir");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Not a logos-scaffold project"));
+}
+
+#[test]
+fn run_rejects_both_restart_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("run")
+        .arg("--restart-localnet")
+        .arg("--no-restart-localnet")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn run_rejects_both_reset_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("run")
+        .arg("--reset-localnet")
+        .arg("--no-reset-localnet")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn run_help_lists_reset_localnet_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("run")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--reset-localnet")
+                .and(predicate::str::contains("--no-reset-localnet")),
+        );
+}
+
+#[test]
+fn run_fails_at_build_step_in_mock_project() {
+    // The run command calls cmd_build_shortcut which runs cargo build --workspace.
+    // In a mock project without a real Cargo workspace, this fails at step 1.
+    // This tests that the pipeline starts and fails fast.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/5] Building..."));
+}
+
+#[test]
+fn run_with_post_deploy_hook_shows_6_steps_in_output() {
+    // When a post_deploy hook is configured, the step counter shows /6.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config(temp.path(), false, &["echo hello"]);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .assert()
+        .failure() // still fails at build
+        .stdout(predicate::str::contains("[1/6] Building..."));
+}
+
+#[test]
+fn run_with_multiple_post_deploy_hooks_uses_array_form() {
+    // Multiple hooks are configured as a TOML inline array; pipeline still has 6 steps.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config(temp.path(), false, &["echo one", "echo two"]);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .assert()
+        .failure() // still fails at build
+        .stdout(predicate::str::contains("[1/6] Building..."));
+}
+
+#[test]
+fn run_config_restart_localnet_is_parsed() {
+    // Verify that setting restart_localnet = true in config is picked up.
+    // The command will fail at build, but the config should be parsed.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config(temp.path(), true, &[]);
+
+    // Just verify it starts (config parsed without error) and hits the build step.
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/5] Building..."));
+}
+
+fn append_run_config(project_root: &Path, restart_localnet: bool, post_deploy: &[&str]) {
+    append_run_config_full(project_root, restart_localnet, false, post_deploy);
+}
+
+fn append_run_config_full(
+    project_root: &Path,
+    restart_localnet: bool,
+    reset_localnet: bool,
+    post_deploy: &[&str],
+) {
+    let toml_path = project_root.join("scaffold.toml");
+    let mut content = fs::read_to_string(&toml_path).expect("read scaffold.toml");
+    let quoted: Vec<String> = post_deploy.iter().map(|c| format!("\"{c}\"")).collect();
+    content.push_str(&format!(
+        "\n[run]\nrestart_localnet = {restart_localnet}\nreset_localnet = {reset_localnet}\npost_deploy = [{}]\n",
+        quoted.join(", ")
+    ));
+    fs::write(toml_path, content).expect("write scaffold.toml");
+}
+
+#[test]
+fn run_with_reset_localnet_flag_starts_pipeline() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .arg("--reset-localnet")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/5] Building..."));
+}
+
+#[test]
+fn run_with_reset_localnet_in_config_starts_pipeline() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config_full(temp.path(), false, true, &[]);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/5] Building..."));
+}
+
+#[test]
+fn run_with_both_reset_and_restart_starts_pipeline_without_warning() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config_full(temp.path(), true, true, &[]);
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .output()
+        .expect("run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("[1/5] Building..."),
+        "expected pipeline to start, stdout: {stdout}"
+    );
+    let combined = format!("{stdout}\n{stderr}");
+    let lower = combined.to_lowercase();
+    assert!(
+        !lower.contains("conflict") && !lower.contains("supersed"),
+        "expected no warning about reset+restart conflict, got: {combined}"
+    );
+}
+
+#[test]
+fn run_no_reset_flag_overrides_config_reset_true() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config_full(temp.path(), false, true, &[]);
+
+    // --no-reset-localnet must beat the config field (CLI overrides config).
+    // We can't observe the reset wasn't called from a mock project, but we
+    // can confirm the pipeline starts (no panic from conflicting parses).
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .arg("--no-reset-localnet")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/5] Building..."));
 }

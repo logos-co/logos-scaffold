@@ -9,7 +9,9 @@ use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
     DEFAULT_LEZ_PIN, FRAMEWORK_KIND_DEFAULT, LEZ_URL, VERSION,
 };
-use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
+use crate::model::{
+    Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef, RunConfig,
+};
 use crate::project::default_cache_root;
 use crate::state::write_text;
 use crate::template::project::ensure_scaffold_in_gitignore;
@@ -55,6 +57,7 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
             },
         },
         localnet: LocalnetConfig::default(),
+        run: RunConfig::default(),
         basecamp: None,
     };
 

@@ -182,6 +182,7 @@ mod tests {
                     },
                 },
                 localnet: LocalnetConfig::default(),
+                run: crate::model::RunConfig::default(),
                 basecamp: None,
             },
         }

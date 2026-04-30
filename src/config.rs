@@ -6,11 +6,59 @@ use crate::constants::{
 };
 use crate::model::{
     BasecampConfig, Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, ModuleEntry,
-    ModuleRole, RepoRef,
+    ModuleRole, RepoRef, RunConfig, RunProfile,
 };
 use crate::DynResult;
 
+/// Joins multi-line TOML inline arrays onto a single line so the
+/// line-oriented parser below can read them as one logical entry.
+fn fold_multiline_arrays(text: &str) -> String {
+    let mut out = String::new();
+    let mut accumulator = String::new();
+    let mut accumulating = false;
+
+    for raw in text.lines() {
+        if accumulating {
+            accumulator.push(' ');
+            accumulator.push_str(raw.trim());
+            if raw.contains(']') {
+                out.push_str(&accumulator);
+                out.push('\n');
+                accumulator.clear();
+                accumulating = false;
+            }
+            continue;
+        }
+
+        let trimmed = raw.trim_start();
+        // Detect "<key> = [" where the closing `]` is not on the same line.
+        // Section headers like `[run]` already balance on a single line.
+        if let Some(eq_idx) = trimmed.find('=') {
+            let after_eq = trimmed[eq_idx + 1..].trim_start();
+            if after_eq.starts_with('[') && !raw.contains(']') {
+                accumulator.clear();
+                accumulator.push_str(raw);
+                accumulating = true;
+                continue;
+            }
+        }
+
+        out.push_str(raw);
+        out.push('\n');
+    }
+
+    if accumulating {
+        // Unterminated array — fall through; downstream parser will report.
+        out.push_str(&accumulator);
+        out.push('\n');
+    }
+
+    out
+}
+
 pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
+    let folded = fold_multiline_arrays(text);
+    let text = folded.as_str();
     let mut section = String::new();
 
     let mut version = String::new();
@@ -30,6 +78,15 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     let mut framework_version = String::new();
     let mut framework_idl_spec = String::new();
     let mut framework_idl_path = String::new();
+
+    let mut run_restart_localnet: Option<bool> = None;
+    let mut run_reset_localnet: Option<bool> = None;
+    let mut run_post_deploy: Vec<String> = Vec::new();
+    let mut run_default_profile: Option<String> = None;
+    // Keyed by profile name. Values are partial — fields fill in as we
+    // walk `[run.profiles.<name>]` sub-sections.
+    let mut run_profiles_partial: std::collections::BTreeMap<String, RunProfile> =
+        std::collections::BTreeMap::new();
 
     let mut basecamp_seen = false;
     let mut basecamp_pin = String::new();
@@ -57,7 +114,8 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 
         let mut parts = line.splitn(2, '=');
         let key = parts.next().unwrap_or("").trim();
-        let value = unquote(parts.next().unwrap_or("").trim());
+        let raw_value = parts.next().unwrap_or("").trim().to_string();
+        let value = unquote(&raw_value);
 
         match section.as_str() {
             "scaffold" => {
@@ -144,6 +202,39 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     }
                 } else if key == "risc0_dev_mode" {
                     localnet_risc0_dev_mode = value != "false" && value != "0";
+                }
+            }
+            "run" => {
+                if key == "restart_localnet" {
+                    run_restart_localnet = Some(value != "false" && value != "0");
+                } else if key == "reset_localnet" {
+                    run_reset_localnet = Some(value != "false" && value != "0");
+                } else if key == "post_deploy" {
+                    if raw_value.starts_with('[') {
+                        run_post_deploy = parse_inline_string_array(&raw_value)?;
+                    } else if !value.is_empty() {
+                        run_post_deploy = vec![value];
+                    }
+                } else if key == "default_profile" {
+                    run_default_profile = if value.is_empty() { None } else { Some(value) };
+                }
+            }
+            s if s.starts_with("run.profiles.") => {
+                let name = s.trim_start_matches("run.profiles.").to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                let profile = run_profiles_partial.entry(name).or_default();
+                if key == "restart_localnet" {
+                    profile.restart_localnet = value != "false" && value != "0";
+                } else if key == "reset_localnet" {
+                    profile.reset_localnet = value != "false" && value != "0";
+                } else if key == "post_deploy" {
+                    if raw_value.starts_with('[') {
+                        profile.post_deploy = parse_inline_string_array(&raw_value)?;
+                    } else if !value.is_empty() {
+                        profile.post_deploy = vec![value];
+                    }
                 }
             }
             _ => {}
@@ -233,6 +324,22 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                 path: framework_idl_path,
             },
         },
+        run: {
+            if let Some(name) = &run_default_profile {
+                if !run_profiles_partial.contains_key(name) {
+                    bail!(
+                        "invalid scaffold.toml: [run].default_profile = {name:?} but no [run.profiles.{name}] section"
+                    );
+                }
+            }
+            RunConfig {
+                restart_localnet: run_restart_localnet.unwrap_or(false),
+                reset_localnet: run_reset_localnet.unwrap_or(false),
+                post_deploy: run_post_deploy,
+                default_profile: run_default_profile,
+                profiles: run_profiles_partial,
+            }
+        },
         basecamp,
     })
 }
@@ -281,6 +388,68 @@ pub(crate) fn serialize_config(cfg: &Config) -> DynResult<String> {
         cfg.localnet.port,
         cfg.localnet.risc0_dev_mode,
     );
+
+    let run_inline_set = cfg.run.restart_localnet
+        || cfg.run.reset_localnet
+        || !cfg.run.post_deploy.is_empty()
+        || cfg.run.default_profile.is_some();
+    if run_inline_set {
+        for (i, hook) in cfg.run.post_deploy.iter().enumerate() {
+            check_toml_value(&format!("run.post_deploy[{i}]"), hook)?;
+        }
+        if let Some(name) = &cfg.run.default_profile {
+            check_toml_value("run.default_profile", name)?;
+        }
+        out.push_str("\n[run]\n");
+        if cfg.run.restart_localnet {
+            out.push_str(&format!(
+                "restart_localnet = {}\n",
+                cfg.run.restart_localnet
+            ));
+        }
+        if cfg.run.reset_localnet {
+            out.push_str(&format!("reset_localnet = {}\n", cfg.run.reset_localnet));
+        }
+        if !cfg.run.post_deploy.is_empty() {
+            let quoted: Vec<String> = cfg
+                .run
+                .post_deploy
+                .iter()
+                .map(|h| format!("\"{}\"", escape_toml_string(h)))
+                .collect();
+            out.push_str(&format!("post_deploy = [{}]\n", quoted.join(", ")));
+        }
+        if let Some(name) = &cfg.run.default_profile {
+            out.push_str(&format!(
+                "default_profile = \"{}\"\n",
+                escape_toml_string(name)
+            ));
+        }
+    }
+    for (name, profile) in &cfg.run.profiles {
+        check_toml_value(&format!("run.profiles.{name}"), name)?;
+        for (i, hook) in profile.post_deploy.iter().enumerate() {
+            check_toml_value(&format!("run.profiles.{name}.post_deploy[{i}]"), hook)?;
+        }
+        out.push_str(&format!("\n[run.profiles.{}]\n", escape_toml_string(name)));
+        if profile.restart_localnet {
+            out.push_str(&format!(
+                "restart_localnet = {}\n",
+                profile.restart_localnet
+            ));
+        }
+        if profile.reset_localnet {
+            out.push_str(&format!("reset_localnet = {}\n", profile.reset_localnet));
+        }
+        if !profile.post_deploy.is_empty() {
+            let quoted: Vec<String> = profile
+                .post_deploy
+                .iter()
+                .map(|h| format!("\"{}\"", escape_toml_string(h)))
+                .collect();
+            out.push_str(&format!("post_deploy = [{}]\n", quoted.join(", ")));
+        }
+    }
 
     if let Some(bc) = &cfg.basecamp {
         check_toml_value("basecamp.pin", &bc.pin)?;
@@ -331,6 +500,62 @@ fn check_toml_value(key: &str, value: &str) -> DynResult<()> {
         );
     }
     Ok(())
+}
+
+fn parse_inline_string_array(raw: &str) -> DynResult<Vec<String>> {
+    let trimmed = raw.trim();
+    let inner = trimmed
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .ok_or_else(|| anyhow::anyhow!("malformed array (expected `[\"...\", ...]`): {trimmed}"))?;
+
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut item_open = false;
+    let mut chars = inner.chars();
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            match c {
+                '\\' => match chars.next() {
+                    Some('n') => current.push('\n'),
+                    Some('t') => current.push('\t'),
+                    Some('\\') => current.push('\\'),
+                    Some('"') => current.push('"'),
+                    Some(other) => current.push(other),
+                    None => bail!("trailing backslash in array string: {trimmed}"),
+                },
+                '"' => {
+                    items.push(std::mem::take(&mut current));
+                    in_string = false;
+                    item_open = false;
+                }
+                _ => current.push(c),
+            }
+        } else {
+            match c {
+                '"' => {
+                    if item_open {
+                        bail!("expected `,` between array items: {trimmed}");
+                    }
+                    in_string = true;
+                    item_open = true;
+                }
+                ',' => {
+                    item_open = false;
+                }
+                ' ' | '\t' | '\n' | '\r' => {}
+                _ => bail!("unexpected character `{c}` in array: {trimmed}"),
+            }
+        }
+    }
+
+    if in_string {
+        bail!("unterminated string in array: {trimmed}");
+    }
+
+    Ok(items)
 }
 
 pub(crate) fn unquote(value: &str) -> String {
@@ -395,6 +620,136 @@ pin = "deadbeef"
         assert_eq!(cfg.localnet.port, 3040);
     }
 
+    #[test]
+    fn parse_config_without_run_section_uses_defaults() {
+        let cfg = parse_config(&minimal_scaffold_toml()).expect("parse");
+        assert!(!cfg.run.restart_localnet);
+        assert!(cfg.run.post_deploy.is_empty());
+    }
+
+    #[test]
+    fn parse_config_with_run_section_legacy_string() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\nrestart_localnet = true\npost_deploy = \"echo hello\"\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert!(cfg.run.restart_localnet);
+        assert_eq!(cfg.run.post_deploy, vec!["echo hello".to_string()]);
+    }
+
+    #[test]
+    fn parse_config_with_run_section_array() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\npost_deploy = [\"echo one\", \"echo two\", \"echo three\"]\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert_eq!(
+            cfg.run.post_deploy,
+            vec![
+                "echo one".to_string(),
+                "echo two".to_string(),
+                "echo three".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_config_with_multiline_array() {
+        let toml =
+            minimal_scaffold_toml() + "[run]\npost_deploy = [\n  \"echo a\",\n  \"echo b\",\n]\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert_eq!(
+            cfg.run.post_deploy,
+            vec!["echo a".to_string(), "echo b".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_config_run_section_empty_array() {
+        let toml = minimal_scaffold_toml() + "[run]\npost_deploy = []\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert!(cfg.run.post_deploy.is_empty());
+    }
+
+    #[test]
+    fn parse_config_rejects_malformed_array() {
+        let toml = minimal_scaffold_toml() + "[run]\npost_deploy = [\"unterminated\n";
+        assert!(parse_config(&toml).is_err());
+    }
+
+    #[test]
+    fn serialize_config_omits_run_section_when_defaults() {
+        let cfg = parse_config(&minimal_scaffold_toml()).expect("parse");
+        let serialized = serialize_config(&cfg).expect("serialize");
+        assert!(
+            !serialized.contains("[run]"),
+            "should not contain [run] section when defaults"
+        );
+    }
+
+    #[test]
+    fn serialize_config_includes_run_section_when_non_default() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\nrestart_localnet = true\npost_deploy = [\"spel --idl foo.json\"]\n";
+        let cfg = parse_config(&toml).expect("parse");
+        let serialized = serialize_config(&cfg).expect("serialize");
+        assert!(serialized.contains("[run]"));
+        assert!(serialized.contains("restart_localnet = true"));
+        assert!(serialized.contains("spel --idl foo.json"));
+    }
+
+    #[test]
+    fn parse_config_with_reset_localnet_true() {
+        let toml = minimal_scaffold_toml() + "[run]\nreset_localnet = true\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert!(cfg.run.reset_localnet);
+    }
+
+    #[test]
+    fn parse_config_reset_localnet_defaults_to_false() {
+        let cfg = parse_config(&minimal_scaffold_toml()).expect("parse");
+        assert!(!cfg.run.reset_localnet);
+    }
+
+    #[test]
+    fn serialize_config_emits_reset_localnet_when_set() {
+        let toml = minimal_scaffold_toml() + "[run]\nreset_localnet = true\n";
+        let cfg = parse_config(&toml).expect("parse");
+        let out = serialize_config(&cfg).expect("serialize");
+        assert!(out.contains("reset_localnet = true"), "got: {out}");
+    }
+
+    #[test]
+    fn serialize_config_omits_reset_localnet_when_default() {
+        let cfg = parse_config(&minimal_scaffold_toml()).expect("parse");
+        let out = serialize_config(&cfg).expect("serialize");
+        assert!(
+            !out.contains("reset_localnet"),
+            "should omit reset_localnet at default, got: {out}"
+        );
+    }
+
+    #[test]
+    fn reset_localnet_round_trips_through_parse_serialize() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\nrestart_localnet = false\nreset_localnet = true\npost_deploy = [\"echo a\"]\n";
+        let cfg1 = parse_config(&toml).expect("parse");
+        let serialized = serialize_config(&cfg1).expect("serialize");
+        let cfg2 = parse_config(&serialized).expect("re-parse");
+        assert_eq!(cfg1.run.reset_localnet, cfg2.run.reset_localnet);
+        assert!(cfg2.run.reset_localnet);
+    }
+
+    #[test]
+    fn run_config_round_trips_through_parse_serialize() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\nrestart_localnet = true\npost_deploy = [\"echo a\", \"echo b\"]\n";
+        let cfg1 = parse_config(&toml).expect("parse");
+        let serialized = serialize_config(&cfg1).expect("serialize");
+        let cfg2 = parse_config(&serialized).expect("re-parse");
+        assert_eq!(cfg1.run.restart_localnet, cfg2.run.restart_localnet);
+        assert_eq!(cfg1.run.post_deploy, cfg2.run.post_deploy);
+        assert_eq!(cfg2.run.post_deploy.len(), 2);
+    }
+
     fn base_config() -> Config {
         Config {
             version: "0.1.0".to_string(),
@@ -415,6 +770,7 @@ pin = "deadbeef"
                     path: DEFAULT_FRAMEWORK_IDL_PATH.to_string(),
                 },
             },
+            run: RunConfig::default(),
             basecamp: None,
         }
     }
@@ -663,5 +1019,100 @@ role = "project"
         assert_eq!(bc.pin, "sha1");
         assert_eq!(bc.port_base, 60000);
         assert_eq!(bc.port_stride, 10);
+    }
+
+    #[test]
+    fn parse_config_with_run_profile_subsection() {
+        let toml = minimal_scaffold_toml()
+            + "[run.profiles.e2e]\nreset_localnet = true\npost_deploy = [\"scripts/e2e.sh\"]\n";
+        let cfg = parse_config(&toml).expect("parse");
+        let prof = cfg.run.profiles.get("e2e").expect("e2e present");
+        assert!(prof.reset_localnet);
+        assert_eq!(prof.post_deploy, vec!["scripts/e2e.sh".to_string()]);
+    }
+
+    #[test]
+    fn parse_config_default_profile_must_exist() {
+        let toml = minimal_scaffold_toml() + "[run]\ndefault_profile = \"missing\"\n";
+        let err = parse_config(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains("missing")
+                && err.to_string().contains("[run.profiles.missing]"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_config_default_profile_resolves() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\ndefault_profile = \"play\"\n[run.profiles.play]\npost_deploy = \"echo play\"\n";
+        let cfg = parse_config(&toml).expect("parse");
+        assert_eq!(cfg.run.default_profile.as_deref(), Some("play"));
+        let resolved = cfg.run.resolve_profile(None).expect("resolve");
+        assert_eq!(resolved.post_deploy, vec!["echo play".to_string()]);
+    }
+
+    #[test]
+    fn resolve_profile_explicit_selector_wins() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\npost_deploy = [\"echo inline\"]\ndefault_profile = \"play\"\n[run.profiles.play]\npost_deploy = \"echo play\"\n[run.profiles.e2e]\npost_deploy = \"echo e2e\"\n";
+        let cfg = parse_config(&toml).expect("parse");
+        let r = cfg.run.resolve_profile(Some("e2e")).expect("resolve");
+        assert_eq!(r.post_deploy, vec!["echo e2e".to_string()]);
+    }
+
+    #[test]
+    fn resolve_profile_unknown_name_errors_with_known_list() {
+        let toml = minimal_scaffold_toml()
+            + "[run.profiles.play]\npost_deploy = \"echo play\"\n[run.profiles.e2e]\npost_deploy = \"echo e2e\"\n";
+        let cfg = parse_config(&toml).expect("parse");
+        let err = cfg.run.resolve_profile(Some("missing")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("missing"), "{msg}");
+        assert!(msg.contains("play") && msg.contains("e2e"), "{msg}");
+    }
+
+    #[test]
+    fn resolve_profile_falls_back_to_inline_when_no_default() {
+        let toml = minimal_scaffold_toml() + "[run]\nrestart_localnet = true\n";
+        let cfg = parse_config(&toml).expect("parse");
+        let r = cfg.run.resolve_profile(None).expect("resolve");
+        assert!(r.restart_localnet);
+        assert!(r.post_deploy.is_empty());
+    }
+
+    #[test]
+    fn run_profiles_round_trip_through_parse_serialize() {
+        let toml = minimal_scaffold_toml()
+            + "[run]\ndefault_profile = \"play\"\n[run.profiles.play]\npost_deploy = [\"echo play\"]\n[run.profiles.e2e]\nreset_localnet = true\npost_deploy = [\"echo e2e\"]\n";
+        let cfg1 = parse_config(&toml).expect("parse");
+        let serialized = serialize_config(&cfg1).expect("serialize");
+        let cfg2 = parse_config(&serialized).expect("re-parse");
+        assert_eq!(cfg2.run.default_profile.as_deref(), Some("play"));
+        assert_eq!(cfg2.run.profiles.len(), 2);
+        let e2e = cfg2.run.profiles.get("e2e").expect("e2e");
+        assert!(e2e.reset_localnet);
+        assert_eq!(e2e.post_deploy, vec!["echo e2e".to_string()]);
+    }
+
+    #[test]
+    fn serialize_rejects_newline_in_profile_post_deploy() {
+        let mut cfg = base_config();
+        let mut profiles = std::collections::BTreeMap::new();
+        profiles.insert(
+            "play".to_string(),
+            RunProfile {
+                restart_localnet: false,
+                reset_localnet: false,
+                post_deploy: vec!["echo a\n[run.profiles.evil]".to_string()],
+            },
+        );
+        cfg.run = RunConfig {
+            profiles,
+            ..RunConfig::default()
+        };
+        let err = serialize_config(&cfg).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("post_deploy") && msg.contains("play"), "{msg}");
     }
 }
