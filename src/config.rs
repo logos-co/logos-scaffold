@@ -357,17 +357,25 @@ pub(crate) fn serialize_config(cfg: &Config) -> DynResult<String> {
         for (i, hook) in cfg.run.post_deploy.iter().enumerate() {
             check_toml_value(&format!("run.post_deploy[{i}]"), hook)?;
         }
-        out.push_str(&format!(
-            "\n[run]\nrestart_localnet = {}\nreset_localnet = {}\n",
-            cfg.run.restart_localnet, cfg.run.reset_localnet,
-        ));
-        let quoted: Vec<String> = cfg
-            .run
-            .post_deploy
-            .iter()
-            .map(|h| format!("\"{}\"", escape_toml_string(h)))
-            .collect();
-        out.push_str(&format!("post_deploy = [{}]\n", quoted.join(", ")));
+        out.push_str("\n[run]\n");
+        if cfg.run.restart_localnet {
+            out.push_str(&format!(
+                "restart_localnet = {}\n",
+                cfg.run.restart_localnet
+            ));
+        }
+        if cfg.run.reset_localnet {
+            out.push_str(&format!("reset_localnet = {}\n", cfg.run.reset_localnet));
+        }
+        if !cfg.run.post_deploy.is_empty() {
+            let quoted: Vec<String> = cfg
+                .run
+                .post_deploy
+                .iter()
+                .map(|h| format!("\"{}\"", escape_toml_string(h)))
+                .collect();
+            out.push_str(&format!("post_deploy = [{}]\n", quoted.join(", ")));
+        }
     }
 
     if let Some(bc) = &cfg.basecamp {
