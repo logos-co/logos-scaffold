@@ -628,12 +628,13 @@ fn verify_block_production(localnet_addr: &str, timeout_sec: u64) -> DynResult<(
     }
 }
 
-
 /// Search for the r0vm binary installed by rzup.
 /// rzup installs r0vm under ~/.risc0/extensions/<version>/r0vm but does not add it to PATH.
 fn find_r0vm_path() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    let risc0_ext = std::path::Path::new(&home).join(".risc0").join("extensions");
+    let risc0_ext = std::path::Path::new(&home)
+        .join(".risc0")
+        .join("extensions");
 
     // Walk extension dirs and return first r0vm found
     let entries = std::fs::read_dir(&risc0_ext).ok()?;
