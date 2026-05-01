@@ -1533,6 +1533,110 @@ fn deploy_json_output_is_pure_json_no_command_echo() {
 }
 
 #[test]
+fn deploy_multi_program_json_emits_deploys_array() {
+    // Auto-discovery deploy with --json must produce one JSON line of the
+    // shape `{"deploys":[{...},{...}]}` — pure JSON, no command echoes,
+    // no human-readable text. One entry per program with program_id
+    // populated when extraction succeeds.
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "alpha");
+    write_guest_program(temp.path(), "beta");
+    write_guest_binary(temp.path(), "alpha");
+    write_guest_binary(temp.path(), "beta");
+    let alpha_id = expected_stub_program_id("alpha.bin");
+    let beta_id = expected_stub_program_id("beta.bin");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("--json")
+        .output()
+        .expect("run deploy --json");
+    assert!(
+        output.status.success(),
+        "multi-program deploy --json must succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with("{\"deploys\":[") && trimmed.ends_with("]}"),
+        "stdout must be a {{\"deploys\":[…]}} JSON line; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("$ "),
+        "stdout must not carry the `$ <cmd>` command echo; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("OK  ") && !stdout.contains("Note:") && !stdout.contains("Summary:"),
+        "stdout must not carry human-readable text; got:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.lines().filter(|l| !l.is_empty()).count(),
+        1,
+        "stdout must be a single JSON line; got:\n{stdout}"
+    );
+    assert!(
+        trimmed.contains(&format!("\"program_id\":\"{alpha_id}\"")),
+        "missing alpha program_id in:\n{trimmed}"
+    );
+    assert!(
+        trimmed.contains(&format!("\"program_id\":\"{beta_id}\"")),
+        "missing beta program_id in:\n{trimmed}"
+    );
+    assert_eq!(
+        trimmed.matches("\"status\":\"submitted\"").count(),
+        2,
+        "expected exactly two submitted entries in:\n{trimmed}"
+    );
+}
+
+#[test]
+fn deploy_multi_program_json_records_failed_entries_with_error() {
+    // Mixed-result deploy under --json: failed programs appear in the
+    // array with status:"failed" and an `error` field, no program_id.
+    // Process exits non-zero (any failure fails the deploy).
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "alpha");
+    write_guest_program(temp.path(), "beta");
+    write_guest_binary(temp.path(), "alpha");
+    write_guest_binary(temp.path(), "beta");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("FAIL_PROGRAM", "beta.bin")
+        .arg("deploy")
+        .arg("--json")
+        .output()
+        .expect("run deploy --json with one failure");
+    assert!(
+        !output.status.success(),
+        "must exit non-zero on any failure"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with("{\"deploys\":[") && trimmed.ends_with("]}"),
+        "stdout must remain a JSON object even with failures; got:\n{stdout}"
+    );
+    assert!(
+        trimmed.contains("\"status\":\"submitted\"") && trimmed.contains("\"program\":\"alpha\""),
+        "alpha must be present and submitted in:\n{trimmed}"
+    );
+    assert!(
+        trimmed.contains("\"status\":\"failed\"") && trimmed.contains("\"program\":\"beta\""),
+        "beta must be present and failed in:\n{trimmed}"
+    );
+    assert!(
+        trimmed.contains("\"error\":\""),
+        "failed entries must carry an `error` field; got:\n{trimmed}"
+    );
+}
+
+#[test]
 fn deploy_json_omits_tx_when_wallet_returns_none() {
     // Wallet stub today emits a `tx_hash=…` line. To prove the JSON shape
     // omits `tx` when no value is available, set WALLET_NO_TX=1 — the stub

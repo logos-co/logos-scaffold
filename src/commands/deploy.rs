@@ -83,21 +83,32 @@ pub(crate) fn cmd_deploy(
 
     preflight_sequencer_reachability(&sequencer_addr)?;
 
+    // Suppress the per-subprocess `$ <cmd>` echoes while `--json` is in
+    // effect so stdout stays a single JSON object. Same pattern
+    // `deploy_single_program` and `cmd_doctor` already use.
+    if json {
+        set_command_echo(false);
+    }
+
     let mut results = Vec::new();
     for program in selected_programs {
         let Some(binary_path) = discovered.get(&program).cloned() else {
-            let searched = GUEST_BIN_SEARCH_ROOTS
-                .iter()
-                .map(|r| project.root.join(r).display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            println!("FAIL {program} deployment failed");
-            println!("  Error: missing binary `{program}.bin` (searched: {searched})");
-            println!("  Hint: run `logos-scaffold build` first.");
+            if !json {
+                let searched = GUEST_BIN_SEARCH_ROOTS
+                    .iter()
+                    .map(|r| project.root.join(r).display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("FAIL {program} deployment failed");
+                println!("  Error: missing binary `{program}.bin` (searched: {searched})");
+                println!("  Hint: run `logos-scaffold build` first.");
+            }
             results.push(DeployResult {
                 program,
                 status: DeployStatus::Failed,
                 detail: "missing program binary".to_string(),
+                tx: None,
+                program_id: None,
             });
             continue;
         };
@@ -114,12 +125,16 @@ pub(crate) fn cmd_deploy(
         let output = match run_with_stdin(command, format!("{}\n", wallet_password())) {
             Ok(output) => output,
             Err(err) => {
-                println!("FAIL {program} deployment failed");
-                println!("  Error: failed to execute wallet command: {err}");
+                if !json {
+                    println!("FAIL {program} deployment failed");
+                    println!("  Error: failed to execute wallet command: {err}");
+                }
                 results.push(DeployResult {
                     program,
                     status: DeployStatus::Failed,
                     detail: format!("wallet command invocation failed: {err}"),
+                    tx: None,
+                    program_id: None,
                 });
                 continue;
             }
@@ -130,38 +145,51 @@ pub(crate) fn cmd_deploy(
         if !output.status.success() {
             let summary = summarize_command_failure(&output.stdout, &output.stderr);
             let combined = format!("{}\n{}", output.stdout, output.stderr);
-            println!("FAIL {program} deployment failed");
-            println!("  Error: {summary}");
-            if is_connectivity_failure(&combined) {
-                println!("  Hint: {}", sequencer_unreachable_hint(&sequencer_addr));
-                results.push(DeployResult {
-                    program,
-                    status: DeployStatus::Failed,
-                    detail: format!("{summary}; sequencer connectivity failure"),
-                });
-            } else {
-                println!("  Hint: inspect sequencer logs and retry.");
-                results.push(DeployResult {
-                    program,
-                    status: DeployStatus::Failed,
-                    detail: summary,
-                });
+            let connectivity_failure = is_connectivity_failure(&combined);
+            if !json {
+                println!("FAIL {program} deployment failed");
+                println!("  Error: {summary}");
+                if connectivity_failure {
+                    println!("  Hint: {}", sequencer_unreachable_hint(&sequencer_addr));
+                } else {
+                    println!("  Hint: inspect sequencer logs and retry.");
+                }
             }
+            let detail = if connectivity_failure {
+                format!("{summary}; sequencer connectivity failure")
+            } else {
+                summary
+            };
+            results.push(DeployResult {
+                program,
+                status: DeployStatus::Failed,
+                detail,
+                tx,
+                program_id: None,
+            });
             continue;
         }
 
         let program_id = extract_program_id(&spel_bin, &binary_path);
 
-        println!("OK  {program} submitted");
-        if let Some(tx) = &tx {
-            println!("  tx: {tx}");
+        if !json {
+            println!("OK  {program} submitted");
+            if let Some(tx) = &tx {
+                println!("  tx: {tx}");
+            }
+            print_program_id_line(&program_id);
         }
-        print_program_id_line(&program_id);
         results.push(DeployResult {
             program,
             status: DeployStatus::Submitted,
             detail: "wallet submission command exited successfully".to_string(),
+            tx,
+            program_id,
         });
+    }
+
+    if json {
+        set_command_echo(true);
     }
 
     let success_count = results
@@ -173,17 +201,26 @@ pub(crate) fn cmd_deploy(
         .filter(|result| matches!(result.status, DeployStatus::Failed))
         .count();
 
-    println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LEZ wallet/RPC for scaffold. Program ID is computed locally from the submitted ELF.");
-    println!("Summary:");
-    println!("  Succeeded: {success_count}");
-    println!("  Failed: {failed_count}");
-    println!("  Results:");
-    for result in &results {
-        // Per-program details (program_id, tx) are printed once in the OK
-        // block above. Summary only carries the status label + detail to
-        // stay terse and avoid grep ambiguity ("which line is canonical?").
-        println!("    {}: {}", result.program, result.status.label());
-        println!("      {}", result.detail);
+    if json {
+        // Single-line JSON object on stdout. One entry per attempted
+        // program; absent fields (tx, program_id) are omitted, not nulled,
+        // matching the single-program --program-path contract. Failed
+        // entries carry `error` instead of `program_id`.
+        let entries: Vec<String> = results.iter().map(render_deploy_result_json).collect();
+        println!("{{\"deploys\":[{}]}}", entries.join(","));
+    } else {
+        println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LEZ wallet/RPC for scaffold. Program ID is computed locally from the submitted ELF.");
+        println!("Summary:");
+        println!("  Succeeded: {success_count}");
+        println!("  Failed: {failed_count}");
+        println!("  Results:");
+        for result in &results {
+            // Per-program details (program_id, tx) are printed once in the OK
+            // block above. Summary only carries the status label + detail to
+            // stay terse and avoid grep ambiguity ("which line is canonical?").
+            println!("    {}: {}", result.program, result.status.label());
+            println!("      {}", result.detail);
+        }
     }
 
     if failed_count > 0 {
@@ -191,6 +228,33 @@ pub(crate) fn cmd_deploy(
     }
 
     Ok(())
+}
+
+fn render_deploy_result_json(result: &DeployResult) -> String {
+    let mut parts: Vec<String> = vec![
+        format!("\"status\":\"{}\"", result.status.label()),
+        format!("\"program\":\"{}\"", result.program),
+    ];
+    if let Some(tx) = &result.tx {
+        parts.push(format!("\"tx\":\"{tx}\""));
+    }
+    match result.status {
+        DeployStatus::Submitted => {
+            if let Some(id) = &result.program_id {
+                parts.push(format!("\"program_id\":\"{id}\""));
+            }
+        }
+        DeployStatus::Failed => {
+            // Escape backslashes and quotes in the human-readable detail so
+            // it survives embedding in a JSON string literal. Other control
+            // chars are unlikely here (detail comes from wallet output
+            // already line-trimmed by summarize_command_failure) but keep
+            // the escape minimal and explicit.
+            let escaped = result.detail.replace('\\', "\\\\").replace('"', "\\\"");
+            parts.push(format!("\"error\":\"{escaped}\""));
+        }
+    }
+    format!("{{{}}}", parts.join(","))
 }
 
 fn preflight_sequencer_reachability(sequencer_addr: &str) -> DynResult<()> {
@@ -438,6 +502,8 @@ struct DeployResult {
     program: String,
     status: DeployStatus,
     detail: String,
+    tx: Option<String>,
+    program_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
