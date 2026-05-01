@@ -13,7 +13,7 @@ use crate::doctor_checks::{
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
 use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo};
-use crate::project::load_project;
+use crate::project::{load_project, resolve_cache_root};
 use crate::state::read_localnet_state;
 use crate::DynResult;
 
@@ -109,6 +109,18 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     });
 
     rows.push(check_standalone_support(&lez));
+
+    let (resolved_cache_root, cache_root_source) = resolve_cache_root(&project)?;
+    rows.push(CheckRow {
+        status: CheckStatus::Pass,
+        name: "cache root".to_string(),
+        detail: format!(
+            "{} (from {})",
+            resolved_cache_root.display(),
+            cache_root_source.label()
+        ),
+        remediation: None,
+    });
 
     rows.push(check_path(
         "sequencer binary",
@@ -283,6 +295,13 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         }
     }
 
+    Ok(finalize_report(rows))
+}
+
+/// Roll up rows into a `DoctorReport` with summary, status, and next-steps.
+/// Shared by top-level `doctor` and `basecamp doctor` so output formatting
+/// stays identical.
+pub(crate) fn finalize_report(rows: Vec<CheckRow>) -> DoctorReport {
     let summary = DoctorSummary {
         pass: rows
             .iter()
@@ -308,12 +327,29 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
 
     let next_steps = derive_next_steps(&rows);
 
-    Ok(DoctorReport {
+    DoctorReport {
         status: doctor_status.to_string(),
         summary,
         checks: rows,
         next_steps,
-    })
+    }
+}
+
+/// Print a `DoctorReport` to stdout in human-readable form. Matches what
+/// `cmd_doctor` emits — same formatting for `basecamp doctor`.
+pub(crate) fn print_report(report: &DoctorReport) {
+    print_rows(&report.checks);
+    println!(
+        "Summary: {} PASS, {} WARN, {} FAIL",
+        report.summary.pass, report.summary.warn, report.summary.fail
+    );
+    println!("Doctor status: {}", report.status);
+    if !report.next_steps.is_empty() {
+        println!("Next steps:");
+        for step in &report.next_steps {
+            println!("- {step}");
+        }
+    }
 }
 
 fn is_localnet_connectivity_failure(stdout: &str, stderr: &str) -> bool {

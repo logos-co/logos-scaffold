@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::process::run_checked;
-use crate::project::{ensure_dir_exists, load_project, save_project_config};
+use crate::project::{ensure_dir_exists, load_project, resolve_cache_root, save_project_config};
 use crate::repo::{sync_repo_to_pin, RepoSyncOptions};
 use crate::state::prepare_wallet_home;
 use crate::DynResult;
@@ -16,7 +16,7 @@ use super::wallet_support::{
 pub(crate) fn cmd_setup() -> DynResult<()> {
     let mut project = load_project()?;
     let lez = PathBuf::from(&project.config.lez.path);
-    let cache_root = PathBuf::from(&project.config.cache_root);
+    let (cache_root, _) = resolve_cache_root(&project)?;
     let sync_opts = if is_cache_managed_repo_path(&cache_root, &lez) {
         RepoSyncOptions::auto_reclone_cache_repo()
     } else {

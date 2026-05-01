@@ -12,7 +12,6 @@ use flate2::Compression;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::deploy::{candidate_guest_binary_paths, candidate_guest_binary_roots};
 use super::doctor::build_doctor_report;
 use super::localnet::build_localnet_status_for_project;
 use crate::model::{
@@ -24,6 +23,7 @@ use crate::state::write_text;
 use crate::DynResult;
 
 const REPORT_WARNING: &str = "WARNING: This diagnostics bundle is sanitized on a best-effort basis and may still contain sensitive data. Inspect every file before sharing it publicly.";
+
 pub(crate) fn cmd_report(out: Option<PathBuf>, tail: usize) -> DynResult<()> {
     let project = load_project().context(
         "This command must be run inside a logos-scaffold project.\nNext step: cd into your scaffolded project directory and retry.",
@@ -645,41 +645,34 @@ fn collect_build_evidence(
     }
     guest_programs.sort();
 
+    let discovered = super::deploy::discover_program_binaries(&project.root, &guest_programs);
+
     let mut expected_binaries = Vec::new();
     for program in &guest_programs {
-        for path in candidate_guest_binary_paths(&project.root, program) {
-            expected_binaries.push(BinaryArtifactSummary {
-                program: program.clone(),
-                relative_path: scrub_path_string(&rel_path(&path, &project.root), sanitize_ctx),
-                exists: path.exists(),
-                modified_unix: file_mtime_unix(&path),
-                size_bytes: file_size_bytes(&path),
-            });
-        }
+        let path = discovered
+            .get(program)
+            .cloned()
+            .unwrap_or_else(|| project.root.join(format!("{program}.bin")));
+        let exists = discovered.contains_key(program);
+        expected_binaries.push(BinaryArtifactSummary {
+            program: program.clone(),
+            relative_path: scrub_path_string(&rel_path(&path, &project.root), sanitize_ctx),
+            exists,
+            modified_unix: if exists { file_mtime_unix(&path) } else { None },
+            size_bytes: if exists { file_size_bytes(&path) } else { None },
+        });
     }
 
-    let mut discovered_binaries = Vec::new();
-    for guest_bin_dir in candidate_guest_binary_roots(&project.root) {
-        if let Ok(entries) = fs::read_dir(&guest_bin_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) != Some("bin") {
-                    continue;
-                }
-                discovered_binaries.push(BinaryArtifactSummary {
-                    program: path
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    relative_path: scrub_path_string(&rel_path(&path, &project.root), sanitize_ctx),
-                    exists: true,
-                    modified_unix: file_mtime_unix(&path),
-                    size_bytes: file_size_bytes(&path),
-                });
-            }
-        }
-    }
+    let mut discovered_binaries: Vec<BinaryArtifactSummary> = discovered
+        .iter()
+        .map(|(program, path)| BinaryArtifactSummary {
+            program: program.clone(),
+            relative_path: scrub_path_string(&rel_path(path, &project.root), sanitize_ctx),
+            exists: true,
+            modified_unix: file_mtime_unix(path),
+            size_bytes: file_size_bytes(path),
+        })
+        .collect();
     discovered_binaries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
     BuildEvidenceReport {
