@@ -17,26 +17,21 @@ pub(crate) fn cmd_build_shortcut(project_dir: Option<PathBuf>) -> DynResult<()> 
         let cwd = env::current_dir()?;
 
         let project = load_project()?;
+        build_workspace_for_current_project(&cwd)?;
         match project.config.framework.kind.as_str() {
-            FRAMEWORK_KIND_DEFAULT => {
-                build_workspace_for_current_project(&cwd)?;
-                build_methods_guests(&cwd)?;
-            }
+            FRAMEWORK_KIND_DEFAULT => {}
             FRAMEWORK_KIND_LEZ_FRAMEWORK => {
-                build_workspace_for_current_project(&cwd)?;
                 build_idl_for_current_project()?;
                 generate_clients_from_current_idl()?;
-                build_methods_guests(&cwd)?;
             }
             other => {
-                build_workspace_for_current_project(&cwd)?;
-                build_methods_guests(&cwd)?;
                 println!(
                     "Skipping framework-specific build steps for framework kind `{}`",
                     other
                 );
             }
         }
+        build_methods_guests(&cwd)?;
 
         Ok(())
     })
@@ -73,4 +68,43 @@ fn build_methods_guests(cwd: &Path) -> DynResult<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_methods_guests;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn build_methods_guests_is_noop_when_methods_dir_absent() {
+        let tmp = tempdir().expect("create temp dir");
+        build_methods_guests(tmp.path()).expect("no methods/ ⇒ Ok");
+    }
+
+    #[test]
+    fn build_methods_guests_is_noop_when_methods_dir_lacks_cargo_toml() {
+        let tmp = tempdir().expect("create temp dir");
+        fs::create_dir(tmp.path().join("methods")).expect("mkdir methods");
+        build_methods_guests(tmp.path()).expect("methods/ without Cargo.toml ⇒ Ok");
+    }
+
+    #[test]
+    fn build_methods_guests_invokes_cargo_when_manifest_present() {
+        let tmp = tempdir().expect("create temp dir");
+        let methods = tmp.path().join("methods");
+        fs::create_dir(&methods).expect("mkdir methods");
+        // Intentionally invalid manifest content so cargo errors out fast and
+        // we can assert that the cargo invocation was actually attempted (vs.
+        // silently no-op'd by our own gate).
+        fs::write(methods.join("Cargo.toml"), "this is not valid toml")
+            .expect("write methods/Cargo.toml");
+        let err = build_methods_guests(tmp.path())
+            .expect_err("invalid manifest ⇒ cargo should fail and propagate");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("cargo build --release --manifest-path methods/Cargo.toml"),
+            "expected error to mention the cargo invocation; got: {msg}"
+        );
+    }
 }
