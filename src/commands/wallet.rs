@@ -262,14 +262,13 @@ fn cmd_wallet_topup(
 
     if json {
         let tx = extract_tx_identifier(&output.stdout, &output.stderr);
-        let tx_val = tx
-            .as_deref()
-            .map(|t| format!("\"{}\"", t))
-            .unwrap_or_else(|| "null".to_string());
-        println!(
-            "{{\"status\":\"ok\",\"address\":\"{}\",\"method\":\"pinata\",\"tx\":{}}}",
-            resolved_to, tx_val
-        );
+        let json_out = serde_json::json!({
+            "status": "ok",
+            "address": resolved_to,
+            "method": "pinata",
+            "tx": tx,
+        });
+        println!("{}", serde_json::to_string(&json_out)?);
     } else {
         println!("wallet topup complete");
         println!("  Address: {resolved_to}");
