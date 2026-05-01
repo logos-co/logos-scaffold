@@ -7,7 +7,7 @@ use anyhow::{bail, Context};
 use walkdir::WalkDir;
 
 use crate::constants::SPEL_BIN_REL_PATH;
-use crate::process::{run_with_stdin, set_command_echo};
+use crate::process::{run_with_stdin, EchoGuard};
 use crate::project::load_project;
 use crate::DynResult;
 
@@ -84,11 +84,9 @@ pub(crate) fn cmd_deploy(
     preflight_sequencer_reachability(&sequencer_addr)?;
 
     // Suppress the per-subprocess `$ <cmd>` echoes while `--json` is in
-    // effect so stdout stays a single JSON object. Same pattern
-    // `deploy_single_program` and `cmd_doctor` already use.
-    if json {
-        set_command_echo(false);
-    }
+    // effect so stdout stays a single JSON object. RAII guard restores echo
+    // state on scope exit even if a `?` or panic interrupts the loop.
+    let _echo_guard = json.then(EchoGuard::suppress);
 
     let mut results = Vec::new();
     for program in selected_programs {
@@ -188,10 +186,6 @@ pub(crate) fn cmd_deploy(
         });
     }
 
-    if json {
-        set_command_echo(true);
-    }
-
     let success_count = results
         .iter()
         .filter(|result| matches!(result.status, DeployStatus::Submitted))
@@ -206,8 +200,10 @@ pub(crate) fn cmd_deploy(
         // program; absent fields (tx, program_id) are omitted, not nulled,
         // matching the single-program --program-path contract. Failed
         // entries carry `error` instead of `program_id`.
-        let entries: Vec<String> = results.iter().map(render_deploy_result_json).collect();
-        println!("{{\"deploys\":[{}]}}", entries.join(","));
+        let entries: Vec<serde_json::Value> =
+            results.iter().map(render_deploy_result_json).collect();
+        let value = serde_json::json!({ "deploys": entries });
+        println!("{}", serde_json::to_string(&value)?);
     } else {
         println!("Note: Submission confirmed by wallet exit status; deploy inclusion receipt is not currently exposed by LEZ wallet/RPC for scaffold. Program ID is computed locally from the submitted ELF.");
         println!("Summary:");
@@ -230,31 +226,40 @@ pub(crate) fn cmd_deploy(
     Ok(())
 }
 
-fn render_deploy_result_json(result: &DeployResult) -> String {
-    let mut parts: Vec<String> = vec![
-        format!("\"status\":\"{}\"", result.status.label()),
-        format!("\"program\":\"{}\"", result.program),
-    ];
+pub(crate) fn render_deploy_result_json(result: &DeployResult) -> serde_json::Value {
+    // serde_json handles every escape RFC 8259 mandates (control chars, \u
+    // sequences, embedded quotes, ANSI escapes). Hand-rolling the JSON here
+    // would re-introduce the `summarize_command_failure`-passes-tabs-through
+    // bug class.
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "status".to_string(),
+        serde_json::Value::String(result.status.label().to_string()),
+    );
+    obj.insert(
+        "program".to_string(),
+        serde_json::Value::String(result.program.clone()),
+    );
     if let Some(tx) = &result.tx {
-        parts.push(format!("\"tx\":\"{tx}\""));
+        obj.insert("tx".to_string(), serde_json::Value::String(tx.clone()));
     }
     match result.status {
         DeployStatus::Submitted => {
             if let Some(id) = &result.program_id {
-                parts.push(format!("\"program_id\":\"{id}\""));
+                obj.insert(
+                    "program_id".to_string(),
+                    serde_json::Value::String(id.clone()),
+                );
             }
         }
         DeployStatus::Failed => {
-            // Escape backslashes and quotes in the human-readable detail so
-            // it survives embedding in a JSON string literal. Other control
-            // chars are unlikely here (detail comes from wallet output
-            // already line-trimmed by summarize_command_failure) but keep
-            // the escape minimal and explicit.
-            let escaped = result.detail.replace('\\', "\\\\").replace('"', "\\\"");
-            parts.push(format!("\"error\":\"{escaped}\""));
+            obj.insert(
+                "error".to_string(),
+                serde_json::Value::String(result.detail.clone()),
+            );
         }
     }
-    format!("{{{}}}", parts.join(","))
+    serde_json::Value::Object(obj)
 }
 
 fn preflight_sequencer_reachability(sequencer_addr: &str) -> DynResult<()> {
@@ -350,38 +355,23 @@ fn deploy_single_program(
         .arg(binary_path);
 
     // Suppress the `$ <cmd>` echo on stdout for --json so the output is a
-    // pure JSON object that pipes cleanly into `jq`. Mirror the pattern
-    // `cmd_doctor` uses: capture-then-restore, even on error, before
-    // propagating with `?`.
-    if json {
-        set_command_echo(false);
-    }
-    let output_result = run_with_stdin(
-        command,
-        format!(
-            "{}
-",
-            wallet_password()
-        ),
-    );
-    if json {
-        set_command_echo(true);
-    }
-    let output = output_result.context("failed to execute wallet deploy-program command")?;
+    // pure JSON object that pipes cleanly into `jq`. RAII guard restores echo
+    // state on scope exit so `?` propagation below is safe.
+    let _echo_guard = json.then(EchoGuard::suppress);
+    let output = run_with_stdin(command, format!("{}\n", wallet_password()))
+        .context("failed to execute wallet deploy-program command")?;
 
     let tx = extract_tx_identifier(&output.stdout, &output.stderr);
 
     if !output.status.success() {
         let summary = summarize_command_failure(&output.stdout, &output.stderr);
         if json {
-            eprintln!(
-                "{}",
-                serde_json::json!({
-                    "status": "failed",
-                    "program": program_name,
-                    "error": summary,
-                })
-            );
+            let value = serde_json::json!({
+                "status": "failed",
+                "program": program_name,
+                "error": summary,
+            });
+            eprintln!("{}", serde_json::to_string(&value)?);
         } else {
             println!("FAIL {program_name} deployment failed");
             println!("  Error: {summary}");
@@ -397,16 +387,26 @@ fn deploy_single_program(
         // instead of branching on null. (LEZ doesn't surface tx receipts yet,
         // so today `tx` is always absent — keeping a guaranteed-null key would
         // train scripts to depend on it.)
-        let mut payload = serde_json::Map::new();
-        payload.insert("status".into(), "submitted".into());
-        payload.insert("program".into(), program_name.into());
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "status".to_string(),
+            serde_json::Value::String("submitted".to_string()),
+        );
+        obj.insert(
+            "program".to_string(),
+            serde_json::Value::String(program_name.to_string()),
+        );
         if let Some(tx) = &tx {
-            payload.insert("tx".into(), tx.clone().into());
+            obj.insert("tx".to_string(), serde_json::Value::String(tx.clone()));
         }
         if let Some(id) = &program_id {
-            payload.insert("program_id".into(), id.clone().into());
+            obj.insert(
+                "program_id".to_string(),
+                serde_json::Value::String(id.clone()),
+            );
         }
-        println!("{}", serde_json::Value::Object(payload));
+        let value = serde_json::Value::Object(obj);
+        println!("{}", serde_json::to_string(&value)?);
     } else {
         println!("OK  {program_name} submitted");
         println!("  Binary: {}", binary_path.display());
@@ -498,22 +498,22 @@ fn print_program_id_line(program_id: &Option<String>) {
 }
 
 #[derive(Clone, Debug)]
-struct DeployResult {
-    program: String,
-    status: DeployStatus,
-    detail: String,
-    tx: Option<String>,
-    program_id: Option<String>,
+pub(crate) struct DeployResult {
+    pub(crate) program: String,
+    pub(crate) status: DeployStatus,
+    pub(crate) detail: String,
+    pub(crate) tx: Option<String>,
+    pub(crate) program_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-enum DeployStatus {
+pub(crate) enum DeployStatus {
     Submitted,
     Failed,
 }
 
 impl DeployStatus {
-    fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             DeployStatus::Submitted => "submitted",
             DeployStatus::Failed => "failed",
@@ -758,5 +758,47 @@ mod tests {
         assert!(map.get("foo").unwrap().ends_with("foo.bin"));
         assert!(map.get("bar").unwrap().ends_with("bar.bin"));
         assert!(!map.contains_key("missing"));
+    }
+
+    /// `summarize_command_failure` only strips trailing whitespace; raw
+    /// wallet stderr can carry tabs, embedded newlines, ANSI color
+    /// sequences, and other control bytes. The hand-rolled JSON encoder
+    /// previously embedded those verbatim, producing invalid JSON per
+    /// RFC 8259 (control chars must be `\uXXXX`-escaped). Going through
+    /// `serde_json` here is a contract: the renderer's output must always
+    /// round-trip through `serde_json::from_str`.
+    #[test]
+    fn render_deploy_result_json_escapes_control_chars_and_ansi() {
+        let nasty = "wallet error\tline2\nbacktrace:\x1b[31m  at \x00 fn\x1b[0m  ".to_string();
+        let result = DeployResult {
+            program: "alpha".to_string(),
+            status: DeployStatus::Failed,
+            detail: nasty.clone(),
+            tx: None,
+            program_id: None,
+        };
+        let value = render_deploy_result_json(&result);
+        let serialized = serde_json::to_string(&value).expect("serialize");
+        // The serialized form must parse back as valid JSON…
+        let parsed: serde_json::Value =
+            serde_json::from_str(&serialized).expect("must round-trip as valid JSON");
+        // …with the original raw bytes preserved in the `error` string
+        // (serde_json escapes them on the wire and decodes back to the
+        // original on parse).
+        assert_eq!(
+            parsed
+                .get("error")
+                .and_then(|v| v.as_str())
+                .expect("error field"),
+            nasty
+        );
+        assert_eq!(
+            parsed.get("status").and_then(|v| v.as_str()),
+            Some("failed")
+        );
+        assert_eq!(
+            parsed.get("program").and_then(|v| v.as_str()),
+            Some("alpha")
+        );
     }
 }

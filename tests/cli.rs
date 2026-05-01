@@ -1593,6 +1593,98 @@ fn deploy_multi_program_json_emits_deploys_array() {
 }
 
 #[test]
+fn deploy_json_output_parses_as_valid_json() {
+    // Pin the structural contract: --json stdout must round-trip through
+    // serde_json::from_str. Cleanliness is already covered by
+    // `deploy_json_output_is_pure_json_no_command_echo`; this is the
+    // structural counterpart.
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    let custom = temp.path().join("custom.bin");
+    fs::write(&custom, b"stub-program-bin").expect("write custom bin");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("--program-path")
+        .arg(&custom)
+        .arg("--json")
+        .output()
+        .expect("run deploy --json");
+    assert!(output.status.success(), "deploy --json must succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).expect("single-program --json output must be valid JSON");
+    let obj = value
+        .as_object()
+        .expect("top-level value must be an object");
+    assert_eq!(
+        obj.get("status").and_then(|v| v.as_str()),
+        Some("submitted"),
+        "missing or wrong status in: {trimmed}"
+    );
+    assert!(
+        obj.get("program").and_then(|v| v.as_str()).is_some(),
+        "missing program field in: {trimmed}"
+    );
+}
+
+#[test]
+fn deploy_multi_program_json_output_parses_as_valid_json() {
+    // Multi-program counterpart: parse the wrapper and assert the deploys
+    // array shape via serde_json (rather than substring matching).
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "alpha");
+    write_guest_program(temp.path(), "beta");
+    write_guest_binary(temp.path(), "alpha");
+    write_guest_binary(temp.path(), "beta");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("--json")
+        .output()
+        .expect("run deploy --json");
+    assert!(
+        output.status.success(),
+        "multi-program deploy --json must succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).expect("multi-program --json output must be valid JSON");
+    let obj = value
+        .as_object()
+        .expect("top-level value must be an object");
+    let deploys = obj
+        .get("deploys")
+        .and_then(|v| v.as_array())
+        .expect("missing or non-array `deploys` field");
+    assert_eq!(
+        deploys.len(),
+        2,
+        "expected exactly two deploy entries; got: {trimmed}"
+    );
+    for entry in deploys {
+        let entry_obj = entry.as_object().expect("each entry must be an object");
+        assert!(
+            entry_obj.contains_key("status"),
+            "entry missing status: {entry}"
+        );
+        assert!(
+            entry_obj.contains_key("program"),
+            "entry missing program: {entry}"
+        );
+    }
+}
+
+#[test]
 fn deploy_multi_program_json_records_failed_entries_with_error() {
     // Mixed-result deploy under --json: failed programs appear in the
     // array with status:"failed" and an `error` field, no program_id.
