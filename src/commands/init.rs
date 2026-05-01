@@ -311,7 +311,10 @@ path = "/home/u/.cache/logos-scaffold/repos/lez/deadbeef"
 pin = "deadbeef"
 "#;
         let derived = derive_spel_path_from_lez_path(toml).expect("derived");
-        let expected = format!("/home/u/.cache/logos-scaffold/repos/spel/{}", DEFAULT_SPEL.sha);
+        let expected = format!(
+            "/home/u/.cache/logos-scaffold/repos/spel/{}",
+            DEFAULT_SPEL.sha
+        );
         assert_eq!(derived, expected);
     }
 
