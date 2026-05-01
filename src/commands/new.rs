@@ -125,9 +125,6 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     if template_variant == FRAMEWORK_KIND_LEZ_FRAMEWORK {
         cleanup_lez_hello_artifacts(&target)?;
     }
-    if template_variant == FRAMEWORK_KIND_DEFAULT {
-        overwrite_runner_files(&target)?;
-    }
     write_text(&target.join("scaffold.toml"), &serialize_config(&cfg)?)?;
 
     let old_getting_started = target.join("GETTING_STARTED.md");
@@ -142,28 +139,6 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     );
     println!("Pinned lez: {}", cfg.lez.pin);
     println!("Template variant: {}", cfg.framework.kind);
-
-    Ok(())
-}
-
-fn overwrite_runner_files(project_root: &Path) -> DynResult<()> {
-    const RUNNER_FILES: &[(&str, &str)] = &[
-        ("src/bin/run_hello_world.rs", include_str!("../../templates/default/src/bin/run_hello_world.rs")),
-        ("src/bin/run_hello_world_private.rs", include_str!("../../templates/default/src/bin/run_hello_world_private.rs")),
-        ("src/bin/run_hello_world_with_authorization.rs", include_str!("../../templates/default/src/bin/run_hello_world_with_authorization.rs")),
-        ("src/bin/run_hello_world_with_move_function.rs", include_str!("../../templates/default/src/bin/run_hello_world_with_move_function.rs")),
-        ("src/bin/run_hello_world_through_tail_call.rs", include_str!("../../templates/default/src/bin/run_hello_world_through_tail_call.rs")),
-        ("src/bin/run_hello_world_through_tail_call_private.rs", include_str!("../../templates/default/src/bin/run_hello_world_through_tail_call_private.rs")),
-        ("src/bin/run_hello_world_with_authorization_through_tail_call_with_pda.rs", include_str!("../../templates/default/src/bin/run_hello_world_with_authorization_through_tail_call_with_pda.rs")),
-    ];
-
-    for (rel_path, content) in RUNNER_FILES {
-        let path = project_root.join(rel_path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, content)?;
-    }
 
     Ok(())
 }

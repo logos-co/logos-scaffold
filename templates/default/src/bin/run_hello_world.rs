@@ -48,13 +48,17 @@ async fn main() {
     // Define the desired greeting in ASCII
     let greeting: Vec<u8> = vec![72, 111, 108, 97, 32, 109, 117, 110, 100, 111, 33];
 
-    // Construct the public transaction
-    // No nonces nor signing keys are needed for this example. Check out the
-    // `run_hello_world_with_authorization` on how to use them.
-    let nonces = vec![];
-    let signing_keys = [];
+    // Fetch nonces and signing key so the sequencer can validate the transaction.
+    // Without these, the transaction will be rejected with InvalidProgramBehaviour.
+    let nonces = wallet_core
+        .get_accounts_nonces(vec![account_id])
+        .await
+        .unwrap();
+    let signing_key = wallet_core
+        .get_account_public_signing_key(account_id)
+        .unwrap();
     let message = Message::try_new(program.id(), vec![account_id], nonces, greeting).unwrap();
-    let witness_set = WitnessSet::for_message(&message, &signing_keys);
+    let witness_set = WitnessSet::for_message(&message, &[signing_key]);
     let tx = PublicTransaction::new(message, witness_set);
 
     // Submit the transaction
