@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::basecamp::{cmd_basecamp, BasecampAction};
-use crate::commands::build::cmd_build_shortcut;
+use crate::commands::build::{cmd_build_shortcut, DEFAULT_BUILD_TIMEOUT_SEC};
 use crate::commands::client::cmd_client;
 use crate::commands::completions::cmd_completions;
 use crate::commands::deploy::cmd_deploy;
@@ -179,6 +179,9 @@ enum BuildSubcommand {
 #[derive(Debug, clap::Args)]
 struct BuildSubArgs {
     project_path: Option<PathBuf>,
+    /// Seconds before the build subcommand is terminated.
+    #[arg(long, default_value_t = DEFAULT_BUILD_TIMEOUT_SEC)]
+    timeout_sec: u64,
 }
 
 #[derive(Debug, clap::Args)]
@@ -425,16 +428,8 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         }),
         Some(Commands::Setup(_)) => cmd_setup(),
         Some(Commands::Build(args)) => match args.subcommand {
-            Some(BuildSubcommand::Idl(sub)) => cmd_idl(
-                &sub.project_path
-                    .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
-                    .unwrap_or_else(|| vec!["build".to_string()]),
-            ),
-            Some(BuildSubcommand::Client(sub)) => cmd_client(
-                &sub.project_path
-                    .map(|p| vec!["build".to_string(), p.to_string_lossy().to_string()])
-                    .unwrap_or_else(|| vec!["build".to_string()]),
-            ),
+            Some(BuildSubcommand::Idl(sub)) => cmd_idl(sub.project_path, sub.timeout_sec),
+            Some(BuildSubcommand::Client(sub)) => cmd_client(sub.project_path, sub.timeout_sec),
             None => cmd_build_shortcut(args.project_path),
         },
         Some(Commands::Deploy(args)) => cmd_deploy(args.program_name, args.program_path, args.json),

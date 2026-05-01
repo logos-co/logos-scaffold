@@ -1,11 +1,16 @@
+use std::env;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 use crate::constants::DEFAULT_LEZ_PIN;
 use crate::model::{CheckRow, CheckStatus};
 use crate::process::{port_open, which};
 use crate::repo::{git_clean, git_head_sha};
+
+const LOGOS_BLOCKCHAIN_CIRCUITS_ENV: &str = "LOGOS_BLOCKCHAIN_CIRCUITS";
+const EXPECTED_LOGOS_BLOCKCHAIN_CIRCUITS_VERSION: &str = "v0.4.2";
 
 pub(crate) fn check_binary(binary: &str, required: bool) -> CheckRow {
     if let Some(path) = which(binary) {
@@ -34,6 +39,161 @@ pub(crate) fn check_binary(binary: &str, required: bool) -> CheckRow {
 
 pub(crate) fn check_container_runtime() -> CheckRow {
     container_runtime_row(which("docker"), which("podman"))
+}
+
+pub(crate) fn check_logos_blockchain_circuits() -> Vec<CheckRow> {
+    let mut rows = Vec::new();
+    let circuits_dir = match resolve_circuits_dir() {
+        Some(path) => path,
+        None => {
+            rows.push(CheckRow {
+                status: CheckStatus::Fail,
+                name: "logos-blockchain-circuits directory".to_string(),
+                detail: format!(
+                    "{LOGOS_BLOCKCHAIN_CIRCUITS_ENV} is not set and ~/.logos-blockchain-circuits is missing"
+                ),
+                remediation: Some(format!(
+                    "Install logos-blockchain-circuits and set `{LOGOS_BLOCKCHAIN_CIRCUITS_ENV}` to its directory"
+                )),
+            });
+            return rows;
+        }
+    };
+
+    rows.push(CheckRow {
+        status: CheckStatus::Pass,
+        name: "logos-blockchain-circuits directory".to_string(),
+        detail: format!("found {}", circuits_dir.display()),
+        remediation: None,
+    });
+
+    rows.push(check_circuits_version(&circuits_dir));
+    rows.push(check_circuits_file(
+        "circuits prover",
+        &circuits_dir.join("prover"),
+        "Install a logos-blockchain-circuits release with a root-level prover binary",
+    ));
+    rows.push(check_circuits_file(
+        "zksign witness generator",
+        &circuits_dir.join("zksign/witness_generator"),
+        "Install a logos-blockchain-circuits release with zksign/witness_generator",
+    ));
+    rows.push(check_prover_executes(&circuits_dir.join("prover")));
+    rows
+}
+
+fn resolve_circuits_dir() -> Option<PathBuf> {
+    if let Ok(path) = env::var(LOGOS_BLOCKCHAIN_CIRCUITS_ENV) {
+        let path = PathBuf::from(path);
+        if path.is_dir() {
+            return Some(path);
+        }
+        return None;
+    }
+
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+    let path = home.join(".logos-blockchain-circuits");
+    path.is_dir().then_some(path)
+}
+
+fn check_circuits_version(circuits_dir: &Path) -> CheckRow {
+    let version_path = circuits_dir.join("VERSION");
+    match fs::read_to_string(&version_path) {
+        Ok(version) => {
+            let version = version.trim();
+            let status = if version == EXPECTED_LOGOS_BLOCKCHAIN_CIRCUITS_VERSION {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            };
+            CheckRow {
+                status,
+                name: "logos-blockchain-circuits version".to_string(),
+                detail: format!(
+                    "configured={version} expected={EXPECTED_LOGOS_BLOCKCHAIN_CIRCUITS_VERSION}"
+                ),
+                remediation: if status == CheckStatus::Pass {
+                    None
+                } else {
+                    Some(format!(
+                        "Install logos-blockchain-circuits {EXPECTED_LOGOS_BLOCKCHAIN_CIRCUITS_VERSION}"
+                    ))
+                },
+            }
+        }
+        Err(err) => CheckRow {
+            status: CheckStatus::Warn,
+            name: "logos-blockchain-circuits version".to_string(),
+            detail: format!("failed to read {}: {err}", version_path.display()),
+            remediation: Some("Install a complete logos-blockchain-circuits release".to_string()),
+        },
+    }
+}
+
+fn check_circuits_file(name: &str, path: &Path, remediation: &str) -> CheckRow {
+    if path.is_file() {
+        CheckRow {
+            status: CheckStatus::Pass,
+            name: name.to_string(),
+            detail: format!("found {}", path.display()),
+            remediation: None,
+        }
+    } else {
+        CheckRow {
+            status: CheckStatus::Fail,
+            name: name.to_string(),
+            detail: format!("missing {}", path.display()),
+            remediation: Some(remediation.to_string()),
+        }
+    }
+}
+
+fn check_prover_executes(prover: &Path) -> CheckRow {
+    if !prover.is_file() {
+        return CheckRow {
+            status: CheckStatus::Fail,
+            name: "circuits prover execution".to_string(),
+            detail: format!("missing {}", prover.display()),
+            remediation: Some("Install a compatible logos-blockchain-circuits release".to_string()),
+        };
+    }
+
+    match Command::new(prover).output() {
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if output.status.code() == Some(132)
+                || stderr.to_lowercase().contains("illegal instruction")
+            {
+                return CheckRow {
+                    status: CheckStatus::Fail,
+                    name: "circuits prover execution".to_string(),
+                    detail: format!(
+                        "prover cannot execute on this CPU/runtime: {}",
+                        one_line(&stderr)
+                    ),
+                    remediation: Some(
+                        "Use a circuits/prover build compatible with the Docker CPU, or run dogfood on a compatible amd64 host"
+                            .to_string(),
+                    ),
+                };
+            }
+
+            CheckRow {
+                status: CheckStatus::Pass,
+                name: "circuits prover execution".to_string(),
+                detail: format!("prover started and exited with {}", output.status),
+                remediation: None,
+            }
+        }
+        Err(err) => CheckRow {
+            status: CheckStatus::Fail,
+            name: "circuits prover execution".to_string(),
+            detail: format!("failed to execute {}: {err}", prover.display()),
+            remediation: Some(
+                "Install a logos-blockchain-circuits prover binary for this platform".to_string(),
+            ),
+        },
+    }
 }
 
 fn container_runtime_row(docker: Option<PathBuf>, podman: Option<PathBuf>) -> CheckRow {
@@ -231,5 +391,36 @@ mod tests {
         assert_eq!(row.status, CheckStatus::Warn);
         assert!(row.detail.contains("neither docker nor podman"));
         assert!(row.remediation.is_some());
+    }
+
+    #[test]
+    fn circuits_version_passes_when_expected() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("VERSION"),
+            super::EXPECTED_LOGOS_BLOCKCHAIN_CIRCUITS_VERSION,
+        )
+        .unwrap();
+
+        let row = super::check_circuits_version(temp.path());
+        assert_eq!(row.status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn prover_execution_detects_healthy_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let prover = temp.path().join("prover");
+        std::fs::write(&prover, "#!/bin/sh\necho usage >&2\nexit 1\n").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&prover).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&prover, perms).unwrap();
+        }
+
+        let row = super::check_prover_executes(&prover);
+        assert_eq!(row.status, CheckStatus::Pass);
     }
 }

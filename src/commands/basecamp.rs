@@ -222,9 +222,6 @@ fn cmd_basecamp_launch(project: Project, profile: String, no_clean: bool) -> Dyn
         Some(s) if !s.basecamp_bin.is_empty() && !s.lgpm_bin.is_empty() => s,
         _ => bail!("basecamp not set up yet; run: logos-scaffold basecamp setup"),
     };
-    if !Path::new(&state.basecamp_bin).exists() || !Path::new(&state.lgpm_bin).exists() {
-        bail!("basecamp not set up yet; run: logos-scaffold basecamp setup");
-    }
 
     if profile != BASECAMP_PROFILE_ALICE && profile != BASECAMP_PROFILE_BOB {
         bail!(
@@ -268,8 +265,12 @@ fn cmd_basecamp_launch(project: Project, profile: String, no_clean: bool) -> Dyn
     if !no_clean && total_captured_modules(&project) == 0 {
         bail!(
             "no modules captured — run `logos-scaffold basecamp modules` before launching, \
-             or pass `--no-clean` to keep the currently-installed module set."
+            or pass `--no-clean` to keep the currently-installed module set."
         );
+    }
+
+    if !Path::new(&state.basecamp_bin).exists() || !Path::new(&state.lgpm_bin).exists() {
+        bail!("basecamp not set up yet; run: logos-scaffold basecamp setup");
     }
 
     // seed_profiles is idempotent (tested) and cheap — always run it so a prior

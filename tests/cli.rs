@@ -21,6 +21,8 @@ const VALID_PUBLIC_ADDRESS: &str = "Public/6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jw
 const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
 const GUEST_BIN_REL_PATH: &str =
     "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
+const DOCKER_GUEST_BIN_REL_PATH: &str =
+    "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/docker";
 
 /// Minimal valid `scaffold.toml` content for tests that only need the project
 /// context to exist (no basecamp section). Older tests in this file inline
@@ -1306,6 +1308,23 @@ fn deploy_uses_password_env_override() {
 }
 
 #[test]
+fn deploy_finds_docker_guest_binary_layout() {
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "hello");
+    write_docker_guest_binary(temp.path(), "hello");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("hello")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OK  hello submitted"));
+}
+
+#[test]
 fn deploy_missing_binary_shows_build_hint() {
     let temp = tempdir().expect("tempdir");
     let rpc = RpcStub::start();
@@ -2308,6 +2327,13 @@ fn write_guest_binary(project_root: &Path, name: &str) {
     let dir = project_root.join(GUEST_BIN_REL_PATH);
     fs::create_dir_all(&dir).expect("create guest binary dir");
     fs::write(dir.join(format!("{name}.bin")), b"stub-program-bin").expect("write guest binary");
+}
+
+fn write_docker_guest_binary(project_root: &Path, name: &str) {
+    let dir = project_root.join(DOCKER_GUEST_BIN_REL_PATH);
+    fs::create_dir_all(&dir).expect("create docker guest binary dir");
+    fs::write(dir.join(format!("{name}.bin")), b"stub-program-bin")
+        .expect("write docker guest binary");
 }
 
 struct RpcStub {

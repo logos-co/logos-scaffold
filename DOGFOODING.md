@@ -43,6 +43,63 @@ mkdir -p "$SCRATCH_ROOT"
 
 You may replace `"$SCAFFOLD_BIN"` with `logos-scaffold` when the install path itself is part of what you are validating.
 
+## Raspberry Pi Docker Dogfooding
+
+Use this path when dogfooding on Raspberry Pi OS or another ARM host where
+RISC0-related tooling cannot run natively. The AI agent runs on the Pi host and
+launches a disposable `linux/amd64` Docker lab for the scaffold package and
+generated applications.
+
+From the repository root on the Pi:
+
+```bash
+./dogfood/run-container.sh
+```
+
+To run the full scenario suite without opening an interactive shell:
+
+```bash
+./dogfood/run-container.sh --run-scenarios
+```
+
+The launcher builds an amd64 lab image, mounts the source checkout read-only,
+mounts `.dogfood/` read-write, and mounts `/var/run/docker.sock` so guest-build
+containers can be started from inside the lab. This socket gives the lab control
+of the host Docker daemon; use it only for trusted local dogfooding.
+
+Inside the lab, read the agent brief:
+
+```bash
+sed -n '1,220p' "$REPO_SOURCE/dogfood/AGENT.md"
+```
+
+The noninteractive runner writes a fresh run under `.dogfood/artifacts/<run-id>`
+with `summary.md`, `findings.md`, `commands.ndjson`, preflight output, and raw
+command logs. It bootstraps `logos-blockchain-circuits` under `.dogfood/cache`,
+exports `LOGOS_BLOCKCHAIN_CIRCUITS`, and fails fast if the circuits prover exits
+with `Illegal instruction`/`SIGILL` in the amd64 Docker lab.
+
+Minimum preflight before long-running scenarios:
+
+```bash
+uname -m
+rustc -V
+cargo -V
+docker version
+docker run --rm --platform linux/amd64 debian:bookworm uname -m
+```
+
+Expected architecture output is `x86_64`. If nested Docker cannot run
+`linux/amd64`, record that as a host setup blocker before continuing.
+
+All copied worktrees, generated projects, caches, and evidence should stay under
+`.dogfood/`. A typical run writes:
+
+- `.dogfood/work/<run-id>/logos-scaffold` for the copied repository under test.
+- `.dogfood/work/<run-id>/generated` for generated scaffold projects.
+- `.dogfood/artifacts/<run-id>/summary.md`, `commands.ndjson`, `findings.md`,
+  and raw scenario evidence.
+
 ## Execution Contexts
 
 | Context | Purpose | Typical commands |
@@ -57,6 +114,9 @@ Do not run project-scoped commands from the repository root unless the scenario 
 
 - Unix-like environment with `git`, `rustc`, `cargo`, `lsof`, `ps`, and `kill`.
 - Docker or Podman available for guest builds.
+- `logos-blockchain-circuits` available via `LOGOS_BLOCKCHAIN_CIRCUITS` or
+  `~/.logos-blockchain-circuits`. The Docker dogfood runner installs/validates
+  it under `.dogfood/cache` automatically.
 - No conflicting listener on the scaffold localnet port before `localnet start`.
 - Network access available for setup/build flows that fetch dependencies.
 - No preinstalled `wallet` binary is required. If one exists on `PATH`, do not treat it as the runtime under test for scaffold wallet scenarios.
@@ -76,8 +136,8 @@ The `lgs` binary is a short alias for `logos-scaffold` produced by the same crat
 | D5 | `default` | Advanced | Diagnostics bundle and support artifact hygiene | `report`, `report --out`, `report --tail` |
 | D6 | `default` | Core | Example runner interaction and account state verification | `cargo run --bin run_hello_world`, `cargo run --bin run_hello_world_with_move_function`, `wallet -- account get` |
 | L1 | `lez-framework` | Core | Fresh LEZ project bootstrap to ready state | `new --template lez-framework`, `setup`, `localnet start`, `doctor`, `build` |
-| L2 | `lez-framework` | Core | LEZ IDL regeneration | `build idl` |
-| L3 | `lez-framework` | Advanced | LEZ client generation from current IDL | `build client` |
+| L2 | `lez-framework` | Core | LEZ IDL regeneration | `build idl --timeout-sec` |
+| L3 | `lez-framework` | Advanced | LEZ client generation from current IDL | `build client --timeout-sec` |
 | L4 | `lez-framework` | Core | LEZ deploy and counter interaction | `deploy`, `cargo run --bin run_lez_counter` |
 | E1 | N/A | Core | CLI discoverability and error quality | `--help`, `help`, `--version`, unknown commands, out-of-project errors |
 | E2 | N/A | Advanced | Project creation with advanced flags and invalid inputs | `new --template`, `new --vendor-deps`, `new --cache-root` |
@@ -220,7 +280,7 @@ Validate targeted deployment flows, including the machine-readable single-progra
 
 - Default-template project has already completed `build`.
 - Localnet is reachable.
-- Guest binaries exist under the generated project's `target/riscv-guest/.../release` directory.
+- Guest binaries exist under the generated project's `target/riscv-guest/.../release` or `target/riscv-guest/.../docker` directory.
 
 ### Commands / Actions
 
@@ -233,6 +293,10 @@ export EXAMPLE_PROGRAMS_BUILD_DIR="$PWD/target/riscv-guest/example_program_deplo
 "$SCAFFOLD_BIN" deploy --program-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" --json
 "$SCAFFOLD_BIN" deploy nonexistent_program
 ```
+
+Generated projects use RISC Zero Docker guest builds by default. If binaries are
+under the Docker output layout, use the same path with `release` replaced by
+`docker`; scaffold deploy and report commands check both locations.
 
 Use a known default-template program name such as `hello_world`. If the generated project exposes a different set of programs in `methods/guest/src/bin`, record the discovered list.
 
@@ -507,7 +571,7 @@ Validate that LEZ projects can regenerate IDL from the current project source.
 From the LEZ project root:
 
 ```bash
-"$SCAFFOLD_BIN" build idl
+"$SCAFFOLD_BIN" build idl --timeout-sec 1800
 find idl -maxdepth 1 -type f -name '*.json' | sort
 ```
 
@@ -548,7 +612,7 @@ Validate that LEZ client bindings can be regenerated from the current IDL set.
 From the LEZ project root:
 
 ```bash
-"$SCAFFOLD_BIN" build client
+"$SCAFFOLD_BIN" build client --timeout-sec 1800
 find src/generated -type f | sort
 ```
 

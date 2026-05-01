@@ -64,6 +64,30 @@ cargo run --bin logos-scaffold -- --help
 cargo run --bin logos-scaffold -- new test-app
 ```
 
+## Cargo Command Contexts
+
+Use Cargo directly when you are working on this repository:
+
+```bash
+cargo build
+cargo test --all-targets
+cargo fmt --check
+```
+
+Inside generated projects, prefer scaffold commands for the scaffolded workflow:
+
+```bash
+logos-scaffold setup
+logos-scaffold localnet start
+logos-scaffold build
+logos-scaffold deploy
+logos-scaffold wallet topup
+logos-scaffold localnet stop
+```
+
+Direct `cargo run --bin ...` commands in generated projects are for example
+runners after setup, localnet, build, and deploy prerequisites are ready.
+
 ## Test Suite
 
 Run all tests:
@@ -83,8 +107,9 @@ cargo fmt --check
 - This repository builds and tests the scaffold CLI.
 - Generated projects are separate workspaces created by `logos-scaffold new`.
 - Validate scaffold changes by creating a fresh project and running scaffold commands inside it.
+- Keep temporary dogfood projects under `.dogfood/` so they do not pollute the source tree.
 
-## DOGFOODING Validation
+## Dogfooding Validation
 
 Use [DOGFOODING.md](./DOGFOODING.md) as the canonical validation guide for scaffold DX.
 
@@ -96,8 +121,8 @@ At minimum:
 
 ```bash
 cargo build
-cargo run --bin logos-scaffold -- new dogfood-app --lez-path /absolute/path/to/logos-execution-zone
-cd dogfood-app
+cargo run --bin logos-scaffold -- new .dogfood/manual/dogfood-app --lez-path /absolute/path/to/logos-execution-zone
+cd .dogfood/manual/dogfood-app
 logos-scaffold setup
 logos-scaffold localnet start
 logos-scaffold doctor
@@ -107,4 +132,12 @@ logos-scaffold wallet topup
 logos-scaffold localnet stop
 ```
 
-Keep all temporary dogfood directories inside your local workspace and remove them after validation.
+On Raspberry Pi OS, use the Docker dogfood lab instead of running RISC0-related
+flows directly on ARM:
+
+```bash
+./dogfood/run-container.sh
+```
+
+The AI agent should then follow `dogfood/AGENT.md` inside the container and
+record evidence under `.dogfood/artifacts/`.

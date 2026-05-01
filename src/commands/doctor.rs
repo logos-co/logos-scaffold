@@ -8,8 +8,8 @@ use super::wallet_support::wallet_password;
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
 use crate::constants::{DEFAULT_LEZ_PIN, SEQUENCER_BIN_REL_PATH, WALLET_BIN_REL_PATH};
 use crate::doctor_checks::{
-    check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
-    check_standalone_support, one_line, print_rows,
+    check_binary, check_container_runtime, check_logos_blockchain_circuits, check_path,
+    check_port_warn, check_repo, check_standalone_support, one_line, print_rows,
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
 use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo};
@@ -83,6 +83,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     rows.push(check_binary("ps", true));
     rows.push(check_binary("kill", true));
     rows.push(check_container_runtime());
+    rows.extend(check_logos_blockchain_circuits());
 
     rows.push(check_repo("lez", &lez, &project.config.lez.pin));
 

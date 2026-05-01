@@ -1,11 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Duration;
 
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 
 use crate::constants::FRAMEWORK_KIND_LEZ_FRAMEWORK;
-use crate::process::run_capture;
+use crate::process::run_capture_with_timeout;
 use crate::project::{load_project, run_in_project_dir};
 use crate::state::write_text;
 use crate::DynResult;
@@ -14,21 +15,13 @@ const IDL_BEGIN_PREFIX: &str = "--- LSSA IDL BEGIN ";
 const IDL_END_PREFIX: &str = "--- LSSA IDL END ";
 const IDL_MARKER_SUFFIX: &str = " ---";
 
-pub(crate) fn cmd_idl(args: &[String]) -> DynResult<()> {
-    if args.is_empty() {
-        bail!("usage: logos-scaffold build idl [project-path]");
-    }
-
-    match args[0].as_str() {
-        "build" => {
-            let project_dir = parse_optional_project_path(&args[1..], "logos-scaffold build idl")?;
-            run_in_project_dir(project_dir.as_deref(), build_idl_for_current_project)
-        }
-        other => Err(anyhow!("unknown idl command: {other}")),
-    }
+pub(crate) fn cmd_idl(project_dir: Option<PathBuf>, timeout_sec: u64) -> DynResult<()> {
+    run_in_project_dir(project_dir.as_deref(), || {
+        build_idl_for_current_project(timeout_sec)
+    })
 }
 
-pub(crate) fn build_idl_for_current_project() -> DynResult<()> {
+pub(crate) fn build_idl_for_current_project(timeout_sec: u64) -> DynResult<()> {
     let project = load_project()?;
     if project.config.framework.kind != FRAMEWORK_KIND_LEZ_FRAMEWORK {
         println!(
@@ -42,16 +35,19 @@ pub(crate) fn build_idl_for_current_project() -> DynResult<()> {
     fs::create_dir_all(&idl_dir)?;
     clear_existing_json_files(&idl_dir)?;
 
-    let out = run_capture(
-        Command::new("cargo")
-            .current_dir(&project.root)
-            .arg("test")
-            .arg("--workspace")
-            .arg("__lssa_idl_print")
-            .arg("--")
-            .arg("--show-output")
-            .arg("--quiet"),
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(&project.root)
+        .arg("test")
+        .arg("--workspace")
+        .arg("__lssa_idl_print")
+        .arg("--")
+        .arg("--show-output")
+        .arg("--quiet");
+    let out = run_capture_with_timeout(
+        &mut command,
         "cargo test __lssa_idl_print",
+        Duration::from_secs(timeout_sec.max(1)),
     )?;
 
     let mut blocks = parse_idl_blocks(&out.stdout)?;
@@ -69,23 +65,6 @@ pub(crate) fn build_idl_for_current_project() -> DynResult<()> {
     }
 
     Ok(())
-}
-
-fn parse_optional_project_path(args: &[String], usage_label: &str) -> DynResult<Option<PathBuf>> {
-    let mut project_dir: Option<PathBuf> = None;
-
-    for arg in args {
-        if arg.starts_with("--") {
-            bail!("unknown flag for `{usage_label}`: {arg}");
-        }
-        if project_dir.is_none() {
-            project_dir = Some(PathBuf::from(arg));
-        } else {
-            bail!("unexpected argument `{arg}` for `{usage_label}`");
-        }
-    }
-
-    Ok(project_dir)
 }
 
 fn clear_existing_json_files(dir: &std::path::Path) -> DynResult<()> {

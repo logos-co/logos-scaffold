@@ -465,7 +465,7 @@ fn one_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WALLET_CONFIG_FALLBACK, WALLET_CONFIG_PRIMARY};
+    use super::WALLET_CONFIG_PRIMARY;
     use std::fs;
 
     use tempfile::tempdir;
