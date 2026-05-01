@@ -2109,9 +2109,12 @@ fn wallet_list_json_outputs_valid_json() {
 
     let stdout = String::from_utf8_lossy(&output);
     // Must be valid JSON
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
-        .expect("wallet list --json should output valid JSON");
-    assert!(parsed.is_array(), "wallet list --json should output a JSON array");
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("wallet list --json should output valid JSON");
+    assert!(
+        parsed.is_array(),
+        "wallet list --json should output a JSON array"
+    );
 }
 
 #[test]
@@ -2133,9 +2136,14 @@ fn wallet_topup_json_outputs_valid_json_on_success() {
     if !stdout.trim().is_empty() {
         let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
             .expect("wallet topup --json stdout should be valid JSON or empty");
-        assert!(parsed.is_object(), "wallet topup --json should output a JSON object");
+        assert!(
+            parsed.is_object(),
+            "wallet topup --json should output a JSON object"
+        );
         // Ensure no echoed commands bleed into stdout
-        assert!(!stdout.contains("$ wallet"), "stdout should not contain command echoes");
+        assert!(
+            !stdout.contains("$ wallet"),
+            "stdout should not contain command echoes"
+        );
     }
 }
-

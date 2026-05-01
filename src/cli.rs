@@ -340,7 +340,10 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         }
         Some(Commands::Wallet(args)) => {
             let action = match args.command {
-                WalletSubcommand::List(args) => WalletAction::List { long: args.long, json: args.json },
+                WalletSubcommand::List(args) => WalletAction::List {
+                    long: args.long,
+                    json: args.json,
+                },
                 WalletSubcommand::Topup(args) => WalletAction::Topup {
                     address: merge_optional_address(
                         args.address,
