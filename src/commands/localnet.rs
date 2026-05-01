@@ -208,9 +208,20 @@ fn cmd_localnet_start(
     // Auto-detect r0vm path from rzup installation if RISC0_SERVER_PATH is not set.
     // On macOS, rzup installs r0vm under ~/.risc0/extensions/<version>/r0vm but does
     // not add it to PATH. The sequencer needs RISC0_SERVER_PATH to locate it.
+    // We derive the exact risc0-zkvm version from the LEZ Cargo.lock so we never
+    // hand the sequencer a mismatched r0vm binary.
     if std::env::var("RISC0_SERVER_PATH").is_err() {
-        if let Some(r0vm_path) = find_r0vm_path() {
-            sequencer_cmd.env("RISC0_SERVER_PATH", r0vm_path);
+        match find_r0vm_path_for_lez(lez) {
+            Some(r0vm_path) => {
+                sequencer_cmd.env("RISC0_SERVER_PATH", &r0vm_path);
+            }
+            None => {
+                eprintln!(
+                    "warning: RISC0_SERVER_PATH is not set and r0vm was not found in the                      rzup extensions directory for the LEZ-pinned risc0 version.
+                     If transaction execution fails with 'No such file or directory',                      set RISC0_SERVER_PATH to the r0vm binary installed by rzup.
+                     Example: export RISC0_SERVER_PATH=~/.risc0/extensions/                     v<version>-cargo-risczero-<arch>-<os>/r0vm"
+                );
+            }
         }
     }
 
@@ -628,20 +639,64 @@ fn verify_block_production(localnet_addr: &str, timeout_sec: u64) -> DynResult<(
     }
 }
 
-/// Search for the r0vm binary installed by rzup.
-/// rzup installs r0vm under ~/.risc0/extensions/<version>/r0vm but does not add it to PATH.
-fn find_r0vm_path() -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let risc0_ext = std::path::Path::new(&home)
-        .join(".risc0")
-        .join("extensions");
+/// Resolve the r0vm binary path from the rzup installation that matches the LEZ risc0 version.
+///
+/// Reads the risc0-zkvm version from the LEZ Cargo.lock, then looks for an exact-version
+/// rzup-managed extension dir: ~/.risc0/extensions/v<version>-cargo-risczero-<arch>-<os>/r0vm.
+/// Returns None (without guessing) if the version cannot be determined or the exact path
+/// does not exist. The caller should error with a clear diagnostic if None is returned.
+fn find_r0vm_path_for_lez(lez: &std::path::Path) -> Option<std::path::PathBuf> {
+    // Read risc0-zkvm version from LEZ Cargo.lock
+    let lockfile = lez.join("Cargo.lock");
+    let lock_content = std::fs::read_to_string(&lockfile).ok()?;
+    let risc0_version = parse_risc0_version(&lock_content)?;
 
-    // Walk extension dirs and return first r0vm found
-    let entries = std::fs::read_dir(&risc0_ext).ok()?;
-    for entry in entries.flatten() {
-        let r0vm = entry.path().join("r0vm");
-        if r0vm.exists() {
-            return Some(r0vm);
+    // Determine platform triple (rzup naming convention)
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "aarch64"
+    };
+    let os = if cfg!(target_os = "macos") {
+        "apple-darwin"
+    } else {
+        "unknown-linux-gnu"
+    };
+    let ext_name = format!("v{risc0_version}-cargo-risczero-{arch}-{os}");
+
+    let home = std::env::var("HOME").ok()?;
+    let r0vm = std::path::Path::new(&home)
+        .join(".risc0")
+        .join("extensions")
+        .join(&ext_name)
+        .join("r0vm");
+
+    if r0vm.exists() {
+        Some(r0vm)
+    } else {
+        None
+    }
+}
+
+/// Extract risc0-zkvm version from Cargo.lock content.
+fn parse_risc0_version(lock_content: &str) -> Option<String> {
+    let mut in_risc0_zkvm = false;
+    for line in lock_content.lines() {
+        let line = line.trim();
+        if line == r#"name = "risc0-zkvm""# {
+            in_risc0_zkvm = true;
+            continue;
+        }
+        if in_risc0_zkvm {
+            if let Some(version) = line
+                .strip_prefix("version = \"")
+                .and_then(|s| s.strip_suffix('"'))
+            {
+                return Some(version.to_string());
+            }
+            if line.starts_with("name =") {
+                break;
+            }
         }
     }
     None
