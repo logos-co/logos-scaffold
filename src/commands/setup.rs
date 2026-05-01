@@ -13,7 +13,7 @@ use super::wallet_support::{
     write_default_wallet_address,
 };
 
-pub(crate) fn cmd_setup() -> DynResult<()> {
+pub(crate) fn cmd_setup(prebuilt: bool) -> DynResult<()> {
     let mut project = load_project()?;
     let lez = PathBuf::from(&project.config.lez.path);
     let (cache_root, _) = resolve_cache_root(&project)?;
@@ -27,17 +27,25 @@ pub(crate) fn cmd_setup() -> DynResult<()> {
 
     ensure_dir_exists(&lez, "lez")?;
 
-    run_checked(
-        Command::new("cargo")
-            .current_dir(&lez)
-            .arg("build")
-            .arg("--release")
-            .arg("--features")
-            .arg("standalone")
-            .arg("-p")
-            .arg("sequencer_service"),
-        "build sequencer_service (standalone)",
-    )?;
+    let built_from_prebuilt = if prebuilt {
+        try_download_prebuilt(&lez, &project.config.lez.pin)?
+    } else {
+        false
+    };
+
+    if !built_from_prebuilt {
+        run_checked(
+            Command::new("cargo")
+                .current_dir(&lez)
+                .arg("build")
+                .arg("--release")
+                .arg("--features")
+                .arg("standalone")
+                .arg("-p")
+                .arg("sequencer_service"),
+            "build sequencer_service (standalone)",
+        )?;
+    }
 
     run_checked(
         Command::new("cargo")
@@ -118,6 +126,51 @@ fn normalize_path(path: &Path) -> PathBuf {
             .unwrap_or_else(|_| path.to_path_buf())
     }
 }
+
+
+fn try_download_prebuilt(lez: &Path, pin: &str) -> DynResult<bool> {
+    let commit = &pin[..8.min(pin.len())];
+    let arch = if cfg!(target_arch = "x86_64") { "x86_64" } else { "aarch64" };
+    let os = if cfg!(target_os = "linux") { "linux" } else { "macos" };
+    let tag = format!("lez-prebuilt-{commit}-{arch}-{os}");
+
+    println!("Checking for prebuilt binaries (tag: {tag})...");
+
+    let url = format!(
+        "https://github.com/logos-co/logos-scaffold/releases/download/{tag}/sequencer_service"
+    );
+
+    let bin_dir = lez.join("target/release");
+    std::fs::create_dir_all(&bin_dir)?;
+    let bin_path = bin_dir.join("sequencer_service");
+
+    let status = Command::new("curl")
+        .args([
+            "--fail", "--silent", "--location",
+            "--output", bin_path.to_str().unwrap_or("sequencer_service"),
+            &url,
+        ])
+        .status();
+
+    match status {
+        Ok(s) if s.success() && bin_path.exists() => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&bin_path)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&bin_path, perms)?;
+            }
+            println!("prebuilt sequencer_service downloaded successfully");
+            Ok(true)
+        }
+        _ => {
+            println!("no prebuilt found for tag {tag}, falling back to source build...");
+            Ok(false)
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
