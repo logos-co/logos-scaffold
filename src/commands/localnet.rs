@@ -666,6 +666,7 @@ mod tests {
                 port: 3040,
                 risc0_dev_mode: false,
             },
+            basecamp: None,
         };
 
         let project = Project {

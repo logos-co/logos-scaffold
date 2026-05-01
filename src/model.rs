@@ -33,6 +33,51 @@ pub(crate) struct Config {
     pub(crate) wallet_home_dir: String,
     pub(crate) framework: FrameworkConfig,
     pub(crate) localnet: LocalnetConfig,
+    pub(crate) basecamp: Option<BasecampConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ModuleRole {
+    /// Module the developer is building and shipping. `build-portable` operates
+    /// only on these (attr-swap to `#lgx-portable`).
+    Project,
+    /// Runtime companion resolved from another source's `metadata.json`
+    /// `dependencies` array or declared explicitly by the developer.
+    /// `build-portable` skips these — the target AppImage provides its own.
+    Dependency,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModuleEntry {
+    pub(crate) flake: String,
+    pub(crate) role: ModuleRole,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct BasecampConfig {
+    pub(crate) pin: String,
+    pub(crate) source: String,
+    pub(crate) lgpm_flake: String,
+    pub(crate) port_base: u16,
+    pub(crate) port_stride: u16,
+    /// Captured module set keyed by `module_name` (matches `metadata.json`
+    /// `name` for the declaring source, and `dependencies` entries for
+    /// anything that references it). Parsed from `[basecamp.modules.<name>]`
+    /// sub-sections. Sole source of truth for what `install` / `launch` build.
+    pub(crate) modules: std::collections::BTreeMap<String, ModuleEntry>,
+}
+
+impl Default for BasecampConfig {
+    fn default() -> Self {
+        Self {
+            pin: String::new(),
+            source: "https://github.com/logos-co/logos-basecamp".to_string(),
+            lgpm_flake: String::new(),
+            port_base: 60000,
+            port_stride: 10,
+            modules: std::collections::BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +89,19 @@ pub(crate) struct Project {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LocalnetState {
     pub(crate) sequencer_pid: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum BasecampSource {
+    Path(String),
+    Flake(String),
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BasecampState {
+    pub(crate) pin: String,
+    pub(crate) basecamp_bin: String,
+    pub(crate) lgpm_bin: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
