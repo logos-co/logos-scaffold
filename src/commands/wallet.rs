@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context};
 
-use crate::process::{render_command, run_forwarded, run_with_stdin};
+use crate::process::{render_command, run_forwarded, run_with_stdin, set_command_echo};
 use crate::project::load_project;
 use crate::DynResult;
 
@@ -40,7 +40,11 @@ pub(crate) fn cmd_wallet(action: WalletAction) -> DynResult<()> {
     match action {
         WalletAction::List { long, json } => cmd_wallet_list(&project, long, json),
         WalletAction::Proxy { args } => cmd_wallet_proxy(&project, &args),
-        WalletAction::Topup { address, dry_run, json } => cmd_wallet_topup(&project, address, dry_run, json),
+        WalletAction::Topup {
+            address,
+            dry_run,
+            json,
+        } => cmd_wallet_topup(&project, address, dry_run, json),
         WalletAction::DefaultSet { address } => cmd_wallet_default_set(&project, &address),
     }
 }
@@ -128,6 +132,9 @@ fn cmd_wallet_topup(
     dry_run: bool,
     json: bool,
 ) -> DynResult<()> {
+    if json {
+        set_command_echo(false);
+    }
     let wallet = load_wallet_runtime(project)?;
     let default_address = read_default_wallet_address(&project.root)?;
     let resolved_to = resolve_wallet_address(address.as_deref(), default_address.as_deref())?;
@@ -213,7 +220,10 @@ fn cmd_wallet_topup(
                 );
             }
             if is_already_initialized_failure(&combined) {
-                progress!(json, "wallet topup preflight: destination already initialized; continuing");
+                progress!(
+                    json,
+                    "wallet topup preflight: destination already initialized; continuing"
+                );
             } else {
                 bail!("wallet topup failed while initializing destination wallet: {summary}");
             }
@@ -252,7 +262,8 @@ fn cmd_wallet_topup(
 
     if json {
         let tx = extract_tx_identifier(&output.stdout, &output.stderr);
-        let tx_val = tx.as_deref()
+        let tx_val = tx
+            .as_deref()
             .map(|t| format!("\"{}\"", t))
             .unwrap_or_else(|| "null".to_string());
         println!(
