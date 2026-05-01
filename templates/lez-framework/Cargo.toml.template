@@ -26,7 +26,7 @@ wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git",
 common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "{{lez_pin}}" }
 
 risc0-zkvm = { version = "3.0.5", features = ["std"] }
-risc0-build = "3.0.5"
+risc0-build = { version = "3.0.5", features = ["docker"] }
 
 lez-framework = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }
 lez-framework-core = { git = "https://github.com/jimmy-claw/lez-framework.git", rev = "1e146970d2bba861a32fd3a8b4e13b1e6ff4114d" }

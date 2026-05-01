@@ -178,6 +178,7 @@ mod tests {
             ".gitignore",
             ".env.local",
             ".scaffold/commands.md",
+            "methods/build.rs",
             "src/lib.rs",
             "src/bin/run_hello_world.rs",
             "src/bin/run_hello_world_private.rs",
@@ -248,9 +249,31 @@ mod tests {
             .expect("failed to read generated Cargo.toml");
         assert!(cargo.contains("name = \"example-name\""));
         assert!(cargo.contains("rev = \"deadbeef\""));
+        assert!(cargo.contains("risc0-build = { version = \"3.0.5\", features = [\"docker\"] }"));
         assert!(!cargo.contains("{{"));
 
         fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");
+    }
+
+    #[test]
+    fn overlay_uses_docker_guest_builds() {
+        for template in ["default", "lez-framework"] {
+            let target = mk_temp_dir(&format!("{template}-docker-builds"));
+            let ctx = OverlayRenderContext {
+                crate_name: "my-app",
+                lez_pin: "abc123",
+            };
+
+            apply_overlay(&target, template, &ctx).expect("failed to apply overlay");
+
+            let build_rs =
+                fs::read_to_string(target.join("methods/build.rs")).expect("read methods/build.rs");
+            assert!(build_rs.contains("embed_methods_with_options"));
+            assert!(build_rs.contains(".root_dir(\"..\")"));
+            assert!(build_rs.contains("example_program_deployment_programs"));
+
+            fs::remove_dir_all(&target).expect("failed to cleanup temporary test directory");
+        }
     }
 
     #[test]

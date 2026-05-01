@@ -11,6 +11,8 @@ use crate::process::run_checked;
 use crate::project::{load_project, run_in_project_dir};
 use crate::DynResult;
 
+pub(crate) const DEFAULT_BUILD_TIMEOUT_SEC: u64 = 1_800;
+
 pub(crate) fn cmd_build_shortcut(project_dir: Option<PathBuf>) -> DynResult<()> {
     run_in_project_dir(project_dir.as_deref(), || {
         cmd_setup()?;
@@ -23,8 +25,8 @@ pub(crate) fn cmd_build_shortcut(project_dir: Option<PathBuf>) -> DynResult<()> 
             }
             FRAMEWORK_KIND_LEZ_FRAMEWORK => {
                 build_workspace_for_current_project(&cwd)?;
-                build_idl_for_current_project()?;
-                generate_clients_from_current_idl()?;
+                build_idl_for_current_project(DEFAULT_BUILD_TIMEOUT_SEC)?;
+                generate_clients_from_current_idl(DEFAULT_BUILD_TIMEOUT_SEC)?;
             }
             other => {
                 build_workspace_for_current_project(&cwd)?;

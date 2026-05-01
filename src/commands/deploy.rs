@@ -13,8 +13,10 @@ use super::wallet_support::{
     sequencer_unreachable_hint, summarize_command_failure, wallet_password, RpcReachabilityError,
 };
 
-const GUEST_BIN_REL_PATH: &str =
+pub(crate) const LEGACY_GUEST_BIN_REL_PATH: &str =
     "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
+pub(crate) const DOCKER_GUEST_BIN_REL_PATH: &str =
+    "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/docker";
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
 pub(crate) fn cmd_deploy(
@@ -54,16 +56,20 @@ pub(crate) fn cmd_deploy(
     }
 
     let selected_programs = resolve_selected_programs(program_name, &available_programs)?;
-    let binaries_root = project.root.join(GUEST_BIN_REL_PATH);
-
     preflight_sequencer_reachability(&sequencer_addr)?;
 
     let mut results = Vec::new();
     for program in selected_programs {
-        let binary_path = binaries_root.join(format!("{program}.bin"));
-        if !binary_path.exists() {
+        let Some(binary_path) = find_guest_binary(&project.root, &program) else {
             println!("FAIL {program} deployment failed");
-            println!("  Error: missing binary at {}", binary_path.display());
+            println!(
+                "  Error: missing binary. Checked: {}",
+                candidate_guest_binary_paths(&project.root, &program)
+                    .into_iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             println!("  Hint: run `logos-scaffold build` first.");
             results.push(DeployResult {
                 program,
@@ -72,7 +78,7 @@ pub(crate) fn cmd_deploy(
                 tx: None,
             });
             continue;
-        }
+        };
 
         let mut command = Command::new(&wallet.wallet_binary);
         command
@@ -165,6 +171,26 @@ pub(crate) fn cmd_deploy(
     }
 
     Ok(())
+}
+
+pub(crate) fn candidate_guest_binary_roots(project_root: &Path) -> [PathBuf; 2] {
+    [
+        project_root.join(LEGACY_GUEST_BIN_REL_PATH),
+        project_root.join(DOCKER_GUEST_BIN_REL_PATH),
+    ]
+}
+
+pub(crate) fn candidate_guest_binary_paths(project_root: &Path, program: &str) -> Vec<PathBuf> {
+    candidate_guest_binary_roots(project_root)
+        .into_iter()
+        .map(|root| root.join(format!("{program}.bin")))
+        .collect()
+}
+
+pub(crate) fn find_guest_binary(project_root: &Path, program: &str) -> Option<PathBuf> {
+    candidate_guest_binary_paths(project_root, program)
+        .into_iter()
+        .find(|path| path.exists())
 }
 
 fn preflight_sequencer_reachability(sequencer_addr: &str) -> DynResult<()> {

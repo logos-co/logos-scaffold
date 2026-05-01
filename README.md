@@ -24,6 +24,9 @@ Localnet and process/port detection rely on Unix tools (lsof, ps, kill).
 - `git`, `rustc`, `cargo`
 - Unix process helpers: `lsof`, `ps`, `kill`
 - Container runtime for guest builds: Docker or Podman
+- `logos-blockchain-circuits` for sequencer/circuit builds. Set
+  `LOGOS_BLOCKCHAIN_CIRCUITS=/path/to/logos-blockchain-circuits` when it is
+  not installed at `~/.logos-blockchain-circuits`.
 
 ## Install
 
@@ -55,6 +58,12 @@ If you need to validate on Raspberry Pi OS, use the Docker dogfooding workflow
 documented there. The normal install and first-success commands below are still
 the best starting point for new users.
 
+To run the full dogfood suite noninteractively in the amd64 Docker lab:
+
+```bash
+./dogfood/run-container.sh --run-scenarios
+```
+
 ## CLI
 
 All commands below also work under the `lgs` alias (e.g. `lgs setup`).
@@ -65,6 +74,8 @@ logos-scaffold new <name> [--vendor-deps] [--lez-path PATH] [--cache-root PATH]
 logos-scaffold init
 logos-scaffold setup
 logos-scaffold build [project-path]
+logos-scaffold build idl [project-path] [--timeout-sec N]
+logos-scaffold build client [project-path] [--timeout-sec N]
 logos-scaffold deploy [program-name]
 logos-scaffold localnet start [--timeout-sec N]
 logos-scaffold localnet stop
@@ -87,6 +98,10 @@ logos-scaffold help
 - `init` writes `scaffold.toml` with defaults into the current directory so an existing project can use the scaffold workflow. It creates `.scaffold/{state,logs}` and appends `.scaffold` to `.gitignore`. It refuses to overwrite an existing `scaffold.toml`. Run `setup` next.
 - `setup` syncs LEZ to pinned commit, builds the standalone `sequencer_service` and `wallet` binaries locally inside the LEZ tree, and seeds a deterministic default wallet from preconfigured public accounts when none is set. Wallet binaries are project-local and are not installed to PATH — use `logos-scaffold wallet ...` commands to interact with the wallet.
 - `build [project-path]` runs `setup` and then `cargo build --workspace`.
+  LEZ-framework builds also regenerate IDL and client code with bounded
+  subprocess timeouts.
+- `build idl` and `build client` accept `--timeout-sec` so long-running cargo
+  subprocesses fail with a clear bounded error instead of hanging indefinitely.
 - `deploy [program-name]` deploys one or all guest programs discovered in `methods/guest/src/bin/*.rs` using prebuilt `.bin` artifacts.
 - `localnet start` waits until localnet is actually ready (`pid alive` + `127.0.0.1:3040` reachable), otherwise fails with diagnostics.
 - `localnet status` distinguishes managed process, stale state, and foreign listeners.
@@ -154,6 +169,13 @@ See [LEZ Framework Template](./templates/lez-framework/README.md) for details.
 
 ## Troubleshooting
 
+- If setup or localnet fails with circuits errors, install
+  `logos-blockchain-circuits`, set `LOGOS_BLOCKCHAIN_CIRCUITS`, and rerun
+  `logos-scaffold doctor`. The doctor command checks the circuits directory,
+  version, required files, and whether the prover can execute on the current
+  CPU/runtime.
+- RISC Zero guest builds use Docker by default in generated projects, so Docker
+  must be reachable from the environment running `cargo build`.
 - If `localnet start` fails, inspect:
 
 ```bash
@@ -197,3 +219,6 @@ export EXAMPLE_PROGRAMS_BUILD_DIR=$(pwd)/target/riscv-guest/example_program_depl
 cargo run --bin run_hello_world -- --program-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <public_account_id>
 cargo run --bin run_hello_world_through_tail_call_private -- --simple-tail-call-path "$EXAMPLE_PROGRAMS_BUILD_DIR/simple_tail_call.bin" --hello-world-path "$EXAMPLE_PROGRAMS_BUILD_DIR/hello_world.bin" <private_account_id>
 ```
+
+When using the default Docker guest build path, replace `release` in the path
+above with `docker`. Scaffold deploy/report commands check both layouts.

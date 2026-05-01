@@ -17,10 +17,15 @@ ergonomic developer experience similar to Anchor on Solana:
 ## First-Time Setup
 
 ```bash
+export LOGOS_BLOCKCHAIN_CIRCUITS=/path/to/logos-blockchain-circuits # if not installed at ~/.logos-blockchain-circuits
 logos-scaffold setup
 logos-scaffold localnet start
 logos-scaffold doctor
 ```
+
+Docker must be reachable for RISC Zero guest builds. Generated projects use
+RISC Zero's Docker guest builder by default instead of requiring a host-local
+RISC Zero Rust toolchain from `rzup install`.
 
 ## Build
 
@@ -31,7 +36,7 @@ logos-scaffold build
 ## IDL
 
 ```bash
-logos-scaffold build idl
+logos-scaffold build idl [--timeout-sec 1800]
 ```
 
 ## Diagnostics Bundle
