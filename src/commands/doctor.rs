@@ -7,8 +7,7 @@ use anyhow::bail;
 use super::wallet_support::wallet_password;
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
 use crate::constants::{
-    DEFAULT_LEZ_PIN, DEFAULT_LEZ_TAG, DEFAULT_SPEL_PIN, SEQUENCER_BIN_REL_PATH, SPEL_BIN_REL_PATH,
-    WALLET_BIN_REL_PATH,
+    DEFAULT_LEZ, DEFAULT_SPEL, SEQUENCER_BIN_REL_PATH, SPEL_BIN_REL_PATH, WALLET_BIN_REL_PATH,
 };
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
@@ -94,7 +93,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     // `check_repo("lez", …)` above, which only validates the on-disk clone
     // is at the *configured* pin (whatever the user wrote in scaffold.toml).
     rows.push(CheckRow {
-        status: if project.config.lez.pin == DEFAULT_LEZ_PIN {
+        status: if project.config.lez.pin == DEFAULT_LEZ.sha {
             CheckStatus::Pass
         } else {
             CheckStatus::Warn
@@ -102,14 +101,14 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         name: "lez pin matches scaffold default".to_string(),
         detail: format!(
             "configured pin={} expected={}",
-            project.config.lez.pin, DEFAULT_LEZ_PIN
+            project.config.lez.pin, DEFAULT_LEZ.sha
         ),
-        remediation: if project.config.lez.pin == DEFAULT_LEZ_PIN {
+        remediation: if project.config.lez.pin == DEFAULT_LEZ.sha {
             None
         } else {
             Some(format!(
                 "Set repos.lez.pin in scaffold.toml to {} and run `{}`",
-                DEFAULT_LEZ_PIN, STEP_SETUP
+                DEFAULT_LEZ.sha, STEP_SETUP
             ))
         },
     });
@@ -119,7 +118,7 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     rows.push(check_repo("spel", &spel, &project.config.spel.pin));
 
     rows.push(CheckRow {
-        status: if project.config.spel.pin == DEFAULT_SPEL_PIN {
+        status: if project.config.spel.pin == DEFAULT_SPEL.sha {
             CheckStatus::Pass
         } else {
             CheckStatus::Warn
@@ -127,14 +126,14 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         name: "spel pin matches scaffold default".to_string(),
         detail: format!(
             "configured pin={} expected={}",
-            project.config.spel.pin, DEFAULT_SPEL_PIN
+            project.config.spel.pin, DEFAULT_SPEL.sha
         ),
-        remediation: if project.config.spel.pin == DEFAULT_SPEL_PIN {
+        remediation: if project.config.spel.pin == DEFAULT_SPEL.sha {
             None
         } else {
             Some(format!(
                 "Set repos.spel.pin in scaffold.toml to {} and run `{}`",
-                DEFAULT_SPEL_PIN, STEP_SETUP
+                DEFAULT_SPEL.sha, STEP_SETUP
             ))
         },
     });
@@ -390,8 +389,8 @@ pub(crate) fn print_report(report: &DoctorReport) {
 }
 
 /// Verify that the spel pin scaffold builds also pins LEZ at the same
-/// commit/tag scaffold itself uses (`DEFAULT_LEZ_PIN` /
-/// `DEFAULT_LEZ_TAG`). When the two diverge, spel's sequencer-RPC client
+/// commit/tag scaffold itself uses (`DEFAULT_LEZ.sha` /
+/// `DEFAULT_LEZ.tag`). When the two diverge, spel's sequencer-RPC client
 /// speaks a different LEZ protocol than the sequencer scaffold builds,
 /// which can break `lgs spel -- ...` subcommands that hit the sequencer
 /// (image-ID computation via `spel inspect` is unaffected — it only
@@ -429,13 +428,14 @@ fn check_spel_lez_alignment(spel_path: &std::path::Path) -> CheckRow {
     //   nssa = { git = "https://github.com/.../logos-execution-zone.git", tag = "v0.2.0-rc1" }
     //   wallet = { git = "...", rev = "ffcbc15972adbf557939bf3e2852af276422631b" }
     // Match either form against scaffold's pin.
-    let aligned = text.contains(DEFAULT_LEZ_TAG) || text.contains(DEFAULT_LEZ_PIN);
+    let aligned = text.contains(DEFAULT_LEZ.tag) || text.contains(DEFAULT_LEZ.sha);
     if aligned {
         CheckRow {
             status: CheckStatus::Pass,
             name: "spel vendors matching LEZ".to_string(),
             detail: format!(
-                "spel pins LEZ at {DEFAULT_LEZ_TAG} ({DEFAULT_LEZ_PIN}) — matches scaffold"
+                "spel pins LEZ at {} ({}) — matches scaffold",
+                DEFAULT_LEZ.tag, DEFAULT_LEZ.sha
             ),
             remediation: None,
         }
@@ -444,11 +444,12 @@ fn check_spel_lez_alignment(spel_path: &std::path::Path) -> CheckRow {
             status: CheckStatus::Warn,
             name: "spel vendors matching LEZ".to_string(),
             detail: format!(
-                "spel-cli/Cargo.toml does not reference LEZ {DEFAULT_LEZ_TAG} or {DEFAULT_LEZ_PIN}; spel may speak a different sequencer-RPC protocol than scaffold's wallet/sequencer build"
+                "spel-cli/Cargo.toml does not reference LEZ {} or {}; spel may speak a different sequencer-RPC protocol than scaffold's wallet/sequencer build",
+                DEFAULT_LEZ.tag, DEFAULT_LEZ.sha
             ),
             remediation: Some(format!(
-                "Bump repos.spel.pin to a spel commit whose spel-cli/Cargo.toml pins LEZ at {DEFAULT_LEZ_TAG}, then run `{}`",
-                STEP_SETUP
+                "Bump repos.spel.pin to a spel commit whose spel-cli/Cargo.toml pins LEZ at {}, then run `{}`",
+                DEFAULT_LEZ.tag, STEP_SETUP
             )),
         }
     }
@@ -523,7 +524,8 @@ mod tests {
             tmp.path(),
             &format!(
                 "[package]\nname = \"spel\"\n\n[dependencies]\n\
-                 nssa = {{ git = \"https://github.com/x/lez.git\", tag = \"{DEFAULT_LEZ_TAG}\" }}\n"
+                 nssa = {{ git = \"https://github.com/x/lez.git\", tag = \"{}\" }}\n",
+                DEFAULT_LEZ.tag,
             ),
         );
         let row = check_spel_lez_alignment(tmp.path());
@@ -537,7 +539,8 @@ mod tests {
             tmp.path(),
             &format!(
                 "[dependencies]\n\
-                 wallet = {{ git = \"https://github.com/x/lez.git\", rev = \"{DEFAULT_LEZ_PIN}\" }}\n"
+                 wallet = {{ git = \"https://github.com/x/lez.git\", rev = \"{}\" }}\n",
+                DEFAULT_LEZ.sha,
             ),
         );
         let row = check_spel_lez_alignment(tmp.path());
@@ -555,7 +558,7 @@ mod tests {
         let row = check_spel_lez_alignment(tmp.path());
         assert_eq!(row.status, CheckStatus::Warn);
         assert!(
-            row.detail.contains(DEFAULT_LEZ_TAG) && row.detail.contains(DEFAULT_LEZ_PIN),
+            row.detail.contains(DEFAULT_LEZ.tag) && row.detail.contains(DEFAULT_LEZ.sha),
             "warn detail must name both expected forms: {row:?}"
         );
         assert!(row.remediation.is_some(), "must include remediation");

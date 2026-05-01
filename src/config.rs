@@ -400,7 +400,7 @@ pub(crate) fn escape_toml_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::DEFAULT_SPEL_PIN;
+    use crate::constants::DEFAULT_SPEL;
 
     fn minimal_scaffold_toml() -> String {
         r#"[scaffold]
@@ -490,7 +490,7 @@ pin = "q"
                 url: SPEL_URL.to_string(),
                 source: "git".to_string(),
                 path: "spel".to_string(),
-                pin: DEFAULT_SPEL_PIN.to_string(),
+                pin: DEFAULT_SPEL.sha.to_string(),
             },
             wallet_home_dir: ".scaffold/wallet".to_string(),
             localnet: LocalnetConfig::default(),

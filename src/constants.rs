@@ -1,6 +1,48 @@
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const LEZ_URL: &str = "https://github.com/logos-blockchain/logos-execution-zone.git";
-pub(crate) const DEFAULT_LEZ_PIN: &str = "35d8df0d031315219f94d1546ceb862b0e5b208f";
+pub(crate) const SPEL_URL: &str = "https://github.com/logos-co/spel.git";
+
+/// Two-form git pin: SHA (used in scaffold.toml `[repos.*].pin` and in
+/// `check_repo` git-head comparisons) plus tag (used by `check_spel_lez_alignment`
+/// and by user-project Cargo.toml git-dep substitution).
+pub(crate) struct GitRef {
+    pub(crate) sha: &'static str,
+    pub(crate) tag: &'static str,
+}
+
+// IMPORTANT — single source of truth for framework pins. When bumping,
+// change the literal in this file ONLY. Every site that needs the SHA
+// reads `.sha`; every site that needs the tag reads `.tag`. Active
+// downstream consumers:
+//
+//   - `commands/init.rs` / `commands/new.rs` — write `[repos.*].pin = <sha>`
+//     into the user's scaffold.toml.
+//   - `commands/doctor.rs` — drift checks against the user's scaffold.toml
+//     pin and the `check_spel_lez_alignment` string match against spel's
+//     vendored LEZ ref (tag form takes priority, SHA fallback).
+//   - `template/project.rs` — substitutes `{{lez_pin}}` (SHA) and
+//     `{{spel_tag}}` (tag) into rendered Cargo.toml files. After PR 19
+//     (`logos-co/logos-scaffold#19`) merges, the lez-framework template
+//     gains three `tag = "{{spel_tag}}"` lines that read DEFAULT_SPEL.tag.
+//
+// Special note on DEFAULT_SPEL: the unsuffixed `v0.2.0` tag (commit
+// `72fc22…`) is *older* than `v0.2.0-rc.5` (commit `ed3bbe…`). We pick
+// rc.5 because its `spel-cli/Cargo.toml` pins LEZ via `tag = "v0.2.0-rc1"`
+// — i.e. the same LEZ commit `DEFAULT_LEZ.sha` resolves to. Picking
+// v0.2.0 would have spel build against an older LEZ (`ffcbc15`, 119
+// commits behind scaffold's pin); spel's sequencer-RPC client would
+// then speak a different protocol than the sequencer scaffold itself
+// builds. `check_spel_lez_alignment` in `commands/doctor.rs` enforces
+// this invariant at runtime.
+pub(crate) const DEFAULT_LEZ: GitRef = GitRef {
+    sha: "35d8df0d031315219f94d1546ceb862b0e5b208f",
+    tag: "v0.2.0-rc1",
+};
+pub(crate) const DEFAULT_SPEL: GitRef = GitRef {
+    sha: "ed3bbedb4b684645da05455d30a4a0be7cc4dfe0",
+    tag: "v0.2.0-rc.5",
+};
+
 pub(crate) const DEFAULT_HELLO_WORLD_IMAGE_ID_HEX: &str =
     "4880b298f59699c1e4263c5c2245c80123632d608b9116f4b253c63e6c340771";
 pub(crate) const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
@@ -18,26 +60,6 @@ pub(crate) const SEQUENCER_BIN_REL_PATH: &str = "target/release/sequencer_servic
 pub(crate) const METHODS_DIR: &str = "methods";
 pub(crate) const SEQUENCER_CONFIG_REL_PATH: &str =
     "sequencer/service/configs/debug/sequencer_config.json";
-pub(crate) const SPEL_URL: &str = "https://github.com/logos-co/spel.git";
-/// Default `spel` commit pin — `logos-co/spel` tag `v0.2.0-rc.5`.
-///
-/// Counter-intuitive naming: the unsuffixed `v0.2.0` tag (commit
-/// `72fc22…`) is *older* than `v0.2.0-rc.5` (commit `ed3bbe…`). The rc.5
-/// tag is the one we want because its `spel-cli/Cargo.toml` pins LEZ via
-/// `tag = "v0.2.0-rc1"` — i.e. the same LEZ commit `DEFAULT_LEZ_PIN`
-/// resolves to. Picking v0.2.0 would have spel build against an older
-/// LEZ (`ffcbc15`, 119 commits behind scaffold's pin), so spel's
-/// sequencer-RPC client would speak a different protocol than the
-/// sequencer scaffold itself builds. Image-ID computation isn't affected
-/// (image IDs are a function of the guest ELF + risc0-zkvm version, not
-/// LEZ host code), but other `lgs spel -- ...` subcommands that hit the
-/// sequencer would break in subtle ways. Doctor enforces the alignment
-/// at runtime — see `check_spel_lez_alignment` in `commands/doctor.rs`.
-pub(crate) const DEFAULT_SPEL_PIN: &str = "ed3bbedb4b684645da05455d30a4a0be7cc4dfe0";
-/// Tag form of `DEFAULT_LEZ_PIN`. Spel's `spel-cli/Cargo.toml` references
-/// LEZ by tag rather than SHA, so the doctor alignment check needs both
-/// representations to match against either form.
-pub(crate) const DEFAULT_LEZ_TAG: &str = "v0.2.0-rc1";
 pub(crate) const SPEL_BIN_REL_PATH: &str = "target/release/spel";
 pub(crate) const BASECAMP_URL: &str = "https://github.com/logos-co/logos-basecamp.git";
 /// Basecamp commit pin — `logos-basecamp` tag `v0.1.1`.

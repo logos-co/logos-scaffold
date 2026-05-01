@@ -6,8 +6,8 @@ use anyhow::{bail, Context};
 
 use crate::config::{escape_toml_string, serialize_config};
 use crate::constants::{
-    DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    DEFAULT_LEZ_PIN, DEFAULT_SPEL_PIN, FRAMEWORK_KIND_DEFAULT, LEZ_URL, SPEL_URL, VERSION,
+    DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION, DEFAULT_LEZ,
+    DEFAULT_SPEL, FRAMEWORK_KIND_DEFAULT, LEZ_URL, SPEL_URL, VERSION,
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
 use crate::project::default_cache_root;
@@ -52,7 +52,7 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
                 .map(|(cache, _)| {
                     cache
                         .join("repos/spel")
-                        .join(DEFAULT_SPEL_PIN)
+                        .join(DEFAULT_SPEL.sha)
                         .display()
                         .to_string()
                 })
@@ -70,7 +70,7 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
             escape_toml_string(SPEL_URL),
             escape_toml_string(SPEL_URL),
             escape_toml_string(&spel_path),
-            escape_toml_string(DEFAULT_SPEL_PIN),
+            escape_toml_string(DEFAULT_SPEL.sha),
         );
         write_text(&scaffold_path, &appended)?;
         println!(
@@ -84,12 +84,12 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
     let (bootstrap_cache, _) = default_cache_root()?;
     let lez_path = bootstrap_cache
         .join("repos/lez")
-        .join(DEFAULT_LEZ_PIN)
+        .join(DEFAULT_LEZ.sha)
         .display()
         .to_string();
     let spel_path = bootstrap_cache
         .join("repos/spel")
-        .join(DEFAULT_SPEL_PIN)
+        .join(DEFAULT_SPEL.sha)
         .display()
         .to_string();
 
@@ -100,13 +100,13 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
             url: LEZ_URL.to_string(),
             source: LEZ_URL.to_string(),
             path: lez_path,
-            pin: DEFAULT_LEZ_PIN.to_string(),
+            pin: DEFAULT_LEZ.sha.to_string(),
         },
         spel: RepoRef {
             url: SPEL_URL.to_string(),
             source: SPEL_URL.to_string(),
             path: spel_path,
-            pin: DEFAULT_SPEL_PIN.to_string(),
+            pin: DEFAULT_SPEL.sha.to_string(),
         },
         wallet_home_dir: ".scaffold/wallet".to_string(),
         framework: FrameworkConfig {
@@ -183,7 +183,7 @@ fn derive_spel_path_from_lez_path(scaffold_toml: &str) -> Option<String> {
                     // If the segment immediately after is a pin (bootstrap-
                     // cache layout), swap the pin too.
                     if i + 1 < segments.len() && !segments[i + 1].is_empty() {
-                        segments[i + 1] = DEFAULT_SPEL_PIN.to_string();
+                        segments[i + 1] = DEFAULT_SPEL.sha.to_string();
                     }
                     return Some(segments.join(&sep.to_string()));
                 }
@@ -211,7 +211,7 @@ mod tests {
         let cfg = parse_config(&text).expect("parse scaffold.toml");
 
         assert_eq!(cfg.version, VERSION);
-        assert_eq!(cfg.lez.pin, DEFAULT_LEZ_PIN);
+        assert_eq!(cfg.lez.pin, DEFAULT_LEZ.sha);
         assert_eq!(cfg.framework.kind, FRAMEWORK_KIND_DEFAULT);
         assert_eq!(cfg.wallet_home_dir, ".scaffold/wallet");
         assert_eq!(cfg.localnet.port, 3040);
@@ -292,12 +292,12 @@ home_dir = ".scaffold/wallet"
             "[repos.spel] section must be appended; got:\n{after}"
         );
         assert!(
-            after.contains(DEFAULT_SPEL_PIN),
+            after.contains(DEFAULT_SPEL.sha),
             "default spel pin must be present; got:\n{after}"
         );
         // Co-location: backfill must derive spel.path from the existing
         // lez.path, not from default_cache_root() (the C1 bug).
-        let expected_spel_path = format!("/custom/cache/repos/spel/{DEFAULT_SPEL_PIN}");
+        let expected_spel_path = format!("/custom/cache/repos/spel/{}", DEFAULT_SPEL.sha);
         assert!(
             after.contains(&expected_spel_path),
             "spel path must mirror the lez layout; expected {expected_spel_path} in:\n{after}"
@@ -311,7 +311,7 @@ path = "/home/u/.cache/logos-scaffold/repos/lez/deadbeef"
 pin = "deadbeef"
 "#;
         let derived = derive_spel_path_from_lez_path(toml).expect("derived");
-        let expected = format!("/home/u/.cache/logos-scaffold/repos/spel/{DEFAULT_SPEL_PIN}");
+        let expected = format!("/home/u/.cache/logos-scaffold/repos/spel/{}", DEFAULT_SPEL.sha);
         assert_eq!(derived, expected);
     }
 
