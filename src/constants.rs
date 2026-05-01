@@ -10,30 +10,16 @@ pub(crate) struct GitRef {
     pub(crate) tag: &'static str,
 }
 
-// IMPORTANT — single source of truth for framework pins. When bumping,
-// change the literal in this file ONLY. Every site that needs the SHA
-// reads `.sha`; every site that needs the tag reads `.tag`. Active
-// downstream consumers:
-//
-//   - `commands/init.rs` / `commands/new.rs` — write `[repos.*].pin = <sha>`
-//     into the user's scaffold.toml.
-//   - `commands/doctor.rs` — drift checks against the user's scaffold.toml
-//     pin and the `check_spel_lez_alignment` string match against spel's
-//     vendored LEZ ref (tag form takes priority, SHA fallback).
-//   - `template/project.rs` — substitutes `{{lez_pin}}` (SHA) and
-//     `{{spel_tag}}` (tag) into rendered Cargo.toml files. After PR 19
-//     (`logos-co/logos-scaffold#19`) merges, the lez-framework template
-//     gains three `tag = "{{spel_tag}}"` lines that read DEFAULT_SPEL.tag.
+// Cross-framework invariant: DEFAULT_SPEL must point at a spel commit
+// whose `spel-cli/Cargo.toml` vendors LEZ at the same ref as DEFAULT_LEZ.
+// Otherwise spel's sequencer-RPC client speaks a different protocol than
+// scaffold's own wallet/sequencer build. `check_spel_lez_alignment` in
+// `commands/doctor.rs` enforces this at runtime — re-run `doctor` after
+// bumping either pin.
 //
 // Special note on DEFAULT_SPEL: the unsuffixed `v0.2.0` tag (commit
-// `72fc22…`) is *older* than `v0.2.0-rc.5` (commit `ed3bbe…`). We pick
-// rc.5 because its `spel-cli/Cargo.toml` pins LEZ via `tag = "v0.2.0-rc1"`
-// — i.e. the same LEZ commit `DEFAULT_LEZ.sha` resolves to. Picking
-// v0.2.0 would have spel build against an older LEZ (`ffcbc15`, 119
-// commits behind scaffold's pin); spel's sequencer-RPC client would
-// then speak a different protocol than the sequencer scaffold itself
-// builds. `check_spel_lez_alignment` in `commands/doctor.rs` enforces
-// this invariant at runtime.
+// `72fc22…`) is *older* than `v0.2.0-rc.5` (commit `ed3bbe…`). rc.5 is
+// the one we want because its vendored LEZ tag matches DEFAULT_LEZ.tag.
 pub(crate) const DEFAULT_LEZ: GitRef = GitRef {
     sha: "35d8df0d031315219f94d1546ceb862b0e5b208f",
     tag: "v0.2.0-rc1",
