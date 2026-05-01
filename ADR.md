@@ -162,12 +162,31 @@ construction silently produces wrong IDs.
 
 Scaffold vendors `spel` per project the same way it vendors LEZ: clone
 `logos-co/spel` into the project, pin a commit (`DEFAULT_SPEL_PIN`,
-currently tag `v0.2.0`), build it during `setup`, and invoke the project-
-local binary from `deploy`. `spel` itself depends on the same risc0 crate
-the user's project does, so the image ID it computes is byte-for-byte the
-value the sequencer will use. The pin is a scaffold-shipped default
-overridable via `[repos.spel].pin` in `scaffold.toml`; `doctor` reports
-drift the same way it does for LEZ.
+currently tag `v0.2.0-rc.5`), build it during `setup`, and invoke the
+project-local binary from `deploy`. `spel` itself depends on the same
+risc0 crate the user's project does, so the image ID it computes is
+byte-for-byte the value the sequencer will use. The pin is a scaffold-
+shipped default overridable via `[repos.spel].pin` in `scaffold.toml`;
+`doctor` reports drift the same way it does for LEZ.
+
+**LEZ-version alignment.** Spel itself vendors LEZ as a Cargo dependency
+for its sequencer-RPC client and wallet helpers. Picking a spel pin
+whose `spel-cli/Cargo.toml` references a different LEZ commit than
+scaffold's own `DEFAULT_LEZ_PIN` is a latent footgun: spel and the
+scaffold-built sequencer would speak different versions of the
+sequencer protocol, breaking `lgs spel -- ...` subcommands that hit
+the network. Image-ID computation is unaffected (it's purely guest-ELF
++ risc0-zkvm), but other spel surfaces would silently diverge.
+
+We pick `DEFAULT_SPEL_PIN` to satisfy this alignment at every bump
+(currently `v0.2.0-rc.5`, which pins LEZ via `tag = "v0.2.0-rc1"` —
+the same commit `DEFAULT_LEZ_PIN` resolves to). The counter-intuitive
+naming — `v0.2.0-rc.5` is *newer* than the unsuffixed `v0.2.0` tag —
+is upstream's choice and a maintenance hazard worth flagging when
+revising the pin. `doctor` enforces alignment at runtime by reading
+`<spel.path>/spel-cli/Cargo.toml` and warning if neither
+`DEFAULT_LEZ_PIN` nor `DEFAULT_LEZ_TAG` appears in spel's dependency
+declarations.
 
 The image ID is computed locally from the submitted ELF — scaffold does
 not (yet) verify on-chain inclusion. LEZ wallet/RPC don't currently
