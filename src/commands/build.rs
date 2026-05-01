@@ -26,11 +26,14 @@ pub(crate) fn cmd_build_shortcut(project_dir: Option<PathBuf>) -> DynResult<()> 
             }
             other => {
                 println!(
-                    "Skipping framework-specific build steps for framework kind `{}`",
+                    "Skipping IDL/client generation for framework kind `{}`",
                     other
                 );
             }
         }
+        // Guest building is intentionally framework-agnostic: any project with
+        // a `methods/Cargo.toml` (Risc0 guest crate excluded from the parent
+        // workspace) gets it compiled, regardless of `framework.kind`.
         build_methods_guests(&cwd)?;
 
         Ok(())
@@ -57,6 +60,10 @@ fn build_methods_guests(cwd: &Path) -> DynResult<()> {
     let methods_manifest = cwd.join(METHODS_DIR).join("Cargo.toml");
     if methods_manifest.is_file() {
         println!("Building guest methods...");
+        // `--release` is required: deploy-side discovery (`deploy.rs`,
+        // `GUEST_BIN_SEARCH_ROOTS`) only matches `.bin` files whose path
+        // contains a `release/` component, so a debug build here would
+        // produce artefacts the deploy step cannot find.
         run_checked(
             Command::new("cargo")
                 .current_dir(cwd)
@@ -79,14 +86,14 @@ mod tests {
     #[test]
     fn build_methods_guests_is_noop_when_methods_dir_absent() {
         let tmp = tempdir().expect("create temp dir");
-        build_methods_guests(tmp.path()).expect("no methods/ ⇒ Ok");
+        build_methods_guests(tmp.path()).expect("no methods/ -> Ok");
     }
 
     #[test]
     fn build_methods_guests_is_noop_when_methods_dir_lacks_cargo_toml() {
         let tmp = tempdir().expect("create temp dir");
         fs::create_dir(tmp.path().join("methods")).expect("mkdir methods");
-        build_methods_guests(tmp.path()).expect("methods/ without Cargo.toml ⇒ Ok");
+        build_methods_guests(tmp.path()).expect("methods/ without Cargo.toml -> Ok");
     }
 
     #[test]
@@ -100,10 +107,13 @@ mod tests {
         fs::write(methods.join("Cargo.toml"), "this is not valid toml")
             .expect("write methods/Cargo.toml");
         let err = build_methods_guests(tmp.path())
-            .expect_err("invalid manifest ⇒ cargo should fail and propagate");
+            .expect_err("invalid manifest -> cargo should fail and propagate");
         let msg = format!("{err:#}");
+        // Match the substring we control (the cargo flags) rather than the
+        // full label string, so this test does not break if `run_checked`'s
+        // error format is reworded.
         assert!(
-            msg.contains("cargo build --release --manifest-path methods/Cargo.toml"),
+            msg.contains("cargo build --release"),
             "expected error to mention the cargo invocation; got: {msg}"
         );
     }
