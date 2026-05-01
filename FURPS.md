@@ -8,6 +8,7 @@
 2. Integrate wallet generation as part of the scaffold workflow for bootstrap and interaction flows.
 3. Support native token topup for wallet operations on local and DevNet environments.
 4. Deploy command auto-discovers program binaries from `methods/target/` by matching program names, so non-template projects deploy without `--program-path`.
+5. Build command auto-compiles `methods/Cargo.toml` when present, so projects whose parent workspace excludes the Risc0 guest crate produce guest binaries via `lgs build` without a separate `cargo build --manifest-path methods/Cargo.toml`.
 
 ### Usability
 

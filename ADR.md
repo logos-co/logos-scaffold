@@ -153,3 +153,19 @@ files whose path components include both a `riscv32im*` target triple and a `rel
 Release builds are preferred; if only a debug build exists, that is used as a fallback. When
 multiple matches exist, the shallowest path wins. This keeps the scaffold general and avoids
 coupling to a specific project name or workspace layout.
+
+## Guest Build Discovery
+
+The deploy-side discovery above only works if guest binaries actually exist on disk. Risc0
+guest crates target `riscv32im-risc0-zkvm-elf` and are intentionally excluded from the parent
+workspace in real projects (the scaffold template lists them as members for ergonomics, but
+projects that grew their own workspace — for example to add unrelated host crates — typically
+exclude `methods` and `methods/guest` so `cargo build --workspace` doesn't try to build them
+for the host triple).
+
+`build` therefore probes for `methods/Cargo.toml` after the workspace build and, when present,
+runs `cargo build --release --manifest-path methods/Cargo.toml` so the guest crate compiles
+regardless of whether it is a workspace member. The probe is a single stat; absence is a no-op,
+so non-Risc0 projects pay nothing. Release mode is chosen so the produced `.bin` lands in the
+same `release/` path component the deploy-side discovery requires — the two halves are designed
+together. The shared `methods` directory name lives in `crate::constants::METHODS_DIR`.
