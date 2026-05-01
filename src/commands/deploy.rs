@@ -19,7 +19,9 @@ use super::wallet_support::{
 /// the wild: risc0's default workspace layout emits to `target/riscv-guest/...`
 /// (used by the scaffold template), while sub-crate builds can land in
 /// `methods/target/...`. Discovery walks both so renamed projects work
-/// regardless of which layout cargo/risc0 chose.
+/// regardless of which layout cargo/risc0 chose. The `methods/...` half of
+/// this constant is the same project-relative directory that `build.rs`
+/// compiles via `crate::constants::METHODS_DIR`; keep them in sync.
 const GUEST_BIN_SEARCH_ROOTS: &[&str] = &["target/riscv-guest", "methods/target"];
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 

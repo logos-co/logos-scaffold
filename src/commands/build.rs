@@ -6,7 +6,7 @@ use std::process::Command;
 use crate::commands::client::generate_clients_from_current_idl;
 use crate::commands::idl::build_idl_for_current_project;
 use crate::commands::setup::cmd_setup;
-use crate::constants::{FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK};
+use crate::constants::{FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK, METHODS_DIR};
 use crate::process::run_checked;
 use crate::project::{load_project, run_in_project_dir};
 use crate::DynResult;
@@ -54,7 +54,7 @@ fn build_workspace_for_current_project(cwd: &Path) -> DynResult<()> {
 /// whether a `methods/` package exists and compiles it as part of the
 /// standard build pipeline.
 fn build_methods_guests(cwd: &Path) -> DynResult<()> {
-    let methods_manifest = cwd.join("methods").join("Cargo.toml");
+    let methods_manifest = cwd.join(METHODS_DIR).join("Cargo.toml");
     if methods_manifest.is_file() {
         println!("Building guest methods...");
         run_checked(

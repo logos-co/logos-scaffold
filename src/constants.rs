@@ -11,6 +11,11 @@ pub(crate) const DEFAULT_FRAMEWORK_VERSION: &str = "0.1.0";
 pub(crate) const DEFAULT_FRAMEWORK_IDL_SPEC: &str = "lssa-idl/0.1.0";
 pub(crate) const DEFAULT_FRAMEWORK_IDL_PATH: &str = "idl";
 pub(crate) const SEQUENCER_BIN_REL_PATH: &str = "target/release/sequencer_service";
+/// Project-relative directory holding the Risc0 guest crate (`methods/Cargo.toml`,
+/// `methods/guest/...`). Shared between the build side (`build_methods_guests`),
+/// which compiles the manifest, and the deploy side, which discovers the resulting
+/// `.bin` artefacts under `methods/target/...`.
+pub(crate) const METHODS_DIR: &str = "methods";
 pub(crate) const SEQUENCER_CONFIG_REL_PATH: &str =
     "sequencer/service/configs/debug/sequencer_config.json";
 pub(crate) const BASECAMP_URL: &str = "https://github.com/logos-co/logos-basecamp.git";
