@@ -1,20 +1,28 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context};
+use walkdir::WalkDir;
 
 use crate::process::run_with_stdin;
 use crate::project::load_project;
 use crate::DynResult;
 
 use super::wallet_support::{
-    extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block,
+    extract_tx_identifier, is_connectivity_failure, load_wallet_runtime, rpc_get_last_block_id,
     sequencer_unreachable_hint, summarize_command_failure, wallet_password, RpcReachabilityError,
 };
 
-const GUEST_BIN_REL_PATH: &str =
-    "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
+/// Roots searched (in order) for guest `.bin` artefacts. Both layouts exist in
+/// the wild: risc0's default workspace layout emits to `target/riscv-guest/...`
+/// (used by the scaffold template), while sub-crate builds can land in
+/// `methods/target/...`. Discovery walks both so renamed projects work
+/// regardless of which layout cargo/risc0 chose. The `methods/...` half of
+/// this constant is the same project-relative directory that `build.rs`
+/// compiles via `crate::constants::METHODS_DIR`; keep them in sync.
+const GUEST_BIN_SEARCH_ROOTS: &[&str] = &["target/riscv-guest", "methods/target"];
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
 pub(crate) fn cmd_deploy(
@@ -54,16 +62,20 @@ pub(crate) fn cmd_deploy(
     }
 
     let selected_programs = resolve_selected_programs(program_name, &available_programs)?;
-    let binaries_root = project.root.join(GUEST_BIN_REL_PATH);
+    let discovered = discover_program_binaries(&project.root, &selected_programs);
 
     preflight_sequencer_reachability(&sequencer_addr)?;
 
     let mut results = Vec::new();
     for program in selected_programs {
-        let binary_path = binaries_root.join(format!("{program}.bin"));
-        if !binary_path.exists() {
+        let Some(binary_path) = discovered.get(&program).cloned() else {
+            let searched = GUEST_BIN_SEARCH_ROOTS
+                .iter()
+                .map(|r| project.root.join(r).display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             println!("FAIL {program} deployment failed");
-            println!("  Error: missing binary at {}", binary_path.display());
+            println!("  Error: missing binary `{program}.bin` (searched: {searched})");
             println!("  Hint: run `logos-scaffold build` first.");
             results.push(DeployResult {
                 program,
@@ -72,7 +84,7 @@ pub(crate) fn cmd_deploy(
                 tx: None,
             });
             continue;
-        }
+        };
 
         let mut command = Command::new(&wallet.wallet_binary);
         command
@@ -168,7 +180,7 @@ pub(crate) fn cmd_deploy(
 }
 
 fn preflight_sequencer_reachability(sequencer_addr: &str) -> DynResult<()> {
-    match rpc_get_last_block(sequencer_addr) {
+    match rpc_get_last_block_id(sequencer_addr) {
         Ok(_) => Ok(()),
         Err(RpcReachabilityError::Connectivity(err)) => {
             bail!(
@@ -274,8 +286,12 @@ fn deploy_single_program(
         let summary = summarize_command_failure(&output.stdout, &output.stderr);
         if json {
             eprintln!(
-                "{{\"status\":\"failed\",\"program\":\"{}\",\"error\":\"{}\"}}",
-                program_name, summary
+                "{}",
+                serde_json::json!({
+                    "status": "failed",
+                    "program": program_name,
+                    "error": summary,
+                })
             );
         } else {
             println!("FAIL {program_name} deployment failed");
@@ -285,13 +301,13 @@ fn deploy_single_program(
     }
 
     if json {
-        let tx_val = tx
-            .as_deref()
-            .map(|t| format!("\"{}\"", t))
-            .unwrap_or_else(|| "null".to_string());
         println!(
-            "{{\"status\":\"submitted\",\"program\":\"{}\",\"tx\":{}}}",
-            program_name, tx_val
+            "{}",
+            serde_json::json!({
+                "status": "submitted",
+                "program": program_name,
+                "tx": tx,
+            })
         );
     } else {
         println!("OK  {program_name} submitted");
@@ -324,5 +340,245 @@ impl DeployStatus {
             DeployStatus::Submitted => "submitted",
             DeployStatus::Failed => "failed",
         }
+    }
+}
+
+fn is_valid_program_name(program: &str) -> bool {
+    !program.is_empty()
+        && program.len() <= 128
+        && !program.contains('/')
+        && !program.contains('\\')
+        && !program.contains("..")
+}
+
+/// Walk every `GUEST_BIN_SEARCH_ROOTS` once and return a `program -> binary_path`
+/// map. Only paths whose components include both a `riscv32im*` target triple
+/// and a `release` directory match (debug builds are ignored as a fallback).
+/// When multiple matches exist for the same program, the shallowest path wins
+/// (preferring the canonical risc0 layout over nested workspace duplicates).
+pub(crate) fn discover_program_binaries(
+    project_root: &Path,
+    programs: &[String],
+) -> HashMap<String, PathBuf> {
+    let wanted: HashMap<String, &str> = programs
+        .iter()
+        .filter(|p| is_valid_program_name(p))
+        .map(|p| (format!("{p}.bin"), p.as_str()))
+        .collect();
+    if wanted.is_empty() {
+        return HashMap::new();
+    }
+
+    let mut release: HashMap<String, (usize, PathBuf)> = HashMap::new();
+    let mut debug_fallback: HashMap<String, (usize, PathBuf)> = HashMap::new();
+
+    for root in GUEST_BIN_SEARCH_ROOTS {
+        let search_dir = project_root.join(root);
+        if !search_dir.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(&search_dir)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            let Some(filename) = path.file_name().and_then(|f| f.to_str()) else {
+                continue;
+            };
+            let Some(&program) = wanted.get(filename) else {
+                continue;
+            };
+
+            let mut has_riscv32im = false;
+            let mut has_release = false;
+            let mut depth = 0usize;
+            for component in path.components() {
+                if let std::path::Component::Normal(name) = component {
+                    depth += 1;
+                    if let Some(name) = name.to_str() {
+                        if name.starts_with("riscv32im") {
+                            has_riscv32im = true;
+                        }
+                        if name == "release" {
+                            has_release = true;
+                        }
+                    }
+                }
+            }
+            if !has_riscv32im {
+                continue;
+            }
+
+            let bucket = if has_release {
+                &mut release
+            } else {
+                &mut debug_fallback
+            };
+            match bucket.get(program) {
+                Some((existing_depth, _)) if *existing_depth <= depth => {}
+                _ => {
+                    bucket.insert(program.to_string(), (depth, path.to_path_buf()));
+                }
+            }
+        }
+    }
+
+    let mut out = HashMap::new();
+    for (program, (_, path)) in release {
+        out.insert(program, path);
+    }
+    for (program, (_, path)) in debug_fallback {
+        out.entry(program).or_insert(path);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn lookup(root: &Path, program: &str) -> Option<PathBuf> {
+        discover_program_binaries(root, &[program.to_string()]).remove(program)
+    }
+
+    #[test]
+    fn finds_binary_in_methods_target_layout() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp
+            .path()
+            .join("methods/target/some_crate/riscv32im-risc0-zkvm-elf/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("my_program.bin"), b"fake").unwrap();
+
+        let result = lookup(tmp.path(), "my_program").unwrap();
+        assert!(result.ends_with("my_program.bin"));
+    }
+
+    /// Regression test for issue #59: a project named anything other than
+    /// the scaffold template (`example_program_deployment`) places its guest
+    /// binaries under `target/riscv-guest/<project>_methods/<project>_programs/...`.
+    /// Before this PR, deploy hardcoded the template name and could never
+    /// find these binaries.
+    #[test]
+    fn finds_binary_for_renamed_project_in_riscv_guest_layout() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp.path().join(
+            "target/riscv-guest/my_app_methods/my_app_programs/riscv32im-risc0-zkvm-elf/release",
+        );
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("foo.bin"), b"fake").unwrap();
+
+        let result = lookup(tmp.path(), "foo").unwrap();
+        assert!(result.ends_with("foo.bin"));
+        assert!(result
+            .components()
+            .any(|c| c.as_os_str() == "my_app_methods"));
+    }
+
+    #[test]
+    fn returns_none_when_no_search_roots_exist() {
+        let tmp = TempDir::new().unwrap();
+        assert!(lookup(tmp.path(), "my_program").is_none());
+    }
+
+    #[test]
+    fn returns_none_when_no_matching_bin() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp
+            .path()
+            .join("methods/target/some_crate/riscv32im-risc0-zkvm-elf/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("other_program.bin"), b"fake").unwrap();
+
+        assert!(lookup(tmp.path(), "my_program").is_none());
+    }
+
+    #[test]
+    fn ignores_non_riscv32im_paths() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp
+            .path()
+            .join("methods/target/some_crate/x86_64-unknown-linux/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("my_program.bin"), b"fake").unwrap();
+
+        assert!(lookup(tmp.path(), "my_program").is_none());
+    }
+
+    #[test]
+    fn rejects_path_traversal_in_program_name() {
+        let tmp = TempDir::new().unwrap();
+        assert!(lookup(tmp.path(), "../etc/passwd").is_none());
+        assert!(lookup(tmp.path(), "foo/../bar").is_none());
+    }
+
+    #[test]
+    fn rejects_overlong_program_name() {
+        let tmp = TempDir::new().unwrap();
+        let long_name = "a".repeat(200);
+        assert!(lookup(tmp.path(), &long_name).is_none());
+    }
+
+    #[test]
+    fn prefers_release_over_debug() {
+        let tmp = TempDir::new().unwrap();
+        let debug_dir = tmp
+            .path()
+            .join("methods/target/some_crate/riscv32im-risc0-zkvm-elf/debug");
+        let release_dir = tmp
+            .path()
+            .join("methods/target/some_crate/riscv32im-risc0-zkvm-elf/release");
+        fs::create_dir_all(&debug_dir).unwrap();
+        fs::create_dir_all(&release_dir).unwrap();
+        fs::write(debug_dir.join("my_program.bin"), b"debug").unwrap();
+        fs::write(release_dir.join("my_program.bin"), b"release").unwrap();
+
+        let result = lookup(tmp.path(), "my_program").unwrap();
+        assert!(result.components().any(|c| c.as_os_str() == "release"));
+    }
+
+    #[test]
+    fn falls_back_to_debug_when_only_debug_exists() {
+        let tmp = TempDir::new().unwrap();
+        let debug_dir = tmp
+            .path()
+            .join("methods/target/some_crate/riscv32im-risc0-zkvm-elf/debug");
+        fs::create_dir_all(&debug_dir).unwrap();
+        fs::write(debug_dir.join("my_program.bin"), b"debug").unwrap();
+
+        let result = lookup(tmp.path(), "my_program").unwrap();
+        assert!(result.components().any(|c| c.as_os_str() == "debug"));
+    }
+
+    #[test]
+    fn rejects_substring_only_riscv32im_components() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp.path().join("methods/target/not-riscv32im-foo/release");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(bin_dir.join("my_program.bin"), b"fake").unwrap();
+
+        assert!(lookup(tmp.path(), "my_program").is_none());
+    }
+
+    #[test]
+    fn discover_handles_multiple_programs_in_one_walk() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(
+            "target/riscv-guest/my_app_methods/my_app_programs/riscv32im-risc0-zkvm-elf/release",
+        );
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("foo.bin"), b"a").unwrap();
+        fs::write(dir.join("bar.bin"), b"b").unwrap();
+
+        let map = discover_program_binaries(
+            tmp.path(),
+            &["foo".to_string(), "bar".to_string(), "missing".to_string()],
+        );
+        assert!(map.get("foo").unwrap().ends_with("foo.bin"));
+        assert!(map.get("bar").unwrap().ends_with("bar.bin"));
+        assert!(!map.contains_key("missing"));
     }
 }

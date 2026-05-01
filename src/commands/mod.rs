@@ -1,11 +1,15 @@
+pub(crate) mod basecamp;
 pub(crate) mod build;
 pub(crate) mod client;
+pub(crate) mod completions;
 pub(crate) mod deploy;
 pub(crate) mod doctor;
 pub(crate) mod idl;
+pub(crate) mod init;
 pub(crate) mod localnet;
 pub(crate) mod new;
 pub(crate) mod report;
+pub(crate) mod self_test;
 pub(crate) mod setup;
 pub(crate) mod wallet;
 pub(crate) mod wallet_support;
