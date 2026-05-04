@@ -26,17 +26,15 @@ const GUEST_BIN_REL_PATH: &str =
 /// context to exist (no basecamp section). Older tests in this file inline
 /// the same content; new tests should prefer this helper.
 const MINIMAL_SCAFFOLD_TOML: &str = r#"[scaffold]
-version = "0.1.0"
+version = "0.2.0"
 cache_root = "cache"
 
 [repos.lez]
-url = "https://example/lez.git"
 source = "https://example/lez.git"
 path = "lez"
 pin = "deadbeef"
 
 [repos.spel]
-url = "https://example/spel.git"
 source = "https://example/spel.git"
 path = "spel"
 pin = "deadbeef"
@@ -2254,10 +2252,13 @@ fn basecamp_launch_bails_when_no_modules_captured() {
     let project = temp.path();
     let scaffold_toml = format!(
         "{MINIMAL_SCAFFOLD_TOML}\n\
-         [basecamp]\n\
-         pin = \"deadbeef\"\n\
+         [repos.basecamp]\n\
          source = \"https://example/basecamp\"\n\
-         lgpm_flake = \"\"\n\
+         pin = \"deadbeef\"\n\
+         build = \"nix-flake\"\n\
+         attr = \"app\"\n\
+         \n\
+         [basecamp]\n\
          port_base = 60000\n\
          port_stride = 10\n"
     );
@@ -2448,13 +2449,16 @@ fn write_scaffold_toml_with_localnet(
     risc0_dev_mode: Option<bool>,
 ) {
     let spel_path = project_root.join("spel");
+    // Schema 0.2.0: no url, no [basecamp] / [basecamp.modules.*],
+    // path is set on lez/spel for back-compat (tests need a literal path
+    // to a local stub repo).
     let mut content = format!(
-        "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\npath = \"{}\"\npin = \"{}\"\n\n[repos.spel]\nurl = \"https://github.com/logos-co/spel.git\"\nsource = \"https://github.com/logos-co/spel.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \".scaffold/wallet\"\n",
+        "[scaffold]\nversion = \"0.2.0\"\ncache_root = \"{}\"\n\n[repos.lez]\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\npin = \"{}\"\npath = \"{}\"\n\n[repos.spel]\nsource = \"https://github.com/logos-co/spel.git\"\npin = \"{}\"\npath = \"{}\"\n\n[wallet]\nhome_dir = \".scaffold/wallet\"\n",
         project_root.join("cache").display(),
+        TEST_PIN,
         lez_path.display(),
         TEST_PIN,
         spel_path.display(),
-        TEST_PIN,
     );
 
     if let Some(port) = localnet_port {
@@ -3108,20 +3112,24 @@ fn init_creates_scaffold_toml_and_dirs() {
 }
 
 #[test]
-fn init_refuses_existing_scaffold_toml_with_repos_spel() {
+fn init_refuses_already_at_v0_2_0_scaffold_toml() {
     let temp = tempdir().expect("tempdir");
     let scaffold_path = temp.path().join("scaffold.toml");
-    // Already-migrated config (carries [repos.spel]) → init refuses.
-    let original =
-        "# pre-existing\n[repos.spel]\nurl = \"x\"\nsource = \"x\"\npath = \"y\"\npin = \"z\"\n";
-    fs::write(&scaffold_path, original).expect("seed scaffold.toml");
+    // First, run init to lay down a fresh v0.2.0 file.
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let original = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
 
+    // Second invocation must refuse with the "already migrated" hint.
     Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .current_dir(temp.path())
         .arg("init")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("up to date"));
+        .stderr(predicate::str::contains("already at schema"));
 
     let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
     assert_eq!(
@@ -3131,10 +3139,10 @@ fn init_refuses_existing_scaffold_toml_with_repos_spel() {
 }
 
 #[test]
-fn init_backfills_repos_spel_in_pre_spel_scaffold_toml() {
+fn init_migrates_pre_v0_2_0_scaffold_toml_in_place() {
     let temp = tempdir().expect("tempdir");
     let scaffold_path = temp.path().join("scaffold.toml");
-    let original = "[scaffold]\nversion = \"0.1.0\"\n\n[repos.lez]\nurl = \"u\"\nsource = \"u\"\npath = \"p\"\npin = \"abc\"\n";
+    let original = "# user comment\n[scaffold]\nversion = \"0.1.0\"\n\n[repos.lez]\nurl = \"u\"\nsource = \"u\"\npath = \"p\"\npin = \"abc\"\n";
     fs::write(&scaffold_path, original).expect("seed scaffold.toml");
 
     Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
@@ -3142,16 +3150,24 @@ fn init_backfills_repos_spel_in_pre_spel_scaffold_toml() {
         .arg("init")
         .assert()
         .success()
-        .stdout(predicate::str::contains("backfilled with [repos.spel]"));
+        .stdout(predicate::str::contains("migrated to schema v0.2.0"));
 
     let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
     assert!(
-        after.starts_with(original),
-        "existing content must be preserved verbatim; got:\n{after}"
+        after.contains("# user comment"),
+        "user comments must be preserved; got:\n{after}"
+    );
+    assert!(
+        after.contains("version = \"0.2.0\""),
+        "[scaffold].version must be bumped; got:\n{after}"
     );
     assert!(
         after.contains("[repos.spel]"),
         "[repos.spel] must be appended; got:\n{after}"
+    );
+    assert!(
+        !after.contains("url ="),
+        "url field must be stripped; got:\n{after}"
     );
 }
 

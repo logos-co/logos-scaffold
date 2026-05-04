@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::bail;
@@ -15,7 +14,7 @@ use crate::doctor_checks::{
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
 use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo};
-use crate::project::{load_project, resolve_cache_root};
+use crate::project::{load_project, resolve_cache_root, resolve_repo_path};
 use crate::state::read_localnet_state;
 use crate::DynResult;
 
@@ -72,8 +71,8 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
 
 pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     let project = load_project()?;
-    let lez = PathBuf::from(&project.config.lez.path);
-    let spel = PathBuf::from(&project.config.spel.path);
+    let lez = resolve_repo_path(&project, &project.config.lez, "lez")?;
+    let spel = resolve_repo_path(&project, &project.config.spel, "spel")?;
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     let localnet_state_path = project.root.join(".scaffold/state/localnet.state");
 

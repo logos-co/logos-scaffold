@@ -9,15 +9,19 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 
+use crate::config::{default_basecamp_repo, default_lgpm_repo};
 use crate::constants::{
-    BASECAMP_AUTODISCOVER_SKIP_SUBDIRS, BASECAMP_DEPENDENCIES, BASECAMP_PREINSTALLED_MODULES,
-    BASECAMP_PROFILES_REL, BASECAMP_PROFILE_ALICE, BASECAMP_PROFILE_BOB, BASECAMP_URL,
-    BASECAMP_XDG_APP_SUBPATH, DEFAULT_BASECAMP_PIN, DEFAULT_LGPM_FLAKE,
+    BASECAMP_ATTR, BASECAMP_AUTODISCOVER_SKIP_SUBDIRS, BASECAMP_DEPENDENCIES,
+    BASECAMP_PREINSTALLED_MODULES, BASECAMP_PROFILES_REL, BASECAMP_PROFILE_ALICE,
+    BASECAMP_PROFILE_BOB, BASECAMP_SOURCE, BASECAMP_XDG_APP_SUBPATH, DEFAULT_BASECAMP_PIN,
+    DEFAULT_LGPM_PIN, LGPM_ATTR, LGPM_SOURCE,
 };
-use crate::model::{BasecampSource, BasecampState, ModuleEntry, ModuleRole, Project, RepoRef};
+use crate::model::{
+    BasecampSource, BasecampState, ModuleEntry, ModuleRole, Project, RepoBuild, RepoRef,
+};
 use crate::process::{derive_log_path, run_checked, run_logged, set_print_output};
 use crate::project::{load_project, resolve_cache_root, save_project_config};
-use crate::repo::{sync_repo_to_pin, RepoSyncOptions};
+use crate::repo::{sync_repo_to_pin_at_path_with_opts, RepoSyncOptions};
 use crate::state::{read_basecamp_state, write_basecamp_state};
 use crate::DynResult;
 
@@ -108,37 +112,60 @@ fn cmd_basecamp_docs() -> DynResult<()> {
 }
 
 fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
-    let mut bc = project.config.basecamp.clone().unwrap_or_default();
-    if bc.source.is_empty() {
-        bc.source = BASECAMP_URL.to_string();
+    // Pull or default-fill [repos.basecamp]. If the project has never been
+    // through `lgs new` post-0.2.0 and lacks the section, fill it with the
+    // canonical default and persist back.
+    let mut basecamp_repo = project
+        .config
+        .basecamp_repo
+        .clone()
+        .unwrap_or_else(|| default_basecamp_repo(DEFAULT_BASECAMP_PIN));
+    if basecamp_repo.source.is_empty() {
+        basecamp_repo.source = BASECAMP_SOURCE.to_string();
     }
-    if bc.pin.is_empty() {
-        bc.pin = DEFAULT_BASECAMP_PIN.to_string();
+    if basecamp_repo.pin.is_empty() {
+        basecamp_repo.pin = DEFAULT_BASECAMP_PIN.to_string();
+    }
+    if basecamp_repo.attr.is_empty() {
+        basecamp_repo.attr = BASECAMP_ATTR.to_string();
+    }
+
+    // Same defaults for lgpm.
+    let mut lgpm_repo = project
+        .config
+        .lgpm_repo
+        .clone()
+        .unwrap_or_else(|| default_lgpm_repo(DEFAULT_LGPM_PIN));
+    if lgpm_repo.source.is_empty() {
+        lgpm_repo.source = LGPM_SOURCE.to_string();
+    }
+    if lgpm_repo.pin.is_empty() {
+        lgpm_repo.pin = DEFAULT_LGPM_PIN.to_string();
+    }
+    if lgpm_repo.attr.is_empty() {
+        lgpm_repo.attr = LGPM_ATTR.to_string();
     }
 
     let (cache_root, _) = resolve_cache_root(&project)?;
-    let basecamp_repo_path = cache_root.join("repos/basecamp").join(&bc.pin);
+    let basecamp_repo_path = cache_root.join("repos/basecamp").join(&basecamp_repo.pin);
 
-    println!("cloning basecamp at {}", &bc.pin);
-    let mut repo_ref = RepoRef {
-        url: bc.source.clone(),
-        source: bc.source.clone(),
-        path: basecamp_repo_path.display().to_string(),
-        pin: bc.pin.clone(),
-    };
-    sync_repo_to_pin(
-        &mut repo_ref,
+    println!("cloning basecamp at {}", &basecamp_repo.pin);
+    sync_repo_to_pin_at_path_with_opts(
+        &basecamp_repo_path,
+        &basecamp_repo.source,
+        &basecamp_repo.pin,
         "basecamp",
         RepoSyncOptions::auto_reclone_cache_repo(),
     )?;
-    bc.pin = repo_ref.pin.clone();
 
-    let pin_artifacts = cache_root.join("basecamp").join(&bc.pin);
+    let pin_artifacts = cache_root.join("basecamp").join(&basecamp_repo.pin);
     fs::create_dir_all(&pin_artifacts)
         .with_context(|| format!("create {}", pin_artifacts.display()))?;
 
     let basecamp_bin = build_basecamp_app(&project.root, &basecamp_repo_path, &pin_artifacts)?;
-    let lgpm_bin = build_lgpm(&project.root, &pin_artifacts, bc.lgpm_flake.as_str())?;
+    // lgpm is built from a flake ref derived from [repos.lgpm].
+    let lgpm_flake_ref = format_flake_ref(&lgpm_repo);
+    let lgpm_bin = build_lgpm(&project.root, &pin_artifacts, &lgpm_flake_ref)?;
 
     let profiles_root = project.root.join(BASECAMP_PROFILES_REL);
     let seeded = seed_profiles(
@@ -149,17 +176,30 @@ fn cmd_basecamp_setup(mut project: Project) -> DynResult<()> {
 
     let state_path = project.root.join(".scaffold/state/basecamp.state");
     let state = BasecampState {
-        pin: bc.pin.clone(),
+        pin: basecamp_repo.pin.clone(),
         basecamp_bin: basecamp_bin.display().to_string(),
         lgpm_bin: lgpm_bin.display().to_string(),
     };
     write_basecamp_state(&state_path, &state)?;
 
-    project.config.basecamp = Some(bc);
+    project.config.basecamp_repo = Some(basecamp_repo);
+    project.config.lgpm_repo = Some(lgpm_repo);
     save_project_config(&project)?;
 
     println!("setup complete");
     Ok(())
+}
+
+/// Build a flake ref string from a `[repos.<name>]` entry where `build ==
+/// NixFlake`. Format: `<source>/<pin>#<attr>` (matches the flake-ref format
+/// the legacy `[basecamp].lgpm_flake` string used).
+fn format_flake_ref(repo: &RepoRef) -> String {
+    debug_assert!(repo.build == RepoBuild::NixFlake);
+    if repo.attr.is_empty() {
+        format!("{}/{}", repo.source, repo.pin)
+    } else {
+        format!("{}/{}#{}", repo.source, repo.pin, repo.attr)
+    }
 }
 
 fn build_basecamp_app(project_root: &Path, repo: &Path, out_dir: &Path) -> DynResult<PathBuf> {
@@ -175,19 +215,11 @@ fn build_basecamp_app(project_root: &Path, repo: &Path, out_dir: &Path) -> DynRe
     resolve_basecamp_binary(&link)
 }
 
-fn build_lgpm(project_root: &Path, out_dir: &Path, override_flake: &str) -> DynResult<PathBuf> {
+fn build_lgpm(project_root: &Path, out_dir: &Path, flake_ref: &str) -> DynResult<PathBuf> {
     let link = out_dir.join("lgpm-result");
-    let flake_ref = if override_flake.is_empty() {
-        DEFAULT_LGPM_FLAKE.to_string()
-    } else {
-        override_flake.to_string()
-    };
     let log = derive_log_path(project_root, "setup-lgpm");
     let mut cmd = Command::new("nix");
-    cmd.arg("build")
-        .arg(&flake_ref)
-        .arg("--out-link")
-        .arg(&link);
+    cmd.arg("build").arg(flake_ref).arg("--out-link").arg(&link);
     run_logged(&mut cmd, &format!("building lgpm ({flake_ref})"), &log)?;
     Ok(link.join("bin/lgpm"))
 }
@@ -611,16 +643,11 @@ fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
 fn cmd_basecamp_build_portable(project: Project) -> DynResult<()> {
     let project_modules: std::collections::BTreeMap<String, ModuleEntry> = project
         .config
-        .basecamp
-        .as_ref()
-        .map(|bc| {
-            bc.modules
-                .iter()
-                .filter(|(_, e)| e.role == ModuleRole::Project)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
+        .modules
+        .iter()
+        .filter(|(_, e)| e.role == ModuleRole::Project)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     if project_modules.is_empty() {
         bail!(
@@ -960,21 +987,13 @@ fn cmd_basecamp_modules(
     show: bool,
     probe: &dyn LgxFlakeProbe,
 ) -> DynResult<()> {
-    let existing_modules: std::collections::BTreeMap<String, ModuleEntry> = project
-        .config
-        .basecamp
-        .as_ref()
-        .map(|bc| bc.modules.clone())
-        .unwrap_or_default();
+    let existing_modules: std::collections::BTreeMap<String, ModuleEntry> =
+        project.config.modules.clone();
 
     if show {
         print_modules_table("captured modules", &existing_modules);
         return Ok(());
     }
-
-    let Some(bc) = project.config.basecamp.as_mut() else {
-        bail!("no [basecamp] section in scaffold.toml; run `logos-scaffold basecamp setup` first");
-    };
 
     let explicit = !paths.is_empty() || !flakes.is_empty();
     let flakes: Vec<String> = flakes
@@ -1035,16 +1054,10 @@ fn cmd_basecamp_modules(
     // "previous modules (for reference)" block so reverting is copy-paste.
     print_modules_table("previous modules (for reference)", &existing_modules);
 
-    bc.modules = new_modules;
+    project.config.modules = new_modules;
     save_project_config(&project)?;
 
-    let written = &project
-        .config
-        .basecamp
-        .as_ref()
-        .expect("basecamp section present")
-        .modules;
-    print_modules_table("captured modules", written);
+    print_modules_table("captured modules", &project.config.modules);
 
     Ok(())
 }
@@ -2033,16 +2046,11 @@ pub(crate) fn compute_module_drift(project: &Project) -> DynResult<ModuleDriftRe
 
     let captured_flakes: std::collections::HashSet<String> = project
         .config
-        .basecamp
-        .as_ref()
-        .map(|bc| {
-            bc.modules
-                .values()
-                .filter(|e| e.role == ModuleRole::Project)
-                .map(|e| e.flake.clone())
-                .collect()
-        })
-        .unwrap_or_default();
+        .modules
+        .values()
+        .filter(|e| e.role == ModuleRole::Project)
+        .map(|e| e.flake.clone())
+        .collect();
 
     let mut discovered_not_captured: Vec<BasecampSource> = discovered_project
         .into_iter()
@@ -2122,8 +2130,8 @@ fn push_basecamp_doctor_rows(project: &Project, rows: &mut Vec<crate::model::Che
         .join(BASECAMP_XDG_APP_SUBPATH)
         .join("modules");
 
-    if let Some(bc) = project.config.basecamp.as_ref() {
-        let mut entries: Vec<(&String, &ModuleEntry)> = bc.modules.iter().collect();
+    {
+        let mut entries: Vec<(&String, &ModuleEntry)> = project.config.modules.iter().collect();
         entries.sort_by_key(|(_, e)| e.role == ModuleRole::Dependency);
         for (_name, entry) in entries {
             let label = match entry.role {
@@ -2138,36 +2146,34 @@ fn push_basecamp_doctor_rows(project: &Project, rows: &mut Vec<crate::model::Che
     // Dep-pin drift: captured `role = Dependency` entry rev differs from the
     // scaffold default for the same module_name. Exact-match lookup — no
     // repo-slug heuristic (R-I3 fix).
-    if let Some(bc) = project.config.basecamp.as_ref() {
-        for (name, default_ref) in BASECAMP_DEPENDENCIES {
-            let Some(entry) = bc.modules.get(*name) else {
-                continue;
-            };
-            if entry.role != ModuleRole::Dependency {
-                continue;
-            }
-            let captured_rev = github_flake_ref_rev(&entry.flake);
-            let default_rev = github_flake_ref_rev(default_ref);
-            let drifted = match (captured_rev, default_rev) {
-                (Some(c), Some(d)) => c != d,
-                _ => entry.flake.as_str() != *default_ref,
-            };
-            if drifted {
-                rows.push(CheckRow {
-                    status: CheckStatus::Warn,
-                    name: format!("basecamp dep pin drift: {name}"),
-                    detail: format!(
-                        "captured `{}` differs from scaffold default `{}`",
-                        captured_rev.unwrap_or(&entry.flake),
-                        default_rev.unwrap_or(default_ref),
-                    ),
-                    remediation: Some(format!(
-                        "module may not work against a basecamp release built with the scaffold \
-                         default. Update `[basecamp.modules.{name}].flake` in scaffold.toml to \
-                         a compatible rev."
-                    )),
-                });
-            }
+    for (name, default_ref) in BASECAMP_DEPENDENCIES {
+        let Some(entry) = project.config.modules.get(*name) else {
+            continue;
+        };
+        if entry.role != ModuleRole::Dependency {
+            continue;
+        }
+        let captured_rev = github_flake_ref_rev(&entry.flake);
+        let default_rev = github_flake_ref_rev(default_ref);
+        let drifted = match (captured_rev, default_rev) {
+            (Some(c), Some(d)) => c != d,
+            _ => entry.flake.as_str() != *default_ref,
+        };
+        if drifted {
+            rows.push(CheckRow {
+                status: CheckStatus::Warn,
+                name: format!("basecamp dep pin drift: {name}"),
+                detail: format!(
+                    "captured `{}` differs from scaffold default `{}`",
+                    captured_rev.unwrap_or(&entry.flake),
+                    default_rev.unwrap_or(default_ref),
+                ),
+                remediation: Some(format!(
+                    "module may not work against a basecamp release built with the scaffold \
+                     default. Update `[modules.{name}].flake` in scaffold.toml to \
+                     a compatible rev."
+                )),
+            });
         }
     }
 
@@ -2618,16 +2624,11 @@ fn module_entry_to_source(project_root: &Path, entry: &ModuleEntry) -> BasecampS
 fn project_role_sources(project: &Project, role: ModuleRole) -> Vec<BasecampSource> {
     project
         .config
-        .basecamp
-        .as_ref()
-        .map(|bc| {
-            bc.modules
-                .values()
-                .filter(|e| e.role == role)
-                .map(|e| module_entry_to_source(&project.root, e))
-                .collect()
-        })
-        .unwrap_or_default()
+        .modules
+        .values()
+        .filter(|e| e.role == role)
+        .map(|e| module_entry_to_source(&project.root, e))
+        .collect()
 }
 
 /// Return all captured sources with `role = Dependency` first, then
@@ -2640,12 +2641,7 @@ fn captured_sources_deps_first(project: &Project) -> Vec<BasecampSource> {
 }
 
 fn total_captured_modules(project: &Project) -> usize {
-    project
-        .config
-        .basecamp
-        .as_ref()
-        .map(|bc| bc.modules.len())
-        .unwrap_or(0)
+    project.config.modules.len()
 }
 
 /// Create XDG-rooted profile dirs under `profiles_root` for every named profile.
@@ -4017,27 +4013,22 @@ mod tests {
 
     fn seed_basecamp_project(root: &Path) -> Project {
         let scaffold_toml = r#"[scaffold]
-version = "0.1.0"
+version = "0.2.0"
 cache_root = "cache"
 
 [repos.lez]
-url = "u"
 source = "s"
-path = "p"
 pin = "q"
 
 [repos.spel]
-url = "u"
 source = "s"
-path = "p"
 pin = "q"
 
-[basecamp]
-pin = "deadbeef"
+[repos.basecamp]
 source = "https://example/basecamp"
-lgpm_flake = ""
-port_base = 60000
-port_stride = 10
+pin = "deadbeef"
+build = "nix-flake"
+attr = "app"
 "#;
         fs::write(root.join("scaffold.toml"), scaffold_toml).expect("write scaffold.toml");
         load_project_at(root)
@@ -4074,7 +4065,7 @@ port_stride = 10
 
         let text = fs::read_to_string(root.join("scaffold.toml")).unwrap();
         assert!(
-            text.contains("[basecamp.modules.tictactoe_core]"),
+            text.contains("[modules.tictactoe_core]"),
             "expected new module entry, got:\n{text}"
         );
         assert!(text.contains("role = \"project\""));
@@ -4120,29 +4111,24 @@ port_stride = 10
         // to a _different_ flake. Running modules against the local source
         // must NOT overwrite that entry (user intent wins).
         let scaffold_toml = r#"[scaffold]
-version = "0.1.0"
+version = "0.2.0"
 cache_root = "cache"
 
 [repos.lez]
-url = "u"
 source = "s"
-path = "p"
 pin = "q"
 
 [repos.spel]
-url = "u"
 source = "s"
-path = "p"
 pin = "q"
 
-[basecamp]
-pin = "deadbeef"
+[repos.basecamp]
 source = "https://example/basecamp"
-lgpm_flake = ""
-port_base = 60000
-port_stride = 10
+pin = "deadbeef"
+build = "nix-flake"
+attr = "app"
 
-[basecamp.modules.shared_name]
+[modules.shared_name]
 flake = "github:custom/fork/abc123#lgx"
 role = "dependency"
 "#;
