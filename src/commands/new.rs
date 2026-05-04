@@ -6,8 +6,8 @@ use anyhow::{bail, Context};
 
 use crate::config::serialize_config;
 use crate::constants::{
-    DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    DEFAULT_LEZ_PIN, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK, LEZ_URL, VERSION,
+    DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION, DEFAULT_LEZ,
+    DEFAULT_SPEL, FRAMEWORK_KIND_DEFAULT, FRAMEWORK_KIND_LEZ_FRAMEWORK, LEZ_URL, SPEL_URL, VERSION,
 };
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RepoRef};
 use crate::project::default_cache_root;
@@ -69,21 +69,30 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         sync_repo_to_pin_at_path_with_opts(
             &lez_vendor,
             &lez_source,
-            DEFAULT_LEZ_PIN,
+            DEFAULT_LEZ.sha,
             "lez",
             RepoSyncOptions::fail_on_source_mismatch(),
         )?;
         lez_vendor
     } else {
-        let lez_cached = bootstrap_cache.join("repos/lez").join(DEFAULT_LEZ_PIN);
+        let lez_cached = bootstrap_cache.join("repos/lez").join(DEFAULT_LEZ.sha);
         sync_repo_to_pin_at_path_with_opts(
             &lez_cached,
             &lez_source,
-            DEFAULT_LEZ_PIN,
+            DEFAULT_LEZ.sha,
             "lez",
             RepoSyncOptions::auto_reclone_cache_repo(),
         )?;
         lez_cached
+    };
+
+    // spel is recorded in scaffold.toml here but actually cloned + built by
+    // `setup` (mirroring how lez is configured at `new` time but compiled at
+    // `setup` time).
+    let spel_repo_path = if cmd.vendor_deps {
+        target.join(".scaffold/repos/spel")
+    } else {
+        bootstrap_cache.join("repos/spel").join(DEFAULT_SPEL.sha)
     };
 
     let cfg = Config {
@@ -93,7 +102,13 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
             url: LEZ_URL.to_string(),
             source: lez_source,
             path: lez_repo_path.display().to_string(),
-            pin: DEFAULT_LEZ_PIN.to_string(),
+            pin: DEFAULT_LEZ.sha.to_string(),
+        },
+        spel: RepoRef {
+            url: SPEL_URL.to_string(),
+            source: SPEL_URL.to_string(),
+            path: spel_repo_path.display().to_string(),
+            pin: DEFAULT_SPEL.sha.to_string(),
         },
         wallet_home_dir: ".scaffold/wallet".to_string(),
         framework: FrameworkConfig {
@@ -120,6 +135,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     let overlay_ctx = OverlayRenderContext {
         crate_name: &crate_name,
         lez_pin: &cfg.lez.pin,
+        spel_tag: DEFAULT_SPEL.tag,
     };
     apply_overlay(&target, &template_variant, &overlay_ctx)?;
     if template_variant == FRAMEWORK_KIND_LEZ_FRAMEWORK {

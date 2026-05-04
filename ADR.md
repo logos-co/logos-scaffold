@@ -143,6 +143,94 @@ that any resolver fix automatically applies to both commands, and the "only
 `.#lgx-portable` found" and "only `.#lgx` found" error paths are symmetric by
 construction.
 
+## Vendoring `spel` Per-Project for Program ID Surfacing
+
+`deploy` needs to print the deployed program's on-chain ID (the risc0 image
+ID) so the user can hand it to a client without rerunning a separate tool.
+Three options were considered:
+
+1. Compute the image ID in-process by depending on a risc0 crate
+   (`risc0-binfmt` / `risc0-zkvm`).
+2. Re-implement the SHA-256 + page-tree construction directly in scaffold.
+3. Shell out to `spel inspect` and parse its output.
+
+Option (1) ties scaffold's image-ID computation to a specific risc0 release;
+version skew with the user's project's risc0 dependency would silently
+produce wrong IDs. It also pulls a sizable risc0 dep tree into scaffold's
+own build. Option (2) is even more brittle — any upstream change to the
+construction silently produces wrong IDs.
+
+Scaffold vendors `spel` per project the same way it vendors LEZ: clone
+`logos-co/spel` into the project, pin a commit (`DEFAULT_SPEL_PIN`,
+currently tag `v0.2.0-rc.5`), build it during `setup`, and invoke the
+project-local binary from `deploy`. `spel` itself depends on the same
+risc0 crate the user's project does, so the image ID it computes is
+byte-for-byte the value the sequencer will use. The pin is a scaffold-
+shipped default overridable via `[repos.spel].pin` in `scaffold.toml`;
+`doctor` reports drift the same way it does for LEZ.
+
+**LEZ-version alignment.** Spel itself vendors LEZ as a Cargo dependency
+for its sequencer-RPC client and wallet helpers. Picking a spel pin
+whose `spel-cli/Cargo.toml` references a different LEZ commit than
+scaffold's own `DEFAULT_LEZ_PIN` is a latent footgun: spel and the
+scaffold-built sequencer would speak different versions of the
+sequencer protocol, breaking `lgs spel -- ...` subcommands that hit
+the network. Image-ID computation is unaffected (it's purely guest-ELF
++ risc0-zkvm), but other spel surfaces would silently diverge.
+
+We pick `DEFAULT_SPEL_PIN` to satisfy this alignment at every bump
+(currently `v0.2.0-rc.5`, which pins LEZ via `tag = "v0.2.0-rc1"` —
+the same commit `DEFAULT_LEZ_PIN` resolves to). The counter-intuitive
+naming — `v0.2.0-rc.5` is *newer* than the unsuffixed `v0.2.0` tag —
+is upstream's choice and a maintenance hazard worth flagging when
+revising the pin. `doctor` enforces alignment at runtime by reading
+`<spel.path>/spel-cli/Cargo.toml` and warning if neither
+`DEFAULT_LEZ_PIN` nor `DEFAULT_LEZ_TAG` appears in spel's dependency
+declarations.
+
+The image ID is computed locally from the submitted ELF — scaffold does
+not (yet) verify on-chain inclusion. LEZ wallet/RPC don't currently
+surface deploy receipts; once they do, scaffold can add an inclusion
+check after submission and the human-output caveat note can retire.
+Until then, the deploy summary explicitly distinguishes "wallet
+accepted" from "chain confirmed."
+
+The tradeoff is that `setup` now does an extra multi-minute build on first
+run and the deploy path forks a subprocess to recover a value that could
+in principle be computed inline. The upside: scaffold has zero risc0 dep
+of its own, the program ID always matches what the sequencer sees, and a
+`logos-scaffold spel -- <args>` proxy falls out for free so users can run
+any spel subcommand without a global install. `extract_program_id` is
+bounded by a wall-clock timeout and falls back to a non-fatal "unavailable"
+hint so a broken or hung `spel` can never gate a successful deploy.
+
+## Migrating `[repos.spel]` Into Existing `scaffold.toml` Files
+
+When `[repos.spel]` was added, every existing scaffolded project had a
+config file lacking it. Two approaches were considered:
+
+1. Default-fill the missing section silently in the parser, with a stderr
+   warning telling the user to re-run `init`.
+2. Hard-fail in the parser with a targeted error pointing at `init`.
+
+Option (1) is the friendlier-looking default-on-failure choice but has a
+real cost: `parse_config` runs from `deploy`, `doctor`, `localnet`,
+`wallet`, `spel`, and `report`, and the warning fires on every invocation
+forever — the user never gets nudged hard enough to actually run `init`.
+The warning would also corrupt machine-parseable outputs (`doctor --json`,
+`deploy --json`).
+
+Scaffold takes the hard-fail path. Re-running `init` is one command, the
+noise stops once it's done, and JSON consumers stay clean. To make the
+migration painless, `init` is re-run-safe: if `scaffold.toml` exists but
+lacks `[repos.spel]`, `init` appends the section in place (preserving
+comments, the `cache_root` help text, and every other field verbatim) and
+derives `spel.path` by mirroring the existing `[repos.lez].path` so
+`--cache-root` overrides and `--vendor-deps` layouts are honored. Already-
+migrated configs are refused so the second `init` doesn't double-write.
+The path mirroring is a hand-rolled scan rather than a `parse_config` call
+because the parser hard-fails on exactly the case we're trying to fix.
+
 ## Build Output Discovery
 
 The deploy command must work for any scaffolded project regardless of its name.

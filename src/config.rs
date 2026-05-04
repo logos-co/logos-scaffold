@@ -2,7 +2,7 @@ use anyhow::bail;
 
 use crate::constants::{
     DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION,
-    FRAMEWORK_KIND_DEFAULT, LEZ_URL,
+    FRAMEWORK_KIND_DEFAULT, LEZ_URL, SPEL_URL,
 };
 use crate::model::{
     BasecampConfig, Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, ModuleEntry,
@@ -20,6 +20,12 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
     let mut lez_source = String::new();
     let mut lez_path = String::new();
     let mut lez_pin = String::new();
+
+    let mut spel_seen = false;
+    let mut spel_url = String::new();
+    let mut spel_source = String::new();
+    let mut spel_path = String::new();
+    let mut spel_pin = String::new();
 
     let mut wallet_home_dir = String::new();
 
@@ -76,6 +82,18 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
                     lez_path = value;
                 } else if key == "pin" {
                     lez_pin = value;
+                }
+            }
+            "repos.spel" => {
+                spel_seen = true;
+                if key == "url" {
+                    spel_url = value;
+                } else if key == "source" {
+                    spel_source = value;
+                } else if key == "path" {
+                    spel_path = value;
+                } else if key == "pin" {
+                    spel_pin = value;
                 }
             }
             "framework" => {
@@ -162,6 +180,26 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
         bail!("invalid scaffold.toml: missing required repos.lez keys (also accepts legacy repos.lssa)");
     }
 
+    // [repos.spel] migration: pre-spel scaffold.toml files lack the section
+    // entirely. Hard-fail with a targeted error pointing at `init` rather
+    // than warning-and-default-filling — a default-filled section would let
+    // every command silently emit a warning to stderr (corrupting --json
+    // outputs and CI logs) without ever forcing the user to fix it.
+    if !spel_seen {
+        bail!(
+            "scaffold.toml is missing [repos.spel] (added in scaffold v{}). \
+             Run `logos-scaffold init` to backfill the section; existing \
+             settings are preserved.",
+            crate::constants::VERSION
+        );
+    }
+    if spel_url.is_empty() {
+        spel_url = SPEL_URL.to_string();
+    }
+    if spel_source.is_empty() || spel_path.is_empty() || spel_pin.is_empty() {
+        bail!("invalid scaffold.toml: missing required repos.spel keys (source, path, pin)");
+    }
+
     if wallet_home_dir.is_empty() {
         wallet_home_dir = ".scaffold/wallet".to_string();
     }
@@ -220,6 +258,12 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
             path: lez_path,
             pin: lez_pin,
         },
+        spel: RepoRef {
+            url: spel_url,
+            source: spel_source,
+            path: spel_path,
+            pin: spel_pin,
+        },
         wallet_home_dir,
         localnet: LocalnetConfig {
             port: localnet_port,
@@ -244,6 +288,10 @@ pub(crate) fn serialize_config(cfg: &Config) -> DynResult<String> {
     check_toml_value("repos.lez.source", &cfg.lez.source)?;
     check_toml_value("repos.lez.path", &cfg.lez.path)?;
     check_toml_value("repos.lez.pin", &cfg.lez.pin)?;
+    check_toml_value("repos.spel.url", &cfg.spel.url)?;
+    check_toml_value("repos.spel.source", &cfg.spel.source)?;
+    check_toml_value("repos.spel.path", &cfg.spel.path)?;
+    check_toml_value("repos.spel.pin", &cfg.spel.pin)?;
     check_toml_value("wallet.home_dir", &cfg.wallet_home_dir)?;
     check_toml_value("framework.kind", &cfg.framework.kind)?;
     check_toml_value("framework.version", &cfg.framework.version)?;
@@ -266,13 +314,17 @@ pub(crate) fn serialize_config(cfg: &Config) -> DynResult<String> {
         format!("cache_root = \"{}\"\n", escape_toml_string(&cfg.cache_root))
     };
     let mut out = format!(
-        "[scaffold]\nversion = \"{}\"\n{}\n[repos.lez]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
+        "[scaffold]\nversion = \"{}\"\n{}\n[repos.lez]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[repos.spel]\nurl = \"{}\"\nsource = \"{}\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \"{}\"\n\n[framework]\nkind = \"{}\"\nversion = \"{}\"\n\n[framework.idl]\nspec = \"{}\"\npath = \"{}\"\n\n[localnet]\nport = {}\nrisc0_dev_mode = {}\n",
         escape_toml_string(&cfg.version),
         cache_root_line,
         escape_toml_string(&cfg.lez.url),
         escape_toml_string(&cfg.lez.source),
         escape_toml_string(&cfg.lez.path),
         escape_toml_string(&cfg.lez.pin),
+        escape_toml_string(&cfg.spel.url),
+        escape_toml_string(&cfg.spel.source),
+        escape_toml_string(&cfg.spel.path),
+        escape_toml_string(&cfg.spel.pin),
         escape_toml_string(&cfg.wallet_home_dir),
         escape_toml_string(&cfg.framework.kind),
         escape_toml_string(&cfg.framework.version),
@@ -348,6 +400,7 @@ pub(crate) fn escape_toml_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::DEFAULT_SPEL;
 
     fn minimal_scaffold_toml() -> String {
         r#"[scaffold]
@@ -360,8 +413,36 @@ source = "https://example.com/lssa.git"
 path = "/tmp/lssa"
 pin = "deadbeef"
 
+[repos.spel]
+url = "https://example.com/spel.git"
+source = "https://example.com/spel.git"
+path = "/tmp/spel"
+pin = "cafef00d"
+
 "#
         .to_string()
+    }
+
+    #[test]
+    fn rejects_pre_spel_scaffold_toml_with_init_hint() {
+        // Pre-spel scaffold.toml: has [repos.lez] but lacks [repos.spel].
+        // Parser must hard-fail with a message naming the section and
+        // pointing at `init` for migration — see C2 in the code review.
+        let text = r#"[scaffold]
+version = "0.1.0"
+
+[repos.lez]
+url = "u"
+source = "s"
+path = "p"
+pin = "q"
+"#;
+        let err = parse_config(text).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("[repos.spel]") && msg.contains("logos-scaffold init"),
+            "expected migration hint for [repos.spel], got: {msg}"
+        );
     }
 
     #[test]
@@ -404,6 +485,12 @@ pin = "deadbeef"
                 source: LEZ_URL.to_string(),
                 path: "lez".to_string(),
                 pin: "abc123".to_string(),
+            },
+            spel: RepoRef {
+                url: SPEL_URL.to_string(),
+                source: "git".to_string(),
+                path: "spel".to_string(),
+                pin: DEFAULT_SPEL.sha.to_string(),
             },
             wallet_home_dir: ".scaffold/wallet".to_string(),
             localnet: LocalnetConfig::default(),
@@ -530,6 +617,12 @@ source = "s"
 path = "p"
 pin = "q"
 
+[repos.spel]
+url = "u"
+source = "s"
+path = "p"
+pin = "q"
+
 [basecamp.modules.tictactoe]
 flake = "path:/abs/tictactoe#lgx"
 role = "project"
@@ -548,6 +641,12 @@ version = "0.1.0"
 cache_root = "cache"
 
 [repos.lez]
+url = "u"
+source = "s"
+path = "p"
+pin = "q"
+
+[repos.spel]
 url = "u"
 source = "s"
 path = "p"
@@ -572,6 +671,12 @@ version = "0.1.0"
 cache_root = "cache"
 
 [repos.lez]
+url = "u"
+source = "s"
+path = "p"
+pin = "q"
+
+[repos.spel]
 url = "u"
 source = "s"
 path = "p"
@@ -657,7 +762,7 @@ role = "project"
 
     #[test]
     fn basecamp_section_with_only_pin_applies_defaults() {
-        let text = "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"cache\"\n\n[repos.lez]\nurl = \"u\"\nsource = \"s\"\npath = \"p\"\npin = \"q\"\n\n[basecamp]\npin = \"sha1\"\n";
+        let text = "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"cache\"\n\n[repos.lez]\nurl = \"u\"\nsource = \"s\"\npath = \"p\"\npin = \"q\"\n\n[repos.spel]\nurl = \"u\"\nsource = \"s\"\npath = \"p\"\npin = \"q\"\n\n[basecamp]\npin = \"sha1\"\n";
         let parsed = parse_config(text).expect("parse");
         let bc = parsed.basecamp.expect("basecamp present");
         assert_eq!(bc.pin, "sha1");

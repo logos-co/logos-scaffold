@@ -11,5 +11,6 @@ pub(crate) mod new;
 pub(crate) mod report;
 pub(crate) mod self_test;
 pub(crate) mod setup;
+pub(crate) mod spel;
 pub(crate) mod wallet;
 pub(crate) mod wallet_support;

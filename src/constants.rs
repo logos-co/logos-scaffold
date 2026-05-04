@@ -1,6 +1,34 @@
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const LEZ_URL: &str = "https://github.com/logos-blockchain/logos-execution-zone.git";
-pub(crate) const DEFAULT_LEZ_PIN: &str = "35d8df0d031315219f94d1546ceb862b0e5b208f";
+pub(crate) const SPEL_URL: &str = "https://github.com/logos-co/spel.git";
+
+/// Two-form git pin: SHA (used in scaffold.toml `[repos.*].pin` and in
+/// `check_repo` git-head comparisons) plus tag (used by `check_spel_lez_alignment`
+/// and by user-project Cargo.toml git-dep substitution).
+pub(crate) struct GitRef {
+    pub(crate) sha: &'static str,
+    pub(crate) tag: &'static str,
+}
+
+// Cross-framework invariant: DEFAULT_SPEL must point at a spel commit
+// whose `spel-cli/Cargo.toml` vendors LEZ at the same ref as DEFAULT_LEZ.
+// Otherwise spel's sequencer-RPC client speaks a different protocol than
+// scaffold's own wallet/sequencer build. `check_spel_lez_alignment` in
+// `commands/doctor.rs` enforces this at runtime — re-run `doctor` after
+// bumping either pin.
+//
+// Special note on DEFAULT_SPEL: the unsuffixed `v0.2.0` tag (commit
+// `72fc22…`) is *older* than `v0.2.0-rc.5` (commit `ed3bbe…`). rc.5 is
+// the one we want because its vendored LEZ tag matches DEFAULT_LEZ.tag.
+pub(crate) const DEFAULT_LEZ: GitRef = GitRef {
+    sha: "35d8df0d031315219f94d1546ceb862b0e5b208f",
+    tag: "v0.2.0-rc1",
+};
+pub(crate) const DEFAULT_SPEL: GitRef = GitRef {
+    sha: "ed3bbedb4b684645da05455d30a4a0be7cc4dfe0",
+    tag: "v0.2.0-rc.5",
+};
+
 pub(crate) const DEFAULT_HELLO_WORLD_IMAGE_ID_HEX: &str =
     "4880b298f59699c1e4263c5c2245c80123632d608b9116f4b253c63e6c340771";
 pub(crate) const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
@@ -18,6 +46,7 @@ pub(crate) const SEQUENCER_BIN_REL_PATH: &str = "target/release/sequencer_servic
 pub(crate) const METHODS_DIR: &str = "methods";
 pub(crate) const SEQUENCER_CONFIG_REL_PATH: &str =
     "sequencer/service/configs/debug/sequencer_config.json";
+pub(crate) const SPEL_BIN_REL_PATH: &str = "target/release/spel";
 pub(crate) const BASECAMP_URL: &str = "https://github.com/logos-co/logos-basecamp.git";
 /// Basecamp commit pin — `logos-basecamp` tag `v0.1.1`.
 /// Projects can override via `[basecamp].pin` in `scaffold.toml`.
