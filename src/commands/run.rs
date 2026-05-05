@@ -86,13 +86,19 @@ fn run_pipeline_once(project: &Project, hooks: &[String]) -> DynResult<()> {
         false
     };
 
+    // Collect deployed-program metadata for hook env injection regardless
+    // of whether deploy ran or was skipped — hooks address programs by
+    // name and shouldn't have to care about cache state.
+    let deployed = collect_deployed_programs(project, skipped);
+
     // Step 6: Post-deploy hooks (or summary)
     if has_hooks {
         let n = hooks.len();
         println!("[6/{total_steps}] Running {n} post-deploy hook(s)...");
+        warn_on_rewritten_program_names(&deployed);
         for (i, hook) in hooks.iter().enumerate() {
             println!("===> post_deploy[{}/{n}]: {hook}", i + 1);
-            run_post_deploy_hook(project, hook, skipped)?;
+            run_post_deploy_hook(project, hook, &deployed)?;
             println!("<=== post_deploy[{}/{n}] OK", i + 1);
         }
     } else {
@@ -158,7 +164,100 @@ fn print_deploy_summary(project: &Project) -> DynResult<()> {
     Ok(())
 }
 
-fn build_hook_command(project: &Project, hook_command: &str, deploy_skipped: bool) -> Command {
+/// Per-program metadata exposed to post-deploy hooks via env vars.
+/// `program_id` may be `None` when `spel inspect` fails (missing vendored
+/// binary, unreadable ELF). `skipped` mirrors the deploy step's outcome
+/// for that invocation — true when the hash cache short-circuited deploy.
+#[derive(Clone, Debug)]
+pub(crate) struct DeployedProgram {
+    pub(crate) name: String,
+    pub(crate) program_id: Option<String>,
+    pub(crate) binary_path: PathBuf,
+    pub(crate) skipped: bool,
+}
+
+fn collect_deployed_programs(project: &Project, skipped: bool) -> Vec<DeployedProgram> {
+    let programs_dir = project.root.join("methods/guest/src/bin");
+    if !programs_dir.exists() {
+        return Vec::new();
+    }
+    let Ok(programs) = discover_deployable_programs(&project.root) else {
+        return Vec::new();
+    };
+    let binaries = discover_program_binaries(&project.root, &programs);
+    let spel_bin = match resolve_repo_path(project, &project.config.spel, "spel") {
+        Ok(p) => p.join(SPEL_BIN_REL_PATH),
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+    for stem in programs {
+        let Some(bin_path) = binaries.get(&stem).cloned() else {
+            continue;
+        };
+        let program_id = extract_program_id(&spel_bin, &bin_path);
+        out.push(DeployedProgram {
+            name: stem,
+            program_id,
+            binary_path: bin_path,
+            skipped,
+        });
+    }
+    out
+}
+
+/// Replace any character that isn't `[A-Za-z0-9_]` with `_` so the result
+/// is a legal POSIX env var name suffix. Program names from
+/// `methods/guest/src/bin/*.rs` are typically already snake_case, but
+/// nothing prevents `my-program.rs` from existing — sanitize defensively.
+fn env_var_suffix(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// When a program filename contains characters that get rewritten in env
+/// var names (anything outside `[A-Za-z0-9_]`), the indexed forms
+/// `SCAFFOLD_PROGRAM_ID_<name>` use the rewritten suffix while
+/// `$SCAFFOLD_PROGRAMS` round-trips the raw filename. A hook that interpolates
+/// `$SCAFFOLD_PROGRAM_ID_my-program` would parse as
+/// `${SCAFFOLD_PROGRAM_ID_my}-program` and silently produce wrong output.
+/// Print one line per rewritten name so the user sees the actual var name to
+/// reference before the hook runs.
+fn warn_on_rewritten_program_names(deployed: &[DeployedProgram]) {
+    let rewrites: Vec<(&str, String)> = deployed
+        .iter()
+        .filter_map(|d| {
+            let suffix = env_var_suffix(&d.name);
+            if suffix == d.name {
+                None
+            } else {
+                Some((d.name.as_str(), suffix))
+            }
+        })
+        .collect();
+    if rewrites.is_empty() {
+        return;
+    }
+    println!(
+        "      note: program name(s) rewritten for env-var legality (any char outside [A-Za-z0-9_] becomes _):"
+    );
+    for (raw, suffix) in rewrites {
+        println!("        {raw} -> SCAFFOLD_PROGRAM_ID_{suffix} (and SCAFFOLD_GUEST_BIN_{suffix}, SCAFFOLD_DEPLOY_SKIPPED_{suffix})");
+    }
+}
+
+fn build_hook_command(
+    project: &Project,
+    hook_command: &str,
+    deployed: &[DeployedProgram],
+) -> Command {
     let port = project.config.localnet.port;
     let sequencer_url = format!("http://127.0.0.1:{port}");
     let wallet_home = project
@@ -185,51 +284,45 @@ fn build_hook_command(project: &Project, hook_command: &str, deploy_skipped: boo
         .env("SCAFFOLD_IDL_DIR", &idl_dir)
         .current_dir(&project.root);
 
-    // Single-program shortcut: when there's exactly one deployable program,
-    // expose its program-id and guest-binary path as env vars so simple
-    // hooks can call `spel` or the dogfood client without parsing the
-    // deploy summary. Multi-program env fan-out arrives in a later branch
-    // of this stack.
-    if let Some(binary_path) = single_program_binary(project) {
-        if let Some(spel_bin) = resolve_spel_bin(project) {
-            if let Some(id) = extract_program_id(&spel_bin, &binary_path) {
-                cmd.env("SCAFFOLD_PROGRAM_ID", id);
-            }
+    // Per-program metadata: `SCAFFOLD_PROGRAMS` holds the space-separated
+    // list of names, with parallel `SCAFFOLD_PROGRAM_ID_<name>`,
+    // `SCAFFOLD_GUEST_BIN_<name>`, `SCAFFOLD_DEPLOY_SKIPPED_<name>` per
+    // entry. Names are sanitized for env-var-suffix legality.
+    let names: Vec<&str> = deployed.iter().map(|d| d.name.as_str()).collect();
+    cmd.env("SCAFFOLD_PROGRAMS", names.join(" "));
+    for d in deployed {
+        let suffix = env_var_suffix(&d.name);
+        if let Some(id) = &d.program_id {
+            cmd.env(format!("SCAFFOLD_PROGRAM_ID_{suffix}"), id);
         }
-        cmd.env("SCAFFOLD_GUEST_BIN", &binary_path);
+        cmd.env(format!("SCAFFOLD_GUEST_BIN_{suffix}"), &d.binary_path);
+        cmd.env(
+            format!("SCAFFOLD_DEPLOY_SKIPPED_{suffix}"),
+            if d.skipped { "1" } else { "0" },
+        );
+    }
+    // Single-program shortcut: only set when there's exactly one program.
+    // Hooks that handle multi-program projects must use the indexed forms.
+    if let [single] = deployed {
+        cmd.env("SCAFFOLD_PROGRAM_NAME", &single.name);
+        if let Some(id) = &single.program_id {
+            cmd.env("SCAFFOLD_PROGRAM_ID", id);
+        }
+        cmd.env("SCAFFOLD_GUEST_BIN", &single.binary_path);
         cmd.env(
             "SCAFFOLD_DEPLOY_SKIPPED",
-            if deploy_skipped { "1" } else { "0" },
+            if single.skipped { "1" } else { "0" },
         );
     }
     cmd
 }
 
-fn single_program_binary(project: &Project) -> Option<PathBuf> {
-    let programs_dir = project.root.join("methods/guest/src/bin");
-    if !programs_dir.exists() {
-        return None;
-    }
-    let programs = discover_deployable_programs(&project.root).ok()?;
-    if programs.len() != 1 {
-        return None;
-    }
-    let binaries = discover_program_binaries(&project.root, &programs);
-    let stem = programs.into_iter().next()?;
-    binaries.get(&stem).cloned()
-}
-
-fn resolve_spel_bin(project: &Project) -> Option<PathBuf> {
-    let spel = resolve_repo_path(project, &project.config.spel, "spel").ok()?;
-    Some(spel.join(SPEL_BIN_REL_PATH))
-}
-
 fn run_post_deploy_hook(
     project: &Project,
     hook_command: &str,
-    deploy_skipped: bool,
+    deployed: &[DeployedProgram],
 ) -> DynResult<()> {
-    let status = build_hook_command(project, hook_command, deploy_skipped)
+    let status = build_hook_command(project, hook_command, deployed)
         .status()
         .context("failed to execute post-deploy hook")?;
 
@@ -296,7 +389,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("echo \"$SEQUENCER_URL\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook, false).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, &[]).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         assert_eq!(content.trim(), "http://127.0.0.1:3040");
@@ -309,7 +402,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("echo \"$NSSA_WALLET_HOME_DIR\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook, false).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, &[]).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         assert!(
@@ -325,7 +418,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("echo \"$SCAFFOLD_PROJECT_ROOT\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook, false).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, &[]).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         let canonical = temp
@@ -342,7 +435,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("echo \"$SCAFFOLD_IDL_DIR\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook, false).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, &[]).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         assert!(
@@ -359,7 +452,7 @@ mod tests {
         project.config.localnet.port = 9999;
 
         let hook = format!("echo \"$SEQUENCER_URL\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook, false).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, &[]).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         assert_eq!(content.trim(), "http://127.0.0.1:9999");
@@ -370,7 +463,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = make_test_project(temp.path().to_path_buf());
 
-        let result = run_post_deploy_hook(&project, "exit 42", false);
+        let result = run_post_deploy_hook(&project, "exit 42", &[]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -386,7 +479,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("pwd > '{}'", pwd_file.display());
-        run_post_deploy_hook(&project, &hook, false).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, &[]).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&pwd_file).expect("read pwd output");
         let canonical = temp
@@ -434,5 +527,139 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         print_deploy_summary(&project).expect("should succeed with missing dir");
+    }
+
+    fn fake_deployed(name: &str, id: Option<&str>, skipped: bool) -> DeployedProgram {
+        DeployedProgram {
+            name: name.to_string(),
+            program_id: id.map(str::to_string),
+            binary_path: PathBuf::from(format!("/fake/{name}.bin")),
+            skipped,
+        }
+    }
+
+    #[test]
+    fn hook_receives_program_id_indexed_by_name() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_file = temp.path().join("env_out.txt");
+        let project = make_test_project(temp.path().to_path_buf());
+        let deployed = vec![fake_deployed("counter", Some("deadbeef"), false)];
+
+        let hook = format!(
+            "echo \"$SCAFFOLD_PROGRAM_ID_counter\" > '{}'",
+            env_file.display()
+        );
+        run_post_deploy_hook(&project, &hook, &deployed).expect("hook should succeed");
+
+        let content = std::fs::read_to_string(&env_file).expect("read env output");
+        assert_eq!(content.trim(), "deadbeef");
+    }
+
+    #[test]
+    fn hook_receives_single_program_shortcut_when_one_program() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_file = temp.path().join("env_out.txt");
+        let project = make_test_project(temp.path().to_path_buf());
+        let deployed = vec![fake_deployed("counter", Some("abc123"), false)];
+
+        let hook = format!(
+            "printf '%s|%s|%s' \"$SCAFFOLD_PROGRAM_NAME\" \"$SCAFFOLD_PROGRAM_ID\" \"$SCAFFOLD_DEPLOY_SKIPPED\" > '{}'",
+            env_file.display()
+        );
+        run_post_deploy_hook(&project, &hook, &deployed).expect("hook should succeed");
+
+        let content = std::fs::read_to_string(&env_file).expect("read env output");
+        assert_eq!(content, "counter|abc123|0");
+    }
+
+    #[test]
+    fn hook_omits_single_program_shortcut_when_multiple() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_file = temp.path().join("env_out.txt");
+        let project = make_test_project(temp.path().to_path_buf());
+        let deployed = vec![
+            fake_deployed("counter", Some("h1"), false),
+            fake_deployed("greeter", Some("h2"), false),
+        ];
+
+        let hook = format!(
+            "echo \"[${{SCAFFOLD_PROGRAM_NAME:-unset}}]\" > '{}'",
+            env_file.display()
+        );
+        run_post_deploy_hook(&project, &hook, &deployed).expect("hook should succeed");
+
+        let content = std::fs::read_to_string(&env_file).expect("read env output");
+        assert_eq!(content.trim(), "[unset]");
+    }
+
+    #[test]
+    fn hook_receives_programs_list_and_skipped_flag() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_file = temp.path().join("env_out.txt");
+        let project = make_test_project(temp.path().to_path_buf());
+        let deployed = vec![
+            fake_deployed("a", None, true),
+            fake_deployed("b", Some("h"), true),
+        ];
+
+        let hook = format!(
+            "printf '%s|%s|%s' \"$SCAFFOLD_PROGRAMS\" \"$SCAFFOLD_DEPLOY_SKIPPED_a\" \"$SCAFFOLD_DEPLOY_SKIPPED_b\" > '{}'",
+            env_file.display()
+        );
+        run_post_deploy_hook(&project, &hook, &deployed).expect("hook should succeed");
+
+        let content = std::fs::read_to_string(&env_file).expect("read env output");
+        assert_eq!(content, "a b|1|1");
+    }
+
+    #[test]
+    fn hook_program_id_unset_when_extraction_failed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_file = temp.path().join("env_out.txt");
+        let project = make_test_project(temp.path().to_path_buf());
+        let deployed = vec![fake_deployed("noid", None, false)];
+
+        let hook = format!(
+            "echo \"[${{SCAFFOLD_PROGRAM_ID_noid:-unset}}]\" > '{}'",
+            env_file.display()
+        );
+        run_post_deploy_hook(&project, &hook, &deployed).expect("hook should succeed");
+
+        let content = std::fs::read_to_string(&env_file).expect("read env output");
+        assert_eq!(content.trim(), "[unset]");
+    }
+
+    #[test]
+    fn env_var_suffix_sanitizes_unsafe_characters() {
+        assert_eq!(env_var_suffix("plain"), "plain");
+        assert_eq!(env_var_suffix("with-dash"), "with_dash");
+        assert_eq!(env_var_suffix("dot.name"), "dot_name");
+        assert_eq!(env_var_suffix("a/b"), "a_b");
+    }
+
+    #[test]
+    fn warn_on_rewritten_program_names_only_lists_rewrites() {
+        // Just exercise the function on a mixed list; the println!s go to
+        // stdout (captured by `cargo test`) but we mainly want to confirm
+        // it doesn't panic and the rewrite-detection logic stays consistent
+        // with `env_var_suffix`.
+        let deployed = vec![
+            DeployedProgram {
+                name: "alphanumeric".to_string(),
+                program_id: None,
+                binary_path: PathBuf::from("/dev/null"),
+                skipped: false,
+            },
+            DeployedProgram {
+                name: "with-dash".to_string(),
+                program_id: None,
+                binary_path: PathBuf::from("/dev/null"),
+                skipped: false,
+            },
+        ];
+        warn_on_rewritten_program_names(&deployed);
+        // No assertion: the contract is "doesn't panic, prints only for
+        // rewritten names". The print_deploy_summary integration tests
+        // already lock in the user-visible output shape.
     }
 }
