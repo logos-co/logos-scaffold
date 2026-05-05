@@ -2,6 +2,10 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+use crate::constants::{
+    DEFAULT_SEQUENCER_BIN_NAME, DEFAULT_SEQUENCER_CONFIG_REL_PATH, SEQUENCER_TARGET_REL_DIR,
+};
+
 /// A pinned external git dependency.
 ///
 /// `source` is a clone URL or, for `RepoBuild::NixFlake`, a flake-style ref
@@ -52,6 +56,41 @@ impl RepoBuild {
 pub(crate) struct LocalnetConfig {
     pub(crate) port: u16,
     pub(crate) risc0_dev_mode: bool,
+    /// Cargo package name for the LEZ sequencer. Used both at build time
+    /// (`cargo build -p <sequencer_binary>`) and at runtime
+    /// (`<lez>/target/release/<sequencer_binary>`). See
+    /// `DEFAULT_SEQUENCER_BIN_NAME`.
+    pub(crate) sequencer_binary: String,
+    /// Path to the sequencer's JSON config file. Resolved relative to the
+    /// LEZ checkout root if not absolute. Mutated in place by
+    /// `patch_sequencer_port` in `commands::localnet` to honour
+    /// `[localnet].port`, so it must point at a regular file the scaffold
+    /// has write access to.
+    pub(crate) sequencer_config_path: String,
+}
+
+impl LocalnetConfig {
+    /// Resolved on-disk path to the sequencer binary inside the LEZ
+    /// checkout. Mirrors `Path::join`'s semantics: an absolute
+    /// `sequencer_binary` replaces `<lez>/target/release/`, but the
+    /// validator in `config.rs` rejects absolute / path-separator values
+    /// so we never reach that branch in normal flow.
+    pub(crate) fn sequencer_bin_path(&self, lez: &std::path::Path) -> PathBuf {
+        lez.join(SEQUENCER_TARGET_REL_DIR)
+            .join(&self.sequencer_binary)
+    }
+
+    /// Resolved on-disk path to the sequencer config file. Absolute paths
+    /// are taken as-is; relative paths are resolved against the LEZ
+    /// checkout root so the same value works on every machine.
+    pub(crate) fn sequencer_config_resolved_path(&self, lez: &std::path::Path) -> PathBuf {
+        let p = PathBuf::from(&self.sequencer_config_path);
+        if p.is_absolute() {
+            p
+        } else {
+            lez.join(p)
+        }
+    }
 }
 
 impl Default for LocalnetConfig {
@@ -59,6 +98,8 @@ impl Default for LocalnetConfig {
         Self {
             port: 3040,
             risc0_dev_mode: true,
+            sequencer_binary: DEFAULT_SEQUENCER_BIN_NAME.to_string(),
+            sequencer_config_path: DEFAULT_SEQUENCER_CONFIG_REL_PATH.to_string(),
         }
     }
 }
