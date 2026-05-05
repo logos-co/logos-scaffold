@@ -63,15 +63,22 @@ pub(crate) fn migrate_to_v0_2_0(doc: &mut DocumentMut) -> DynResult<MigrationRep
         ));
     }
 
-    // [repos.lssa] -> [repos.lez] alias rename. Only triggered if the
-    // explicit lssa section exists; harmless otherwise.
+    // [repos.lssa] -> [repos.lez] alias rename. If both sections exist, the
+    // stale `lssa` is dropped (lez wins) — config::detect_old_schema rejects
+    // any lssa section, so leaving it behind would keep the file unparseable.
     if let Some(repos) = doc.get_mut("repos").and_then(Item::as_table_mut) {
-        if repos.contains_key("lssa") && !repos.contains_key("lez") {
+        if repos.contains_key("lssa") {
             if let Some(lssa) = repos.remove("lssa") {
-                repos.insert("lez", lssa);
-                report
-                    .changes
-                    .push("renamed [repos.lssa] -> [repos.lez]".to_string());
+                if repos.contains_key("lez") {
+                    report
+                        .changes
+                        .push("dropped stale [repos.lssa] (kept [repos.lez])".to_string());
+                } else {
+                    repos.insert("lez", lssa);
+                    report
+                        .changes
+                        .push("renamed [repos.lssa] -> [repos.lez]".to_string());
+                }
             }
         }
     }
