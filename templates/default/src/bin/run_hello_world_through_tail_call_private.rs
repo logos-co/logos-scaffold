@@ -1,63 +1,66 @@
 use std::collections::HashMap;
 
-use anyhow::Context;
-use clap::Parser;
-use example_program_deployment_methods::{HELLO_WORLD_ELF, SIMPLE_TAIL_CALL_ELF};
 use nssa::{
-    ProgramId, privacy_preserving_transaction::circuit::ProgramWithDependencies, program::Program,
+    AccountId, ProgramId, privacy_preserving_transaction::circuit::ProgramWithDependencies,
+    program::Program,
 };
 use wallet::{PrivacyPreservingAccount, WalletCore};
 
-#[path = "../lib.rs"]
-mod scaffold_lib;
-use scaffold_lib::runner_support::{load_program, parse_account_id};
-
-#[derive(Parser, Debug)]
-struct Cli {
-    #[arg(long)]
-    simple_tail_call_path: Option<String>,
-    #[arg(long)]
-    hello_world_path: Option<String>,
-    account_id: String,
-}
+// Before running this example, compile the `simple_tail_call.rs` guest program with:
+//
+//   cargo risczero build --manifest-path examples/program_deployment/methods/guest/Cargo.toml
+//
+// Note: you must run the above command from the root of the `lssa` repository.
+// Note: The compiled binary file is stored in
+// methods/guest/target/riscv32im-risc0-zkvm-elf/docker/simple_tail_call.bin
+//
+//
+// Usage:
+//   cargo run --bin run_hello_world_through_tail_call_private /path/to/guest/binary <account_id>
+//
+// Example:
+//   cargo run --bin run_hello_world_through_tail_call \
+//     methods/guest/target/riscv32im-risc0-zkvm-elf/docker/simple_tail_call.bin \
+//     Ds8q5PjLcKwwV97Zi7duhRVF9uwA2PuYMoLL7FwCzsXE
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let wallet_core = WalletCore::from_env().context("failed to initialize wallet from environment")?;
+async fn main() {
+    // Initialize wallet
+    let wallet_core = WalletCore::from_env().unwrap();
 
-    let simple_tail_call = load_program(
-        cli.simple_tail_call_path.as_deref(),
-        SIMPLE_TAIL_CALL_ELF,
-        "simple_tail_call",
-    )?;
-    let hello_world = load_program(
-        cli.hello_world_path.as_deref(),
-        HELLO_WORLD_ELF,
-        "hello_world",
-    )?;
+    // Parse arguments
+    // First argument is the path to the simple_tail_call program binary
+    let simple_tail_call_path = std::env::args_os().nth(1).unwrap().into_string().unwrap();
+    // Second argument is the path to the hello_world program binary
+    let hello_world_path = std::env::args_os().nth(2).unwrap().into_string().unwrap();
+    // Third argument is the account_id
+    let account_id: AccountId = std::env::args_os()
+        .nth(3)
+        .unwrap()
+        .into_string()
+        .unwrap()
+        .parse()
+        .unwrap();
 
+    // Load the program and its dependencies (the hellow world program)
+    let simple_tail_call_bytecode: Vec<u8> = std::fs::read(simple_tail_call_path).unwrap();
+    let simple_tail_call = Program::new(simple_tail_call_bytecode).unwrap();
+    let hello_world_bytecode: Vec<u8> = std::fs::read(hello_world_path).unwrap();
+    let hello_world = Program::new(hello_world_bytecode).unwrap();
     let dependencies: HashMap<ProgramId, Program> =
         [(hello_world.id(), hello_world)].into_iter().collect();
     let program_with_dependencies = ProgramWithDependencies::new(simple_tail_call, dependencies);
-    let account_id = parse_account_id(&cli.account_id)?;
+
     let accounts = vec![PrivacyPreservingAccount::PrivateOwned(account_id)];
 
-    let (response, _) = wallet_core
+    // Construct and submit the privacy-preserving transaction
+    let instruction = ();
+    wallet_core
         .send_privacy_preserving_tx(
             accounts,
-            Program::serialize_instruction(())
-                .context("failed to serialize private instruction payload")?,
+            Program::serialize_instruction(instruction).unwrap(),
             &program_with_dependencies,
         )
         .await
-        .map_err(|err| anyhow::anyhow!("failed to submit private transaction: {err}"))?;
-
-    println!(
-        "submitted transaction: status={} tx_hash={}",
-        response.status, response.tx_hash
-    );
-    println!("verification hint: wallet account sync-private");
-
-    Ok(())
+        .unwrap();
 }

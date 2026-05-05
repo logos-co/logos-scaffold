@@ -1,48 +1,70 @@
-use anyhow::Context;
-use clap::Parser;
-use example_program_deployment_methods::HELLO_WORLD_ELF;
 use nssa::{
-    PublicTransaction,
+    AccountId, PublicTransaction,
+    program::Program,
     public_transaction::{Message, WitnessSet},
 };
+use common::transaction::NSSATransaction;
+use sequencer_service_rpc::RpcClient as _;
 use wallet::WalletCore;
 
-#[path = "../lib.rs"]
-mod scaffold_lib;
-use scaffold_lib::runner_support::{load_program, parse_account_id};
-
-#[derive(Parser, Debug)]
-struct Cli {
-    #[arg(long)]
-    program_path: Option<String>,
-    account_id: String,
-}
+// Before running this example, compile the `hello_world.rs` guest program with:
+//
+//   cargo risczero build --manifest-path examples/program_deployment/methods/guest/Cargo.toml
+//
+// Note: you must run the above command from the root of the `lssa` repository.
+// Note: The compiled binary file is stored in
+// methods/guest/target/riscv32im-risc0-zkvm-elf/docker/hello_world.bin
+//
+//
+// Usage:
+//   cargo run --bin run_hello_world /path/to/guest/binary <account_id>
+//
+// Example:
+//   cargo run --bin run_hello_world \
+//     methods/guest/target/riscv32im-risc0-zkvm-elf/docker/hello_world.bin \
+//     Ds8q5PjLcKwwV97Zi7duhRVF9uwA2PuYMoLL7FwCzsXE
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let wallet_core = WalletCore::from_env().context("failed to initialize wallet from environment")?;
+async fn main() {
+    // Initialize wallet
+    let wallet_core = WalletCore::from_env().unwrap();
 
-    let program = load_program(cli.program_path.as_deref(), HELLO_WORLD_ELF, "hello_world")?;
-    let account_id = parse_account_id(&cli.account_id)?;
+    // Parse arguments
+    // First argument is the path to the program binary
+    let program_path = std::env::args_os().nth(1).unwrap().into_string().unwrap();
+    // Second argument is the account_id
+    let account_id: AccountId = std::env::args_os()
+        .nth(2)
+        .unwrap()
+        .into_string()
+        .unwrap()
+        .parse()
+        .unwrap();
 
+    // Load the program
+    let bytecode: Vec<u8> = std::fs::read(program_path).unwrap();
+    let program = Program::new(bytecode).unwrap();
+
+    // Define the desired greeting in ASCII
     let greeting: Vec<u8> = vec![72, 111, 108, 97, 32, 109, 117, 110, 100, 111, 33];
-    let message = Message::try_new(program.id(), vec![account_id], vec![], greeting)
-        .context("failed to build hello_world transaction message")?;
-    let witness_set = WitnessSet::for_message(&message, &[]);
+
+    // Fetch nonces and signing key so the sequencer can validate the transaction.
+    // Without these, the transaction will be rejected with InvalidProgramBehaviour.
+    let nonces = wallet_core
+        .get_accounts_nonces(vec![account_id])
+        .await
+        .unwrap();
+    let signing_key = wallet_core
+        .get_account_public_signing_key(account_id)
+        .unwrap();
+    let message = Message::try_new(program.id(), vec![account_id], nonces, greeting).unwrap();
+    let witness_set = WitnessSet::for_message(&message, &[signing_key]);
     let tx = PublicTransaction::new(message, witness_set);
 
-    let response = wallet_core
+    // Submit the transaction
+    let _response = wallet_core
         .sequencer_client
-        .send_tx_public(tx)
+        .send_transaction(NSSATransaction::Public(tx))
         .await
-        .context("failed to submit public transaction to localnet")?;
-
-    println!(
-        "submitted transaction: status={} tx_hash={}",
-        response.status, response.tx_hash
-    );
-    println!("verification hint: wallet account get --account-id {}", cli.account_id);
-
-    Ok(())
+        .unwrap();
 }

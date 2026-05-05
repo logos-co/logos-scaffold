@@ -1,12 +1,25 @@
-use anyhow::Context;
 use clap::{Parser, Subcommand};
-use example_program_deployment_methods::HELLO_WORLD_WITH_MOVE_FUNCTION_ELF;
 use nssa::{PublicTransaction, program::Program, public_transaction};
+use common::transaction::NSSATransaction;
+use sequencer_service_rpc::RpcClient as _;
 use wallet::{PrivacyPreservingAccount, WalletCore};
 
-#[path = "../lib.rs"]
-mod scaffold_lib;
-use scaffold_lib::runner_support::{load_program, parse_account_id};
+// Before running this example, compile the `hello_world_with_move_function.rs` guest program with:
+//
+//   cargo risczero build --manifest-path examples/program_deployment/methods/guest/Cargo.toml
+//
+// Note: you must run the above command from the root of the `lssa` repository.
+// Note: The compiled binary file is stored in
+// methods/guest/target/riscv32im-risc0-zkvm-elf/docker/hello_world_with_move_function.bin
+//
+//
+// Usage:
+//   cargo run --bin run_hello_world_with_move_function /path/to/guest/binary <function> <params>
+//
+// Example:
+//   cargo run --bin run_hello_world_with_move_function \
+//     methods/guest/target/riscv32im-risc0-zkvm-elf/docker/hello_world_with_move_function.bin \
+//     write-public Ds8q5PjLcKwwV97Zi7duhRVF9uwA2PuYMoLL7FwCzsXE Hola
 
 type Instruction = (u8, Vec<u8>);
 const WRITE_FUNCTION_ID: u8 = 0;
@@ -14,8 +27,8 @@ const MOVE_DATA_FUNCTION_ID: u8 = 1;
 
 #[derive(Parser, Debug)]
 struct Cli {
-    #[arg(long)]
-    program_path: Option<String>,
+    /// Path to program binary
+    program_path: String,
 
     #[command(subcommand)]
     command: Command,
@@ -23,6 +36,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Write instruction into one account
     WritePublic {
         account_id: String,
         greeting: String,
@@ -31,6 +45,7 @@ enum Command {
         account_id: String,
         greeting: String,
     },
+    /// Move data between two accounts
     MoveDataPublicToPublic {
         from: String,
         to: String,
@@ -42,14 +57,15 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
     let cli = Cli::parse();
-    let program = load_program(
-        cli.program_path.as_deref(),
-        HELLO_WORLD_WITH_MOVE_FUNCTION_ELF,
-        "hello_world_with_move_function",
-    )?;
-    let wallet_core = WalletCore::from_env().context("failed to initialize wallet from environment")?;
+
+    // Load the program
+    let bytecode: Vec<u8> = std::fs::read(cli.program_path).unwrap();
+    let program = Program::new(bytecode).unwrap();
+
+    // Initialize wallet
+    let wallet_core = WalletCore::from_env().unwrap();
 
     match cli.command {
         Command::WritePublic {
@@ -57,98 +73,82 @@ async fn main() -> anyhow::Result<()> {
             greeting,
         } => {
             let instruction: Instruction = (WRITE_FUNCTION_ID, greeting.into_bytes());
-            let account_id = parse_account_id(&account_id)?;
+            let account_id = account_id.parse().unwrap();
+            let nonces = vec![];
             let message = public_transaction::Message::try_new(
                 program.id(),
                 vec![account_id],
-                vec![],
+                nonces,
                 instruction,
             )
-            .context("failed to build write-public message")?;
+            .unwrap();
             let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
             let tx = PublicTransaction::new(message, witness_set);
-            let response = wallet_core
+
+            // Submit the transaction
+            let _response = wallet_core
                 .sequencer_client
-                .send_tx_public(tx)
+                .send_transaction(NSSATransaction::Public(tx))
                 .await
-                .context("failed to submit public transaction to localnet")?;
-            println!(
-                "submitted transaction: status={} tx_hash={}",
-                response.status, response.tx_hash
-            );
-            println!("verification hint: wallet account get --account-id {account_id}");
+                .unwrap();
         }
         Command::WritePrivate {
             account_id,
             greeting,
         } => {
             let instruction: Instruction = (WRITE_FUNCTION_ID, greeting.into_bytes());
-            let account_id = parse_account_id(&account_id)?;
+            let account_id = account_id.parse().unwrap();
             let accounts = vec![PrivacyPreservingAccount::PrivateOwned(account_id)];
-            let (response, _) = wallet_core
+
+            wallet_core
                 .send_privacy_preserving_tx(
                     accounts,
-                    Program::serialize_instruction(instruction)
-                        .context("failed to serialize private instruction payload")?,
+                    Program::serialize_instruction(instruction).unwrap(),
                     &program.into(),
                 )
                 .await
-                .map_err(|err| anyhow::anyhow!("failed to submit private transaction: {err}"))?;
-            println!(
-                "submitted transaction: status={} tx_hash={}",
-                response.status, response.tx_hash
-            );
-            println!("verification hint: wallet account sync-private");
+                .unwrap();
         }
         Command::MoveDataPublicToPublic { from, to } => {
             let instruction: Instruction = (MOVE_DATA_FUNCTION_ID, vec![]);
-            let from = parse_account_id(&from)?;
-            let to = parse_account_id(&to)?;
+            let from = from.parse().unwrap();
+            let to = to.parse().unwrap();
+            let nonces = vec![];
             let message = public_transaction::Message::try_new(
                 program.id(),
                 vec![from, to],
-                vec![],
+                nonces,
                 instruction,
             )
-            .context("failed to build move-data-public-to-public message")?;
+            .unwrap();
             let witness_set = public_transaction::WitnessSet::for_message(&message, &[]);
             let tx = PublicTransaction::new(message, witness_set);
-            let response = wallet_core
+
+            // Submit the transaction
+            let _response = wallet_core
                 .sequencer_client
-                .send_tx_public(tx)
+                .send_transaction(NSSATransaction::Public(tx))
                 .await
-                .context("failed to submit public transaction to localnet")?;
-            println!(
-                "submitted transaction: status={} tx_hash={}",
-                response.status, response.tx_hash
-            );
-            println!("verification hint: wallet account get --account-id {from}");
-            println!("verification hint: wallet account get --account-id {to}");
+                .unwrap();
         }
         Command::MoveDataPublicToPrivate { from, to } => {
             let instruction: Instruction = (MOVE_DATA_FUNCTION_ID, vec![]);
-            let from = parse_account_id(&from)?;
-            let to = parse_account_id(&to)?;
+            let from = from.parse().unwrap();
+            let to = to.parse().unwrap();
+
             let accounts = vec![
                 PrivacyPreservingAccount::Public(from),
                 PrivacyPreservingAccount::PrivateOwned(to),
             ];
-            let (response, _) = wallet_core
+
+            wallet_core
                 .send_privacy_preserving_tx(
                     accounts,
-                    Program::serialize_instruction(instruction)
-                        .context("failed to serialize private instruction payload")?,
+                    Program::serialize_instruction(instruction).unwrap(),
                     &program.into(),
                 )
                 .await
-                .map_err(|err| anyhow::anyhow!("failed to submit private transaction: {err}"))?;
-            println!(
-                "submitted transaction: status={} tx_hash={}",
-                response.status, response.tx_hash
-            );
-            println!("verification hint: wallet account sync-private");
+                .unwrap();
         }
     };
-
-    Ok(())
 }
