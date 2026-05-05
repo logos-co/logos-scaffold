@@ -1,7 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{bail, Context};
+use notify::{RecursiveMode, Watcher};
 
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::deploy::{
@@ -22,6 +25,11 @@ use crate::project::{load_project, resolve_repo_path};
 use crate::state::prepare_wallet_home;
 use crate::DynResult;
 
+/// Debounce window for the watch loop. Filesystem events from a single
+/// editor save typically arrive in a flurry; sleep this long after the
+/// first event before re-running so we coalesce them.
+const WATCH_DEBOUNCE_MS: u64 = 500;
+
 /// Number of seconds to wait for block production after a reset before
 /// considering the freshly-started localnet healthy. Matches the upper
 /// envelope of `cmd_localnet_reset`'s default verification timeout.
@@ -36,6 +44,7 @@ pub(crate) struct RunInvocation {
     pub(crate) profile: Option<String>,
     pub(crate) reset: Option<bool>,
     pub(crate) post_deploy_override: Option<Vec<String>>,
+    pub(crate) watch: bool,
 }
 
 pub(crate) fn cmd_run(inv: RunInvocation) -> DynResult<()> {
@@ -50,13 +59,23 @@ pub(crate) fn cmd_run(inv: RunInvocation) -> DynResult<()> {
         .post_deploy_override
         .unwrap_or_else(|| resolved.post_deploy.clone());
 
-    let params = PipelineParams {
+    let mut params = PipelineParams {
         resolved: resolved.clone(),
         hooks,
         reset_override: inv.reset,
     };
 
-    run_pipeline_once(&project, &params)
+    run_pipeline_once(&project, &params)?;
+
+    if inv.watch {
+        // Subsequent iterations share the same hook/profile selection but
+        // never reset the localnet again — that would clobber the state
+        // hook code is verifying.
+        params.reset_override = Some(false);
+        watch_loop(&project, &params)?;
+    }
+
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -190,6 +209,102 @@ fn reset_for_run(project: &Project) -> DynResult<()> {
 /// `wallet.state` is byte-equivalent to a fresh `lgs setup`. Extracted as
 /// its own helper so the byte-equivalence test can drive it directly
 /// without booting a real sequencer.
+fn watch_loop(project: &Project, params: &PipelineParams) -> DynResult<()> {
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    })
+    .context("create filesystem watcher")?;
+    watcher
+        .watch(&project.root, RecursiveMode::Recursive)
+        .context("watch project root")?;
+
+    // The IDL build writes JSON files into framework.idl.path on every
+    // iteration. Without ignoring that directory, those writes fire
+    // their own notify events → infinite loop. Resolve once before
+    // entering the loop. Use the project-relative form so we match
+    // both canonical and non-canonical event paths.
+    let idl_rel = PathBuf::from(&project.config.framework.idl.path);
+    let watch_ctx = WatchIgnore { idl_rel };
+
+    println!();
+    println!(
+        "===> watching {} for changes (Ctrl-C to exit)",
+        project.root.display()
+    );
+
+    loop {
+        let event = match rx.recv() {
+            Ok(Ok(ev)) => ev,
+            Ok(Err(err)) => {
+                eprintln!("watch error: {err}");
+                continue;
+            }
+            Err(_) => {
+                eprintln!("===> watcher channel disconnected; exiting watch loop");
+                break;
+            }
+        };
+        if !is_watched_event(project, &watch_ctx, &event) {
+            continue;
+        }
+        // Debounce: sleep then drain the rest of the burst.
+        std::thread::sleep(Duration::from_millis(WATCH_DEBOUNCE_MS));
+        while rx.try_recv().is_ok() {}
+        println!();
+        println!("===> change detected, re-running pipeline");
+        if let Err(err) = run_pipeline_once(project, params) {
+            eprintln!("pipeline failed: {err:#}");
+            eprintln!("===> waiting for next change");
+        }
+    }
+
+    Ok(())
+}
+
+struct WatchIgnore {
+    idl_rel: PathBuf,
+}
+
+fn is_watched_event(project: &Project, ctx: &WatchIgnore, event: &notify::Event) -> bool {
+    for path in &event.paths {
+        if !is_ignored_path(&project.root, ctx, path) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_ignored_path(project_root: &Path, ctx: &WatchIgnore, path: &Path) -> bool {
+    // `notify` may emit canonical (symlinks resolved) or non-canonical paths
+    // depending on the platform and how the project root was registered.
+    // Try both forms so we never silently *ignore* a project edit just
+    // because the OS canonicalized one side and not the other. Fail-open:
+    // a path we can't classify is treated as "watched" so the worst case
+    // is a spurious re-run, never a missed edit.
+    let canonical_root = project_root.canonicalize().ok();
+    let rel = path.strip_prefix(project_root).ok().or_else(|| {
+        canonical_root
+            .as_deref()
+            .and_then(|r| path.strip_prefix(r).ok())
+    });
+    let Some(rel) = rel else {
+        // Path doesn't belong to the project tree under either form. Ignore
+        // — this is a notify event from outside the watched directory.
+        return true;
+    };
+    for component in rel.components() {
+        let s = component.as_os_str().to_string_lossy();
+        if matches!(s.as_ref(), ".scaffold" | "target" | ".git") {
+            return true;
+        }
+    }
+    if rel.starts_with(&ctx.idl_rel) {
+        return true;
+    }
+    false
+}
+
 fn reseed_after_wipe(project: &Project) -> DynResult<()> {
     let lez = resolve_repo_path(project, &project.config.lez, "lez")?;
     let wallet_home = project.root.join(&project.config.wallet_home_dir);

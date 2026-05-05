@@ -231,6 +231,11 @@ struct RunArgs {
     /// for this invocation. Conflicts with --no-post-deploy.
     #[arg(long, value_name = "CMD", conflicts_with = "no_post_deploy")]
     post_deploy: Vec<String>,
+    /// After the initial run, watch the project for file changes and
+    /// re-run the pipeline (build + idl + deploy + hooks) on each change.
+    /// Localnet is reused; reset is skipped on re-runs.
+    #[arg(long)]
+    watch: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -547,6 +552,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 profile: args.profile,
                 reset,
                 post_deploy_override: post_deploy,
+                watch: args.watch,
             })
         }
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
