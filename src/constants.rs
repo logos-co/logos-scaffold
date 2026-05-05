@@ -1,6 +1,14 @@
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub(crate) const LEZ_URL: &str = "https://github.com/logos-blockchain/logos-execution-zone.git";
-pub(crate) const SPEL_URL: &str = "https://github.com/logos-co/spel.git";
+/// Schema version persisted as `[scaffold].version` in `scaffold.toml`.
+/// Bumped when the file's section/field shape changes in a way that requires
+/// a one-shot migration through `init`. Parsers reject any other value with
+/// a targeted error pointing at `init`.
+pub(crate) const SCAFFOLD_TOML_SCHEMA_VERSION: &str = "0.2.0";
+/// Default `source` for `[repos.lez]`. Single field — `url` was dropped in
+/// the 0.2.0 schema after audit confirmed `LEZ_URL == lez.source` in every
+/// production code path.
+pub(crate) const LEZ_SOURCE: &str = "https://github.com/logos-blockchain/logos-execution-zone.git";
+pub(crate) const SPEL_SOURCE: &str = "https://github.com/logos-co/spel.git";
 
 /// Two-form git pin: SHA (used in scaffold.toml `[repos.*].pin` and in
 /// `check_repo` git-head comparisons) plus tag (used by `check_spel_lez_alignment`
@@ -47,9 +55,12 @@ pub(crate) const METHODS_DIR: &str = "methods";
 pub(crate) const SEQUENCER_CONFIG_REL_PATH: &str =
     "sequencer/service/configs/debug/sequencer_config.json";
 pub(crate) const SPEL_BIN_REL_PATH: &str = "target/release/spel";
-pub(crate) const BASECAMP_URL: &str = "https://github.com/logos-co/logos-basecamp.git";
+/// Default `source` for `[repos.basecamp]`. Built via `nix build .#app`,
+/// hence `BASECAMP_ATTR = "app"`.
+pub(crate) const BASECAMP_SOURCE: &str = "https://github.com/logos-co/logos-basecamp.git";
+pub(crate) const BASECAMP_ATTR: &str = "app";
 /// Basecamp commit pin — `logos-basecamp` tag `v0.1.1`.
-/// Projects can override via `[basecamp].pin` in `scaffold.toml`.
+/// Projects can override via `[repos.basecamp].pin` in `scaffold.toml`.
 pub(crate) const DEFAULT_BASECAMP_PIN: &str = "a746cdbc521f72ee22c5a4856fd17a9802bb9d69";
 pub(crate) const BASECAMP_PROFILE_ALICE: &str = "alice";
 pub(crate) const BASECAMP_PROFILE_BOB: &str = "bob";
@@ -69,9 +80,10 @@ pub(crate) const BASECAMP_AUTODISCOVER_SKIP_SUBDIRS: &[&str] =
 /// so lgpm must install under `LogosBasecampDev` for basecamp to discover
 /// the installed modules at launch.
 pub(crate) const BASECAMP_XDG_APP_SUBPATH: &str = "Logos/LogosBasecampDev";
-/// Default flake ref for the `lgpm` CLI. The basecamp flake does not expose `lgpm`;
-/// it lives in a separate repo (`logos-package-manager`). Pin alongside basecamp
-/// so dogfooding is reproducible. Override via `[basecamp].lgpm_flake` in scaffold.toml.
+/// Default `source` / `pin` / `attr` for `[repos.lgpm]`. The `lgpm` CLI
+/// lives in a separate repo (`logos-package-manager`) from basecamp; pin
+/// alongside basecamp so dogfooding is reproducible. Built via
+/// `nix build <source>/<pin>#<attr>`.
 ///
 /// Pinned to `logos-package-manager` tag `tutorial-v1` (the last pre-validation
 /// commit). PR #8 introduced content-hash validation in the manifest; later
@@ -79,8 +91,9 @@ pub(crate) const BASECAMP_XDG_APP_SUBPATH: &str = "Logos/LogosBasecampDev";
 /// `.lgx` files emitted by `logos-module-builder` tag `tutorial-v1`, which
 /// does not populate content hashes. Revisit when module-builder starts
 /// emitting hashes (or lgpm gains a compatibility mode).
-pub(crate) const DEFAULT_LGPM_FLAKE: &str =
-    "github:logos-co/logos-package-manager/e5c25989861f4487c3dc8c7b3bc0062bcbc3221f#cli";
+pub(crate) const LGPM_SOURCE: &str = "github:logos-co/logos-package-manager";
+pub(crate) const DEFAULT_LGPM_PIN: &str = "e5c25989861f4487c3dc8c7b3bc0062bcbc3221f";
+pub(crate) const LGPM_ATTR: &str = "cli";
 
 /// Scaffold-level default pins for runtime companion modules that basecamp
 /// v0.1.1 does NOT preinstall (listed in the Package Manager UI catalog but

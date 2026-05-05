@@ -26,17 +26,15 @@ const GUEST_BIN_REL_PATH: &str =
 /// context to exist (no basecamp section). Older tests in this file inline
 /// the same content; new tests should prefer this helper.
 const MINIMAL_SCAFFOLD_TOML: &str = r#"[scaffold]
-version = "0.1.0"
+version = "0.2.0"
 cache_root = "cache"
 
 [repos.lez]
-url = "https://example/lez.git"
 source = "https://example/lez.git"
 path = "lez"
 pin = "deadbeef"
 
 [repos.spel]
-url = "https://example/spel.git"
 source = "https://example/spel.git"
 path = "spel"
 pin = "deadbeef"
@@ -2254,10 +2252,13 @@ fn basecamp_launch_bails_when_no_modules_captured() {
     let project = temp.path();
     let scaffold_toml = format!(
         "{MINIMAL_SCAFFOLD_TOML}\n\
-         [basecamp]\n\
-         pin = \"deadbeef\"\n\
+         [repos.basecamp]\n\
          source = \"https://example/basecamp\"\n\
-         lgpm_flake = \"\"\n\
+         pin = \"deadbeef\"\n\
+         build = \"nix-flake\"\n\
+         attr = \"app\"\n\
+         \n\
+         [basecamp]\n\
          port_base = 60000\n\
          port_stride = 10\n"
     );
@@ -2448,13 +2449,16 @@ fn write_scaffold_toml_with_localnet(
     risc0_dev_mode: Option<bool>,
 ) {
     let spel_path = project_root.join("spel");
+    // Schema 0.2.0: no url, no [basecamp] / [basecamp.modules.*],
+    // path is set on lez/spel for back-compat (tests need a literal path
+    // to a local stub repo).
     let mut content = format!(
-        "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\npath = \"{}\"\npin = \"{}\"\n\n[repos.spel]\nurl = \"https://github.com/logos-co/spel.git\"\nsource = \"https://github.com/logos-co/spel.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \".scaffold/wallet\"\n",
+        "[scaffold]\nversion = \"0.2.0\"\ncache_root = \"{}\"\n\n[repos.lez]\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\npin = \"{}\"\npath = \"{}\"\n\n[repos.spel]\nsource = \"https://github.com/logos-co/spel.git\"\npin = \"{}\"\npath = \"{}\"\n\n[wallet]\nhome_dir = \".scaffold/wallet\"\n",
         project_root.join("cache").display(),
+        TEST_PIN,
         lez_path.display(),
         TEST_PIN,
         spel_path.display(),
-        TEST_PIN,
     );
 
     if let Some(port) = localnet_port {
@@ -3108,20 +3112,24 @@ fn init_creates_scaffold_toml_and_dirs() {
 }
 
 #[test]
-fn init_refuses_existing_scaffold_toml_with_repos_spel() {
+fn init_refuses_already_at_v0_2_0_scaffold_toml() {
     let temp = tempdir().expect("tempdir");
     let scaffold_path = temp.path().join("scaffold.toml");
-    // Already-migrated config (carries [repos.spel]) → init refuses.
-    let original =
-        "# pre-existing\n[repos.spel]\nurl = \"x\"\nsource = \"x\"\npath = \"y\"\npin = \"z\"\n";
-    fs::write(&scaffold_path, original).expect("seed scaffold.toml");
+    // First, run init to lay down a fresh v0.2.0 file.
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let original = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
 
+    // Second invocation must refuse with the "already migrated" hint.
     Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .current_dir(temp.path())
         .arg("init")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("up to date"));
+        .stderr(predicate::str::contains("already at schema"));
 
     let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
     assert_eq!(
@@ -3131,10 +3139,10 @@ fn init_refuses_existing_scaffold_toml_with_repos_spel() {
 }
 
 #[test]
-fn init_backfills_repos_spel_in_pre_spel_scaffold_toml() {
+fn init_migrates_pre_v0_2_0_scaffold_toml_in_place() {
     let temp = tempdir().expect("tempdir");
     let scaffold_path = temp.path().join("scaffold.toml");
-    let original = "[scaffold]\nversion = \"0.1.0\"\n\n[repos.lez]\nurl = \"u\"\nsource = \"u\"\npath = \"p\"\npin = \"abc\"\n";
+    let original = "# user comment\n[scaffold]\nversion = \"0.1.0\"\n\n[repos.lez]\nurl = \"u\"\nsource = \"u\"\npath = \"p\"\npin = \"abc\"\n";
     fs::write(&scaffold_path, original).expect("seed scaffold.toml");
 
     Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
@@ -3142,17 +3150,94 @@ fn init_backfills_repos_spel_in_pre_spel_scaffold_toml() {
         .arg("init")
         .assert()
         .success()
-        .stdout(predicate::str::contains("backfilled with [repos.spel]"));
+        .stdout(predicate::str::contains("migrated to schema v0.2.0"));
 
     let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
     assert!(
-        after.starts_with(original),
-        "existing content must be preserved verbatim; got:\n{after}"
+        after.contains("# user comment"),
+        "user comments must be preserved; got:\n{after}"
+    );
+    assert!(
+        after.contains("version = \"0.2.0\""),
+        "[scaffold].version must be bumped; got:\n{after}"
     );
     assert!(
         after.contains("[repos.spel]"),
         "[repos.spel] must be appended; got:\n{after}"
     );
+    assert!(
+        !after.contains("url ="),
+        "url field must be stripped; got:\n{after}"
+    );
+}
+
+#[test]
+fn init_splits_basecamp_lgpm_flake_into_repos_lgpm() {
+    let temp = tempdir().expect("tempdir");
+    let scaffold_path = temp.path().join("scaffold.toml");
+    // Pre-0.2.0: lgpm pinned via [basecamp].lgpm_flake (canonical
+    // github:owner/repo/<sha>#attr form). After `lgs init`, the flake ref
+    // must be split into source/pin/attr under [repos.lgpm].
+    let original = r#"[scaffold]
+version = "0.1.0"
+
+[repos.lez]
+source = "https://example/lez.git"
+pin = "deadbeef"
+
+[repos.spel]
+source = "https://example/spel.git"
+pin = "deadbeef"
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = "github:logos-co/logos-package-manager/cafef00dcafef00dcafef00dcafef00dcafef00d#cli"
+port_base = 60000
+port_stride = 10
+
+[wallet]
+home_dir = ".scaffold/wallet"
+"#;
+    fs::write(&scaffold_path, original).expect("seed scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
+    assert!(
+        !after.contains("lgpm_flake"),
+        "lgpm_flake key must be removed; got:\n{after}"
+    );
+    assert!(
+        after.contains("[repos.lgpm]"),
+        "[repos.lgpm] section must be appended; got:\n{after}"
+    );
+    assert!(
+        after.contains("github:logos-co/logos-package-manager"),
+        "[repos.lgpm].source must carry the flake source; got:\n{after}"
+    );
+    assert!(
+        after.contains("cafef00dcafef00dcafef00dcafef00dcafef00d"),
+        "[repos.lgpm].pin must be the SHA from the flake ref; got:\n{after}"
+    );
+    assert!(
+        after.contains("attr = \"cli\""),
+        "[repos.lgpm].attr must carry the flake attr; got:\n{after}"
+    );
+
+    // Re-running any non-init command must now succeed at the parse step
+    // (we only check parsing here; downstream commands will fail for other
+    // reasons in a stub setup).
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already at schema"));
 }
 
 #[test]
@@ -3243,5 +3328,159 @@ fn completions_zsh_registers_both_names_in_pristine_shell() {
     assert!(
         stdout.contains("logos-scaffold=_lgs"),
         "expected logos-scaffold to be registered at compinit time, got: {stdout}"
+    );
+}
+
+/// Pre-0.2.0 scaffold.toml with all the legacy signals (url field on
+/// [repos.lez], [basecamp.modules.*], [basecamp].lgpm_flake/pin/source).
+/// Every non-init command must hard-fail when this is present and the
+/// migration hint must point at `init`.
+const PRE_V0_2_0_SCAFFOLD_TOML: &str = r#"# preserved comment
+[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = "github:logos-co/logos-package-manager/cafef00dcafef00dcafef00dcafef00dcafef00d#cli"
+port_base = 60000
+port_stride = 10
+
+[basecamp.modules.foo]
+flake = "path:./foo"
+role = "project"
+"#;
+
+fn assert_pre_v0_2_0_rejection(args: &[&str]) {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), PRE_V0_2_0_SCAFFOLD_TOML)
+        .expect("seed pre-v0.2.0 scaffold.toml");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("run lgs {args:?}: {e}"));
+
+    assert!(
+        !output.status.success(),
+        "lgs {args:?} must hard-fail on pre-0.2.0 scaffold.toml; got status {:?}, stdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("init"),
+        "lgs {args:?} stderr must point at `init`; got:\n{stderr}",
+    );
+
+    let after = fs::read_to_string(temp.path().join("scaffold.toml"))
+        .expect("scaffold.toml still readable");
+    assert_eq!(
+        after, PRE_V0_2_0_SCAFFOLD_TOML,
+        "lgs {args:?} must not mutate scaffold.toml when it rejects pre-0.2.0",
+    );
+}
+
+#[test]
+fn setup_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["setup"]);
+}
+
+#[test]
+fn build_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["build"]);
+}
+
+#[test]
+fn deploy_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["deploy"]);
+}
+
+#[test]
+fn doctor_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["doctor"]);
+}
+
+#[test]
+fn report_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["report"]);
+}
+
+#[test]
+fn basecamp_setup_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["basecamp", "setup"]);
+}
+
+#[test]
+fn deploy_json_hard_fails_with_clean_stdout_on_pre_v0_2_0_scaffold_toml() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), PRE_V0_2_0_SCAFFOLD_TOML)
+        .expect("seed pre-v0.2.0 scaffold.toml");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(["deploy", "--json"])
+        .output()
+        .expect("run lgs deploy --json");
+
+    assert!(!output.status.success(), "deploy --json must fail");
+    assert!(
+        output.stdout.is_empty(),
+        "deploy --json must keep stdout clean on rejection; got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("init"),
+        "stderr must point at `init`; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn doctor_json_hard_fails_with_clean_stdout_on_pre_v0_2_0_scaffold_toml() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), PRE_V0_2_0_SCAFFOLD_TOML)
+        .expect("seed pre-v0.2.0 scaffold.toml");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(["doctor", "--json"])
+        .output()
+        .expect("run lgs doctor --json");
+
+    assert!(!output.status.success(), "doctor --json must fail");
+    assert!(
+        output.stdout.is_empty(),
+        "doctor --json must keep stdout clean on rejection; got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("init"),
+        "stderr must point at `init`; got:\n{stderr}"
     );
 }

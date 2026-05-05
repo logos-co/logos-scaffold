@@ -97,12 +97,15 @@ those names to concrete flake refs in the captured module set — otherwise
 `basecamp install` cannot know which flake provides `delivery_module` when a
 project source declares that dep.
 
-`scaffold.toml` gains a `[basecamp.modules]` table keyed by `module_name` with
-explicit `flake` and `role` (`project` | `dependency`) fields. `basecamp modules`
-writes the table at capture time; dep resolution at build time is a key lookup
-against that table. `scaffold.toml` is the sole human-readable source of truth
-for the captured module set; `basecamp.state` is reduced to pin-artefact
-metadata only.
+`scaffold.toml` carries a top-level `[modules]` table keyed by `module_name`
+with explicit `flake` and `role` (`project` | `dependency`) fields.
+`basecamp modules` writes the table at capture time; dep resolution at
+build time is a key lookup against that table. `scaffold.toml` is the
+sole human-readable source of truth for the captured module set;
+`basecamp.state` is reduced to pin-artefact metadata only. (Originally
+nested under `[basecamp.modules.*]`; lifted to top level in schema 0.2.0
+because modules are project-level Logos artifacts and basecamp is one
+consumer of them, not their owner.)
 
 Populating `module_name` on capture:
 - `path:` flake sources — read directly from the source's `metadata.json.name`
@@ -204,32 +207,121 @@ any spel subcommand without a global install. `extract_program_id` is
 bounded by a wall-clock timeout and falls back to a non-fatal "unavailable"
 hint so a broken or hung `spel` can never gate a successful deploy.
 
-## Migrating `[repos.spel]` Into Existing `scaffold.toml` Files
+## Schema Migration via `init` (0.2.0 generalization)
 
-When `[repos.spel]` was added, every existing scaffolded project had a
-config file lacking it. Two approaches were considered:
+When `[repos.spel]` was first added, every scaffolded project had a
+config lacking it. The original solution: hard-fail in the parser with
+a targeted error pointing at `init`, which appends the missing section
+in place. Default-filling silently was rejected because the warning
+would fire on every invocation forever (`deploy`, `doctor`, `localnet`,
+`wallet`, `spel`, `report` all parse) and would corrupt
+machine-parseable outputs (`doctor --json`, `deploy --json`).
 
-1. Default-fill the missing section silently in the parser, with a stderr
-   warning telling the user to re-run `init`.
-2. Hard-fail in the parser with a targeted error pointing at `init`.
+The 0.2.0 schema migration generalizes that pattern. `init` is the
+single migration entry point for any pre-0.2.0 scaffold.toml shape:
 
-Option (1) is the friendlier-looking default-on-failure choice but has a
-real cost: `parse_config` runs from `deploy`, `doctor`, `localnet`,
-`wallet`, `spel`, and `report`, and the warning fires on every invocation
-forever — the user never gets nudged hard enough to actually run `init`.
-The warning would also corrupt machine-parseable outputs (`doctor --json`,
-`deploy --json`).
+- pre-spel files (no `[repos.spel]`)
+- legacy `url` field on `[repos.{lez,spel}]`
+- `[basecamp].pin` / `.source` / `.lgpm_flake` (moved to
+  `[repos.basecamp]` / `[repos.lgpm]`)
+- `[basecamp.modules.*]` (moved to top-level `[modules.*]`)
 
-Scaffold takes the hard-fail path. Re-running `init` is one command, the
-noise stops once it's done, and JSON consumers stay clean. To make the
-migration painless, `init` is re-run-safe: if `scaffold.toml` exists but
-lacks `[repos.spel]`, `init` appends the section in place (preserving
-comments, the `cache_root` help text, and every other field verbatim) and
-derives `spel.path` by mirroring the existing `[repos.lez].path` so
-`--cache-root` overrides and `--vendor-deps` layouts are honored. Already-
-migrated configs are refused so the second `init` doesn't double-write.
-The path mirroring is a hand-rolled scan rather than a `parse_config` call
-because the parser hard-fails on exactly the case we're trying to fix.
+`init` walks the file via `toml_edit` so comments, key ordering, and
+unrelated sections survive the rewrite. It bumps `[scaffold].version`
+to `0.2.0`, prints a one-line summary of what changed, and refuses
+already-migrated files. Pre-0.2.0 lgpm flake refs of the form
+`github:owner/repo/<sha>#attr` are split into `source`/`pin`/`attr`
+automatically; unparseable refs trigger a hand-edit hint with a
+default pin written in place so the file is at least valid.
+
+Every other command — `deploy`, `doctor`, `setup`, `localnet`,
+`wallet`, `spel`, `report`, `basecamp *` — refuses pre-0.2.0 files
+with a single line: *"scaffold.toml uses an old schema (...). Run
+`logos-scaffold init` to migrate to v0.2.0; existing settings are
+preserved."* JSON consumers stay clean.
+
+## scaffold.toml Schema: Three Namespaces
+
+Schema version 0.2.0 (`[scaffold].version = "0.2.0"`) factors the file
+into three orthogonal namespaces:
+
+- **`[repos.<name>]`** — every pinned external git dependency. One
+  schema for all four: `lez`, `spel`, `basecamp`, `lgpm`. Fields:
+  `source` (clone URL or flake source), `pin` (git SHA), optional
+  `build` (`"cargo"` default, `"nix-flake"` for nix-built deps),
+  optional `attr` (flake output attribute), optional `path` override.
+  Adding a fifth dep is a one-section addition with no code dispatch
+  on section name.
+- **`[modules.<name>]`** — Logos modules the project ships. `flake`
+  + `role`. Basecamp consumes them via `basecamp install` / `launch`
+  / `build-portable`, but they're not basecamp's property — a future
+  test harness or alternative loader can pick them up the same way.
+- **`[<feature>]`** — runtime config per feature: `[scaffold]`,
+  `[wallet]`, `[framework]`, `[localnet]`, `[basecamp]` (port
+  allocation only).
+
+Earlier schemas (pre-0.2.0) mixed all three: `[basecamp]` carried
+pin / source / lgpm_flake / modules together with port_base, and
+`[repos.{lez,spel}]` carried both `url` and `source`. Migration is via
+`logos-scaffold init`, which detects any old-shape signal (pre-0.2.0
+version stamp, `url` field, `[basecamp].pin`/`.source`/`.lgpm_flake`,
+`[basecamp.modules.*]`) and rewrites in place via `toml_edit` so
+comments and key ordering survive.
+
+### Pin-Only Storage, Path Derived at Runtime
+
+For every `[repos.<name>]`, `scaffold.toml` stores `pin` and
+`source` only; the on-disk clone location is derived at runtime from
+`resolve_cache_root() + "repos/<name>/" + pin`. The file is therefore
+portable across machines and CI by default — nothing in it depends on
+the host's `$HOME` or cache layout. The `cache_root` chain
+(env → `[scaffold].cache_root` → XDG default) decides where the clone
+lands; the `pin` decides which commit is checked out.
+
+`[repos.lez]` and `[repos.spel]` carry an additional optional `path`
+field that `[repos.basecamp]` and `[repos.lgpm]` don't need. When set
+it's authoritative — used literally if absolute, joined to
+`project.root` if relative — and exists for two cases:
+
+- `--vendor-deps` projects, where `new` writes the relative literal
+  `.scaffold/repos/{lez,spel}` so the clone lives inside the project
+  tree.
+- Pre-portability `scaffold.toml` files in the wild that still carry
+  an absolute cache path; the loader honors them verbatim so no
+  migration is forced for that one field. Setting `path = ""` and
+  re-running `setup` opts back into portability.
+
+`setup` decides sync mode from the same field: empty path →
+cache-managed → auto-reclone on origin mismatch; non-empty path →
+vendored or user-overridden → fail-on-mismatch so a developer's
+checkout is never silently rewritten.
+
+### Build Dispatch
+
+`[repos.<name>].build` is a discriminator with two values:
+
+- `"cargo"` (default; emitted only when the user opts into a non-
+  default elsewhere). `setup` builds the clone via
+  `cargo build --release -p <hardcoded target>`. Targets stay
+  code-side; making them data-driven didn't earn its complexity.
+- `"nix-flake"`. `basecamp setup` builds via
+  `nix build <source>/<pin>#<attr>`. `attr` is required.
+
+The two paths share `resolve_repo_path` for the on-disk location and
+`source` / `pin` storage; they diverge only in the build command they
+issue.
+
+### Schema-Stale Files Are Hard-Failed
+
+The parser refuses to load any pre-0.2.0 file. The error names the
+specific stale shape (e.g. `[basecamp].lgpm_flake (moved to
+[repos.lgpm])`) and points at `init`. Re-running `init` migrates and
+the user proceeds. Default-filling the missing fields with a stderr
+warning was rejected because the warning would corrupt
+machine-parseable outputs (`doctor --json`, `deploy --json`) and
+because users would never get nudged hard enough to actually
+migrate. Hard-fail + targeted hint is the same model as the original
+`[repos.spel]` migration.
 
 ## Build Output Discovery
 

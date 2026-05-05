@@ -813,7 +813,7 @@ ls .scaffold/basecamp/profiles
 
 ### Goal
 
-Validate the per-project source of truth for module identity (`[basecamp.modules]` in `scaffold.toml`), the install pipeline that builds `.lgx` artefacts and loads them via `lgpm`, and a single-profile launch.
+Validate the per-project source of truth for module identity (`[modules]` in `scaffold.toml`), the install pipeline that builds `.lgx` artefacts and loads them via `lgpm`, and a single-profile launch.
 
 ### Preconditions
 

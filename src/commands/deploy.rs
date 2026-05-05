@@ -8,7 +8,7 @@ use walkdir::WalkDir;
 
 use crate::constants::SPEL_BIN_REL_PATH;
 use crate::process::{run_with_stdin, EchoGuard};
-use crate::project::load_project;
+use crate::project::{load_project, resolve_repo_path};
 use crate::DynResult;
 
 use super::wallet_support::{
@@ -40,10 +40,8 @@ pub(crate) fn cmd_deploy(
         "This command must be run inside a logos-scaffold project.\nNext step: cd into your scaffolded project directory and retry.",
     )?;
     let wallet = load_wallet_runtime(&project)?;
-    let spel_bin = project
-        .root
-        .join(&project.config.spel.path)
-        .join(SPEL_BIN_REL_PATH);
+    let spel_bin =
+        resolve_repo_path(&project, &project.config.spel, "spel")?.join(SPEL_BIN_REL_PATH);
 
     let sequencer_addr = wallet
         .sequencer_addr
