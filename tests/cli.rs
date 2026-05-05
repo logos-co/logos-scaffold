@@ -614,6 +614,76 @@ fn doctor_json_outputs_machine_readable_report() {
 }
 
 #[test]
+fn doctor_reports_configured_sequencer_binary_and_config_path() {
+    // When [localnet].sequencer_binary / sequencer_config_path are set,
+    // doctor's `sequencer binary` and `sequencer config` rows must report
+    // the *configured* paths, not the upstream defaults. Drives the
+    // setup/localnet/doctor wiring without spawning a real sequencer.
+    let temp = tempdir().expect("tempdir");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lez path");
+    let spel_path = temp.path().join("spel");
+    let custom_config_rel = "sequencer/service/configs/dev/sequencer_config.json";
+
+    let toml = format!(
+        "[scaffold]\nversion = \"0.2.0\"\ncache_root = \"{}\"\n\n\
+         [repos.lez]\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\n\
+         pin = \"{}\"\npath = \"{}\"\n\n\
+         [repos.spel]\nsource = \"https://github.com/logos-co/spel.git\"\n\
+         pin = \"{}\"\npath = \"{}\"\n\n\
+         [wallet]\nhome_dir = \".scaffold/wallet\"\n\n\
+         [localnet]\nport = 3040\nrisc0_dev_mode = true\n\
+         sequencer_binary = \"my_custom_seq\"\n\
+         sequencer_config_path = \"{}\"\n",
+        temp.path().join("cache").display(),
+        TEST_PIN,
+        lez_path.display(),
+        TEST_PIN,
+        spel_path.display(),
+        custom_config_rel,
+    );
+    fs::write(temp.path().join("scaffold.toml"), toml).expect("write scaffold.toml");
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("doctor")
+        .arg("--json")
+        .assert();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    let checks = value
+        .get("checks")
+        .and_then(serde_json::Value::as_array)
+        .expect("checks array");
+
+    let bin_row = checks
+        .iter()
+        .find(|c| c.get("name").and_then(serde_json::Value::as_str) == Some("sequencer binary"))
+        .expect("sequencer binary check present");
+    let bin_detail = bin_row
+        .get("detail")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        bin_detail.contains("target/release/my_custom_seq"),
+        "expected detail to mention configured binary path, got {bin_detail:?}"
+    );
+
+    let cfg_row = checks
+        .iter()
+        .find(|c| c.get("name").and_then(serde_json::Value::as_str) == Some("sequencer config"))
+        .expect("sequencer config check present");
+    let cfg_detail = cfg_row
+        .get("detail")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        cfg_detail.contains(custom_config_rel),
+        "expected detail to mention configured config path, got {cfg_detail:?}"
+    );
+}
+
+#[test]
 fn doctor_uses_password_env_override_for_wallet_health() {
     let temp = tempdir().expect("tempdir");
     setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
