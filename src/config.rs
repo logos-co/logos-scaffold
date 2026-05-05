@@ -97,23 +97,30 @@ pub(crate) fn parse_config(text: &str) -> DynResult<Config> {
 fn detect_old_schema(doc: &DocumentMut, version: &str) -> DynResult<()> {
     let mut markers: Vec<&str> = Vec::new();
 
-    // Old version stamp.
-    if version != SCAFFOLD_TOML_SCHEMA_VERSION && (version.starts_with("0.1") || version == "0.0") {
+    // Old version stamp. Any other version mismatch (e.g. prerelease tags or
+    // hand-edits) is caught downstream in `parse_config` with a more specific
+    // "this build expects X" message; `init`'s migrator bumps the version
+    // regardless of origin.
+    if version != SCAFFOLD_TOML_SCHEMA_VERSION
+        && (version.starts_with("0.1.") || version == "0.1" || version == "0.0")
+    {
         markers.push("[scaffold].version is pre-0.2.0");
     }
 
+    // [repos.lssa] — pre-spel-era alias for [repos.lez]. Even if no other
+    // signals fire (e.g. the user hand-bumped the version stamp), the
+    // canonical name has changed and `init` is responsible for the rename.
+    let repos_table = doc.get("repos").and_then(Item::as_table);
+    if let Some(repos) = repos_table {
+        if repos.get("lssa").is_some() {
+            markers.push("[repos.lssa] renamed to [repos.lez] in 0.2.0");
+        }
+    }
+
     // [repos.{lez,spel}].url — dropped in 0.2.0; source is the single field.
+    // (lssa is checked above as its own signal.)
     for name in ["lez", "spel"] {
-        let table = doc.get("repos").and_then(Item::as_table).and_then(|t| {
-            t.get(name).and_then(Item::as_table).or_else(|| {
-                // Support legacy [repos.lssa] alias for [repos.lez].
-                if name == "lez" {
-                    t.get("lssa").and_then(Item::as_table)
-                } else {
-                    None
-                }
-            })
-        });
+        let table = repos_table.and_then(|t| t.get(name).and_then(Item::as_table));
         if let Some(table) = table {
             if table.get("url").is_some() {
                 markers.push("[repos.lez|spel].url is removed in 0.2.0 (use `source` only)");
@@ -154,18 +161,14 @@ fn detect_old_schema(doc: &DocumentMut, version: &str) -> DynResult<()> {
 }
 
 fn parse_repo_ref(doc: &DocumentMut, name: &str) -> DynResult<Option<RepoRef>> {
-    // [repos.<name>] is the canonical key. [repos.lssa] aliases [repos.lez] for
-    // pre-spel-era configs (predates this PR).
-    let repos = doc.get("repos").and_then(Item::as_table);
-    let table = match repos {
-        Some(repos) => match repos.get(name).and_then(Item::as_table) {
-            Some(t) => Some(t),
-            None if name == "lez" => repos.get("lssa").and_then(Item::as_table),
-            None => None,
-        },
-        None => None,
-    };
-    let Some(table) = table else {
+    // [repos.<name>] is the canonical key. Pre-spel-era configs that used
+    // [repos.lssa] are rejected upstream in `detect_old_schema` so users are
+    // pushed through `init` for the rename — no alias acceptance here.
+    let Some(table) = doc
+        .get("repos")
+        .and_then(Item::as_table)
+        .and_then(|t| t.get(name).and_then(Item::as_table))
+    else {
         return Ok(None);
     };
 
@@ -755,10 +758,12 @@ role = "project"
     }
 
     #[test]
-    fn parses_legacy_repos_lssa_alias_for_repos_lez() {
+    fn rejects_legacy_repos_lssa_section() {
         let toml = minimal_v0_2_0().replace("[repos.lez]", "[repos.lssa]");
-        let cfg = parse_config(&toml).expect("parse with lssa alias");
-        assert_eq!(cfg.lez.source, LEZ_SOURCE);
+        let err = parse_config(&toml).expect_err("lssa section should be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("lssa"), "{msg}");
+        assert!(msg.contains("init"), "{msg}");
     }
 
     #[test]

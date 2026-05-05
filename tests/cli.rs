@@ -3172,6 +3172,75 @@ fn init_migrates_pre_v0_2_0_scaffold_toml_in_place() {
 }
 
 #[test]
+fn init_splits_basecamp_lgpm_flake_into_repos_lgpm() {
+    let temp = tempdir().expect("tempdir");
+    let scaffold_path = temp.path().join("scaffold.toml");
+    // Pre-0.2.0: lgpm pinned via [basecamp].lgpm_flake (canonical
+    // github:owner/repo/<sha>#attr form). After `lgs init`, the flake ref
+    // must be split into source/pin/attr under [repos.lgpm].
+    let original = r#"[scaffold]
+version = "0.1.0"
+
+[repos.lez]
+source = "https://example/lez.git"
+pin = "deadbeef"
+
+[repos.spel]
+source = "https://example/spel.git"
+pin = "deadbeef"
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = "github:logos-co/logos-package-manager/cafef00dcafef00dcafef00dcafef00dcafef00d#cli"
+port_base = 60000
+port_stride = 10
+
+[wallet]
+home_dir = ".scaffold/wallet"
+"#;
+    fs::write(&scaffold_path, original).expect("seed scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
+    assert!(
+        !after.contains("lgpm_flake"),
+        "lgpm_flake key must be removed; got:\n{after}"
+    );
+    assert!(
+        after.contains("[repos.lgpm]"),
+        "[repos.lgpm] section must be appended; got:\n{after}"
+    );
+    assert!(
+        after.contains("github:logos-co/logos-package-manager"),
+        "[repos.lgpm].source must carry the flake source; got:\n{after}"
+    );
+    assert!(
+        after.contains("cafef00dcafef00dcafef00dcafef00dcafef00d"),
+        "[repos.lgpm].pin must be the SHA from the flake ref; got:\n{after}"
+    );
+    assert!(
+        after.contains("attr = \"cli\""),
+        "[repos.lgpm].attr must carry the flake attr; got:\n{after}"
+    );
+
+    // Re-running any non-init command must now succeed at the parse step
+    // (we only check parsing here; downstream commands will fail for other
+    // reasons in a stub setup).
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already at schema"));
+}
+
+#[test]
 fn init_appends_gitignore_once() {
     let temp = tempdir().expect("tempdir");
     fs::write(temp.path().join(".gitignore"), "target\n.scaffold\nother\n")
@@ -3259,5 +3328,159 @@ fn completions_zsh_registers_both_names_in_pristine_shell() {
     assert!(
         stdout.contains("logos-scaffold=_lgs"),
         "expected logos-scaffold to be registered at compinit time, got: {stdout}"
+    );
+}
+
+/// Pre-0.2.0 scaffold.toml with all the legacy signals (url field on
+/// [repos.lez], [basecamp.modules.*], [basecamp].lgpm_flake/pin/source).
+/// Every non-init command must hard-fail when this is present and the
+/// migration hint must point at `init`.
+const PRE_V0_2_0_SCAFFOLD_TOML: &str = r#"# preserved comment
+[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = "github:logos-co/logos-package-manager/cafef00dcafef00dcafef00dcafef00dcafef00d#cli"
+port_base = 60000
+port_stride = 10
+
+[basecamp.modules.foo]
+flake = "path:./foo"
+role = "project"
+"#;
+
+fn assert_pre_v0_2_0_rejection(args: &[&str]) {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), PRE_V0_2_0_SCAFFOLD_TOML)
+        .expect("seed pre-v0.2.0 scaffold.toml");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("run lgs {args:?}: {e}"));
+
+    assert!(
+        !output.status.success(),
+        "lgs {args:?} must hard-fail on pre-0.2.0 scaffold.toml; got status {:?}, stdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("init"),
+        "lgs {args:?} stderr must point at `init`; got:\n{stderr}",
+    );
+
+    let after = fs::read_to_string(temp.path().join("scaffold.toml"))
+        .expect("scaffold.toml still readable");
+    assert_eq!(
+        after, PRE_V0_2_0_SCAFFOLD_TOML,
+        "lgs {args:?} must not mutate scaffold.toml when it rejects pre-0.2.0",
+    );
+}
+
+#[test]
+fn setup_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["setup"]);
+}
+
+#[test]
+fn build_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["build"]);
+}
+
+#[test]
+fn deploy_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["deploy"]);
+}
+
+#[test]
+fn doctor_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["doctor"]);
+}
+
+#[test]
+fn report_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["report"]);
+}
+
+#[test]
+fn basecamp_setup_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["basecamp", "setup"]);
+}
+
+#[test]
+fn deploy_json_hard_fails_with_clean_stdout_on_pre_v0_2_0_scaffold_toml() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), PRE_V0_2_0_SCAFFOLD_TOML)
+        .expect("seed pre-v0.2.0 scaffold.toml");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(["deploy", "--json"])
+        .output()
+        .expect("run lgs deploy --json");
+
+    assert!(!output.status.success(), "deploy --json must fail");
+    assert!(
+        output.stdout.is_empty(),
+        "deploy --json must keep stdout clean on rejection; got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("init"),
+        "stderr must point at `init`; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn doctor_json_hard_fails_with_clean_stdout_on_pre_v0_2_0_scaffold_toml() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), PRE_V0_2_0_SCAFFOLD_TOML)
+        .expect("seed pre-v0.2.0 scaffold.toml");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(["doctor", "--json"])
+        .output()
+        .expect("run lgs doctor --json");
+
+    assert!(!output.status.success(), "doctor --json must fail");
+    assert!(
+        output.stdout.is_empty(),
+        "doctor --json must keep stdout clean on rejection; got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("init"),
+        "stderr must point at `init`; got:\n{stderr}"
     );
 }

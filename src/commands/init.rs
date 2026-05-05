@@ -565,6 +565,40 @@ home_dir = ".scaffold/wallet"
     }
 
     #[test]
+    fn migrates_repos_lssa_to_repos_lez() {
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        let seed = format!(
+            r#"# preserved comment
+[scaffold]
+version = "0.1.0"
+
+[repos.lssa]
+source = "{}"
+pin = "{}"
+
+[repos.spel]
+source = "{}"
+pin = "{}"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+"#,
+            LEZ_SOURCE, DEFAULT_LEZ.sha, SPEL_SOURCE, DEFAULT_SPEL.sha,
+        );
+        fs::write(target.join("scaffold.toml"), seed).expect("seed");
+        cmd_init_at(target, "lgs").expect("migrate");
+
+        let after = fs::read_to_string(target.join("scaffold.toml")).unwrap();
+        assert!(after.contains("# preserved comment"), "{after}");
+        assert!(after.contains("[repos.lez]"), "{after}");
+        assert!(!after.contains("[repos.lssa]"), "{after}");
+        let cfg = parse_config(&after).expect("re-parse");
+        assert_eq!(cfg.lez.source, LEZ_SOURCE);
+        assert_eq!(cfg.lez.pin, DEFAULT_LEZ.sha);
+    }
+
+    #[test]
     fn migration_strips_url_only_when_no_other_changes_needed() {
         let temp = tempdir().expect("tempdir");
         let target = temp.path();

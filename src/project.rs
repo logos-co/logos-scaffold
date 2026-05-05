@@ -37,6 +37,13 @@ pub(crate) fn run_in_project_dir(
     result
 }
 
+/// Rewrite `scaffold.toml` from scratch using the current `project.config`.
+///
+/// This is a destructive serialization: user comments, key ordering, and any
+/// hand-formatting are lost. Callers should only invoke it when the config
+/// has actually changed and the rewrite carries meaningful state. The
+/// comment-preserving path is `init`'s in-place `toml_edit` migration —
+/// not this function.
 pub(crate) fn save_project_config(project: &Project) -> DynResult<()> {
     write_text_atomic(
         &project.root.join("scaffold.toml"),

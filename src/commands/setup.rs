@@ -3,7 +3,7 @@ use std::process::Command;
 
 use crate::model::RepoRef;
 use crate::process::run_checked;
-use crate::project::{ensure_dir_exists, load_project, resolve_repo_path, save_project_config};
+use crate::project::{ensure_dir_exists, load_project, resolve_repo_path};
 use crate::repo::{sync_repo_to_pin_at_path_with_opts, RepoSyncOptions};
 use crate::state::prepare_wallet_home;
 use crate::DynResult;
@@ -59,7 +59,6 @@ pub(crate) fn cmd_setup() -> DynResult<()> {
     prepare_wallet_home(&lez, &wallet_home)?;
     ensure_default_wallet_seeded(&project.root, &wallet_home)?;
 
-    save_project_config(&project)?;
     println!("setup complete");
 
     Ok(())
