@@ -22,6 +22,39 @@ const DEFAULT_WALLET_PASSWORD: &str = "logos-scaffold-v0";
 const GUEST_BIN_REL_PATH: &str =
     "target/riscv-guest/example_program_deployment_methods/example_program_deployment_programs/riscv32im-risc0-zkvm-elf/release";
 
+/// Minimal valid `scaffold.toml` content for tests that only need the project
+/// context to exist (no basecamp section). Older tests in this file inline
+/// the same content; new tests should prefer this helper.
+const MINIMAL_SCAFFOLD_TOML: &str = r#"[scaffold]
+version = "0.2.0"
+cache_root = "cache"
+
+[repos.lez]
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[repos.spel]
+source = "https://example/spel.git"
+path = "spel"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+"#;
+
 #[test]
 fn root_help_lists_quiet_flag_and_examples() {
     let temp = tempdir().expect("tempdir");
@@ -1466,6 +1499,983 @@ fn deploy_shows_hint_when_sequencer_is_unreachable_with_fallback_addr() {
         .stderr(predicate::str::contains("sequencer appears unavailable"));
 }
 
+#[test]
+fn deploy_prints_program_id_from_vendored_spel() {
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "hello");
+    write_guest_binary(temp.path(), "hello");
+    let expected = expected_stub_program_id("hello.bin");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("hello")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("OK  hello submitted").and(predicate::str::contains(format!(
+                "  program_id: {expected}"
+            ))),
+        );
+}
+
+#[test]
+fn deploy_plain_output_has_single_program_id_line_per_program() {
+    // The OK block carries program_id per program; the Summary block no
+    // longer repeats it. With N programs deployed, exactly N lines should
+    // match `^  program_id: …` so a single grep/awk pattern works whether
+    // the user deploys one program or many.
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "alpha");
+    write_guest_program(temp.path(), "beta");
+    write_guest_binary(temp.path(), "alpha");
+    write_guest_binary(temp.path(), "beta");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .output()
+        .expect("run deploy");
+    assert!(output.status.success(), "deploy must succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let count = stdout
+        .lines()
+        .filter(|line| line.starts_with("  program_id: "))
+        .count();
+    assert_eq!(
+        count, 2,
+        "expected exactly one `  program_id:` line per deployed program (2 total); got {count} in:\n{stdout}"
+    );
+}
+
+#[test]
+fn deploy_program_path_json_includes_program_id() {
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    let custom = temp.path().join("custom.bin");
+    fs::write(&custom, b"stub-program-bin").expect("write custom bin");
+    let expected = expected_stub_program_id("custom.bin");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("--program-path")
+        .arg(&custom)
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "\"program_id\":\"{expected}\""
+        )));
+}
+
+#[test]
+fn deploy_program_id_unavailable_when_spel_missing() {
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "hello");
+    write_guest_binary(temp.path(), "hello");
+    // Remove the spel stub the helper placed; deploy should still succeed
+    // and print the "unavailable" hint instead of a hex.
+    fs::remove_file(temp.path().join("spel/target/release/spel")).expect("remove spel stub");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("hello")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("OK  hello submitted")
+                .and(predicate::str::contains("program_id: unavailable"))
+                .and(predicate::str::contains("logos-scaffold setup")),
+        );
+}
+
+#[test]
+fn deploy_json_output_is_pure_json_no_command_echo() {
+    // --json must produce a single JSON line on stdout; the wallet
+    // subprocess command-echo (`$ .../wallet deploy-program …`) belongs
+    // off-channel so consumers can pipe directly to `jq`.
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    let custom = temp.path().join("custom.bin");
+    fs::write(&custom, b"stub-program-bin").expect("write custom bin");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("--program-path")
+        .arg(&custom)
+        .arg("--json")
+        .output()
+        .expect("run deploy --json");
+    assert!(output.status.success(), "deploy --json must succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with('{') && trimmed.ends_with('}'),
+        "stdout must be pure JSON; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("$ "),
+        "stdout must not carry the `$ <cmd>` command echo; got:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.lines().filter(|l| !l.is_empty()).count(),
+        1,
+        "stdout must be a single non-empty JSON line; got:\n{stdout}"
+    );
+}
+
+#[test]
+fn deploy_multi_program_json_emits_deploys_array() {
+    // Auto-discovery deploy with --json must produce one JSON line of the
+    // shape `{"deploys":[{...},{...}]}` — pure JSON, no command echoes,
+    // no human-readable text. One entry per program with program_id
+    // populated when extraction succeeds.
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "alpha");
+    write_guest_program(temp.path(), "beta");
+    write_guest_binary(temp.path(), "alpha");
+    write_guest_binary(temp.path(), "beta");
+    let alpha_id = expected_stub_program_id("alpha.bin");
+    let beta_id = expected_stub_program_id("beta.bin");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("--json")
+        .output()
+        .expect("run deploy --json");
+    assert!(
+        output.status.success(),
+        "multi-program deploy --json must succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with("{\"deploys\":[") && trimmed.ends_with("]}"),
+        "stdout must be a {{\"deploys\":[…]}} JSON line; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("$ "),
+        "stdout must not carry the `$ <cmd>` command echo; got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("OK  ") && !stdout.contains("Note:") && !stdout.contains("Summary:"),
+        "stdout must not carry human-readable text; got:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.lines().filter(|l| !l.is_empty()).count(),
+        1,
+        "stdout must be a single JSON line; got:\n{stdout}"
+    );
+    assert!(
+        trimmed.contains(&format!("\"program_id\":\"{alpha_id}\"")),
+        "missing alpha program_id in:\n{trimmed}"
+    );
+    assert!(
+        trimmed.contains(&format!("\"program_id\":\"{beta_id}\"")),
+        "missing beta program_id in:\n{trimmed}"
+    );
+    assert_eq!(
+        trimmed.matches("\"status\":\"submitted\"").count(),
+        2,
+        "expected exactly two submitted entries in:\n{trimmed}"
+    );
+}
+
+#[test]
+fn deploy_json_output_parses_as_valid_json() {
+    // Pin the structural contract: --json stdout must round-trip through
+    // serde_json::from_str. Cleanliness is already covered by
+    // `deploy_json_output_is_pure_json_no_command_echo`; this is the
+    // structural counterpart.
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    let custom = temp.path().join("custom.bin");
+    fs::write(&custom, b"stub-program-bin").expect("write custom bin");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("--program-path")
+        .arg(&custom)
+        .arg("--json")
+        .output()
+        .expect("run deploy --json");
+    assert!(output.status.success(), "deploy --json must succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).expect("single-program --json output must be valid JSON");
+    let obj = value
+        .as_object()
+        .expect("top-level value must be an object");
+    assert_eq!(
+        obj.get("status").and_then(|v| v.as_str()),
+        Some("submitted"),
+        "missing or wrong status in: {trimmed}"
+    );
+    assert!(
+        obj.get("program").and_then(|v| v.as_str()).is_some(),
+        "missing program field in: {trimmed}"
+    );
+}
+
+#[test]
+fn deploy_multi_program_json_output_parses_as_valid_json() {
+    // Multi-program counterpart: parse the wrapper and assert the deploys
+    // array shape via serde_json (rather than substring matching).
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "alpha");
+    write_guest_program(temp.path(), "beta");
+    write_guest_binary(temp.path(), "alpha");
+    write_guest_binary(temp.path(), "beta");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("deploy")
+        .arg("--json")
+        .output()
+        .expect("run deploy --json");
+    assert!(
+        output.status.success(),
+        "multi-program deploy --json must succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).expect("multi-program --json output must be valid JSON");
+    let obj = value
+        .as_object()
+        .expect("top-level value must be an object");
+    let deploys = obj
+        .get("deploys")
+        .and_then(|v| v.as_array())
+        .expect("missing or non-array `deploys` field");
+    assert_eq!(
+        deploys.len(),
+        2,
+        "expected exactly two deploy entries; got: {trimmed}"
+    );
+    for entry in deploys {
+        let entry_obj = entry.as_object().expect("each entry must be an object");
+        assert!(
+            entry_obj.contains_key("status"),
+            "entry missing status: {entry}"
+        );
+        assert!(
+            entry_obj.contains_key("program"),
+            "entry missing program: {entry}"
+        );
+    }
+}
+
+#[test]
+fn deploy_multi_program_json_records_failed_entries_with_error() {
+    // Mixed-result deploy under --json: failed programs appear in the
+    // array with status:"failed" and an `error` field, no program_id.
+    // Process exits non-zero (any failure fails the deploy).
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    write_guest_program(temp.path(), "alpha");
+    write_guest_program(temp.path(), "beta");
+    write_guest_binary(temp.path(), "alpha");
+    write_guest_binary(temp.path(), "beta");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("FAIL_PROGRAM", "beta.bin")
+        .arg("deploy")
+        .arg("--json")
+        .output()
+        .expect("run deploy --json with one failure");
+    assert!(
+        !output.status.success(),
+        "must exit non-zero on any failure"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with("{\"deploys\":[") && trimmed.ends_with("]}"),
+        "stdout must remain a JSON object even with failures; got:\n{stdout}"
+    );
+    assert!(
+        trimmed.contains("\"status\":\"submitted\"") && trimmed.contains("\"program\":\"alpha\""),
+        "alpha must be present and submitted in:\n{trimmed}"
+    );
+    assert!(
+        trimmed.contains("\"status\":\"failed\"") && trimmed.contains("\"program\":\"beta\""),
+        "beta must be present and failed in:\n{trimmed}"
+    );
+    assert!(
+        trimmed.contains("\"error\":\""),
+        "failed entries must carry an `error` field; got:\n{trimmed}"
+    );
+}
+
+#[test]
+fn deploy_json_omits_tx_when_wallet_returns_none() {
+    // Wallet stub today emits a `tx_hash=…` line. To prove the JSON shape
+    // omits `tx` when no value is available, set WALLET_NO_TX=1 — the stub
+    // honors that and skips the tx line. Result: presence of the `tx` key
+    // should now imply a real value (not `null`).
+    let temp = tempdir().expect("tempdir");
+    let rpc = RpcStub::start();
+    setup_wallet_project(temp.path(), Some(&rpc.url));
+    let custom = temp.path().join("custom.bin");
+    fs::write(&custom, b"stub-program-bin").expect("write custom bin");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("WALLET_NO_TX", "1")
+        .arg("deploy")
+        .arg("--program-path")
+        .arg(&custom)
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"tx\":").not());
+}
+
+#[test]
+fn spel_proxy_forwards_args_to_vendored_binary() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("spel")
+        .arg("--")
+        .arg("inspect")
+        .arg("methods/guest/foo.bin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ImageID (hex bytes):"));
+}
+
+#[test]
+fn spel_proxy_forwards_nonzero_exit_code() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .env("SPEL_FAIL", "1")
+        .arg("spel")
+        .arg("--")
+        .arg("inspect")
+        .arg("foo.bin")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn spel_proxy_hints_when_binary_missing() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    fs::remove_file(temp.path().join("spel/target/release/spel")).expect("remove spel stub");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("spel")
+        .arg("--")
+        .arg("inspect")
+        .arg("foo.bin")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("logos-scaffold setup"));
+}
+
+#[test]
+fn spel_proxy_requires_args_after_dash_dash() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("spel")
+        .arg("--")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "spel passthrough requires at least one argument",
+        ));
+}
+
+#[test]
+fn spel_without_dash_dash_suggests_passthrough_form() {
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("spel")
+        .arg("inspect")
+        .arg("foo.bin")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("Did you mean")
+                .and(predicate::str::contains("logos-scaffold spel -- inspect")),
+        );
+}
+
+#[test]
+fn basecamp_help_lists_setup_install_launch_and_profile() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("basecamp")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("setup")
+                .and(predicate::str::contains("install"))
+                .and(predicate::str::contains("launch"))
+                .and(predicate::str::contains("profile")),
+        );
+}
+
+#[test]
+fn basecamp_install_help_has_no_source_flags() {
+    // `install` is pure replay: no `--flake` / `--path` / `--profile`. Those
+    // live on `basecamp modules` (sole writer of the captured source set).
+    let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("basecamp")
+        .arg("install")
+        .arg("--help")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("--path"),
+        "install must not take --path: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--flake"),
+        "install must not take --flake: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--profile"),
+        "install must not take --profile: {stdout}"
+    );
+}
+
+#[test]
+fn basecamp_modules_help_lists_flags() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("basecamp")
+        .arg("modules")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("--path")
+                .and(predicate::str::contains("--flake"))
+                .and(predicate::str::contains("--show")),
+        );
+}
+
+#[test]
+fn basecamp_launch_help_requires_profile_argument() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("basecamp")
+        .arg("launch")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PROFILE"));
+}
+
+#[test]
+fn basecamp_launch_without_profile_errors() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("launch")
+        .assert()
+        .failure();
+}
+
+#[cfg(unix)]
+#[test]
+fn self_test_run_logged_success_shape() {
+    // Hidden `self-test run-logged` hook drives `run_logged` against a
+    // trivial subprocess (`/bin/true`). We assert the visible output shape
+    // so future reshapes of `run_logged` don't silently regress the UX.
+    let temp = tempdir().expect("tempdir");
+    let log = temp.path().join("self-test.log");
+    let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .args([
+            "self-test",
+            "run-logged",
+            "--log",
+            log.to_str().unwrap(),
+            "--step",
+            "self-test success",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("self-test success"),
+        "expected the step label to appear, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("tip: tail -f"),
+        "expected tail-f hint on the default logged path, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("✓"),
+        "expected a ✓ finalization line on success, got:\n{stdout}"
+    );
+    assert!(
+        log.exists(),
+        "expected the log file to be written at {}",
+        log.display()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn self_test_run_logged_failure_shape() {
+    // Failure path must bail (non-zero exit) and name the log path.
+    let temp = tempdir().expect("tempdir");
+    let log = temp.path().join("self-test.log");
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .args([
+            "self-test",
+            "run-logged",
+            "--log",
+            log.to_str().unwrap(),
+            "--step",
+            "self-test failure",
+            "--fail",
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("self-test failure") && stderr.contains("failed with"),
+        "failure bail must name the step and exit status, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&log.display().to_string()),
+        "failure bail must reference the captured log path, got:\n{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn self_test_run_logged_print_output_streams_and_echoes_command() {
+    // Under --print-output the shape is different: no `tip: tail -f`, has
+    // `running: <cmd>`, still has ✓/✗ with duration.
+    let temp = tempdir().expect("tempdir");
+    let log = temp.path().join("self-test.log");
+    let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .args([
+            "self-test",
+            "run-logged",
+            "--log",
+            log.to_str().unwrap(),
+            "--step",
+            "self-test streamed",
+            "--print-output",
+        ])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("running: ") && stdout.contains("/bin/true"),
+        "--print-output must echo the command, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("tip: tail -f"),
+        "--print-output must not print the log-tail hint (no capture), got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("✓"),
+        "expected ✓ finalization under --print-output, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn basecamp_docs_prints_compatibility_rules_anywhere() {
+    // LLM-driven discoverability: `basecamp docs` must work without a
+    // scaffold project (no scaffold.toml needed) so an agent can retrieve
+    // the rules before setting anything up. Asserts on the top-level
+    // heading + the Quick checklist anchor so trivial drift in the doc
+    // body doesn't break the test.
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "docs"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("# Basecamp Module Requirements")
+                .and(predicate::str::contains("Quick checklist")),
+        );
+}
+
+#[test]
+fn basecamp_help_carries_docs_breadcrumb() {
+    // Every basecamp subcommand's --help should mention `basecamp docs`
+    // so an LLM exploring the CLI finds the compatibility doc without
+    // filesystem context.
+    for subcommand in &[
+        "setup",
+        "modules",
+        "install",
+        "launch",
+        "build-portable",
+        "doctor",
+    ] {
+        let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+            .args(["basecamp", subcommand, "--help"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("basecamp docs"),
+            "{subcommand} --help must reference `basecamp docs`; got:\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn basecamp_profile_subcommand_does_not_exist() {
+    // The `basecamp profile` subcommand was removed (KISS — feature was a
+    // stub that returned "not yet implemented" and polluted --help). If
+    // someone re-adds it, they should land a real implementation at the
+    // same time.
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .args(["basecamp", "profile"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand").or(
+            predicate::str::contains("error: unrecognized").or(predicate::str::contains("Usage:")),
+        ));
+}
+
+#[test]
+fn basecamp_setup_outside_project_errors() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("setup")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
+fn basecamp_install_outside_project_errors() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("install")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
+fn basecamp_build_portable_outside_project_errors() {
+    // `build-portable` takes no source-set flags; the outside-project check
+    // runs first regardless.
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "build-portable"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
+#[test]
+fn basecamp_build_portable_rejects_flake_flag() {
+    // `--flake` was removed from build-portable; source set lives in state,
+    // managed by `basecamp modules`. Clap must reject the flag.
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "build-portable", "--flake", ".#lgx-portable"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--flake"));
+}
+
+#[test]
+fn basecamp_build_portable_rejects_dry_run_flag() {
+    // `build-portable` is non-destructive and does not accept `--dry-run`.
+    // Clap must reject the flag with a usage error.
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "build-portable", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn basecamp_build_portable_inside_empty_project_emits_hint_to_capture_first() {
+    // With state.project_sources empty, build-portable must refuse cleanly
+    // and point the user at `basecamp modules` (it never auto-discovers on
+    // its own; that's modules' job).
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
+        .expect("write scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["basecamp", "build-portable"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("basecamp modules"));
+}
+
+#[test]
+fn basecamp_install_before_setup_emits_hint() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
+        .expect("write scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("install")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "basecamp not set up yet; run: logos-scaffold basecamp setup",
+        ));
+}
+
+#[test]
+fn basecamp_launch_before_setup_emits_hint() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
+        .expect("write scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("launch")
+        .arg("alice")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "basecamp not set up yet; run: logos-scaffold basecamp setup",
+        ));
+}
+
+#[test]
+fn basecamp_launch_setup_hint_takes_precedence_over_profile_validation() {
+    // Pins the order of the two early gates: when the state is missing AND the
+    // profile name is invalid, the user must see the setup hint — not a
+    // confusing "unknown profile" error for a profile that doesn't exist yet
+    // anyway. A future refactor that reorders the checks should fail this test.
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
+        .expect("write scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("launch")
+        .arg("charlie")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("basecamp not set up yet"))
+        .stderr(predicate::str::contains("unknown profile").not());
+}
+
+#[cfg(unix)]
+#[test]
+fn basecamp_launch_rejects_unknown_profile() {
+    let temp = tempdir().expect("tempdir");
+    let project = temp.path();
+    fs::write(project.join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML).expect("write scaffold.toml");
+
+    // Fake a completed setup so we get past the first gate and reach profile validation.
+    // Paths are /bin/true / /bin/echo — they exist on Linux, and launch never actually
+    // reaches `exec` because the profile check fails first.
+    let state_dir = project.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).expect("mkdir state");
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/bin/true\nlgpm_bin=/bin/echo\n",
+    )
+    .expect("write state");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(project)
+        .arg("basecamp")
+        .arg("launch")
+        .arg("charlie")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown profile `charlie`"));
+}
+
+#[cfg(unix)]
+#[test]
+fn basecamp_launch_bails_when_no_modules_captured() {
+    // launch without --no-clean scrubs and replays the captured module set.
+    // If [basecamp.modules] is empty, the replay is silently a no-op — the
+    // profile comes up with zero modules installed, which violates the
+    // clean-slate guarantee. Surface as an error with a concrete hint.
+    let temp = tempdir().expect("tempdir");
+    let project = temp.path();
+    let scaffold_toml = format!(
+        "{MINIMAL_SCAFFOLD_TOML}\n\
+         [repos.basecamp]\n\
+         source = \"https://example/basecamp\"\n\
+         pin = \"deadbeef\"\n\
+         build = \"nix-flake\"\n\
+         attr = \"app\"\n\
+         \n\
+         [basecamp]\n\
+         port_base = 60000\n\
+         port_stride = 10\n"
+    );
+    fs::write(project.join("scaffold.toml"), scaffold_toml).expect("write scaffold.toml");
+
+    // Fake a completed setup and a seeded alice profile dir so launch passes
+    // the early gates and reaches the modules check.
+    let state_dir = project.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).expect("mkdir state");
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/bin/true\nlgpm_bin=/bin/echo\n",
+    )
+    .expect("write state");
+    fs::create_dir_all(project.join(".scaffold/basecamp/profiles/alice")).expect("mkdir profile");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(project)
+        .arg("basecamp")
+        .arg("launch")
+        .arg("alice")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("basecamp modules"))
+        .stderr(predicate::str::contains("--no-clean"));
+}
+
+#[cfg(unix)]
+#[test]
+fn basecamp_launch_no_clean_bypasses_empty_modules_check() {
+    // --no-clean is the documented escape hatch for keeping whatever's already
+    // installed in the profile. It must skip the empty-modules check entirely.
+    // We don't run launch to completion (basecamp_bin is /bin/true), but the
+    // command should get past the modules check and fail later — not fail on
+    // an "install modules first" hint.
+    let temp = tempdir().expect("tempdir");
+    let project = temp.path();
+    fs::write(
+        project.join("scaffold.toml"),
+        r#"[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = ""
+port_base = 60000
+port_stride = 10
+"#,
+    )
+    .expect("write scaffold.toml");
+    let state_dir = project.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).expect("mkdir state");
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/bin/true\nlgpm_bin=/bin/echo\n",
+    )
+    .expect("write state");
+    fs::create_dir_all(project.join(".scaffold/basecamp/profiles/alice")).expect("mkdir profile");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(project)
+        .arg("basecamp")
+        .arg("launch")
+        .arg("alice")
+        .arg("--no-clean")
+        .output()
+        .expect("run launch");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("basecamp modules") || !stderr.contains("--no-clean"),
+        "--no-clean should not trigger the empty-modules hint, got stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn basecamp_launch_outside_project_errors() {
+    let temp = tempdir().expect("tempdir");
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("basecamp")
+        .arg("launch")
+        .arg("alice")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "This command must be run inside a logos-scaffold project.",
+        ));
+}
+
 fn find_single_report_archive(reports_dir: &Path) -> PathBuf {
     let mut archives = list_report_archives(reports_dir);
     assert_eq!(
@@ -1543,11 +2553,17 @@ fn write_scaffold_toml_with_localnet(
     localnet_port: Option<u16>,
     risc0_dev_mode: Option<bool>,
 ) {
+    let spel_path = project_root.join("spel");
+    // Schema 0.2.0: no url, no [basecamp] / [basecamp.modules.*],
+    // path is set on lez/spel for back-compat (tests need a literal path
+    // to a local stub repo).
     let mut content = format!(
-        "[scaffold]\nversion = \"0.1.0\"\ncache_root = \"{}\"\n\n[repos.lez]\nurl = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\npath = \"{}\"\npin = \"{}\"\n\n[wallet]\nhome_dir = \".scaffold/wallet\"\n",
+        "[scaffold]\nversion = \"0.2.0\"\ncache_root = \"{}\"\n\n[repos.lez]\nsource = \"https://github.com/logos-blockchain/logos-execution-zone.git\"\npin = \"{}\"\npath = \"{}\"\n\n[repos.spel]\nsource = \"https://github.com/logos-co/spel.git\"\npin = \"{}\"\npath = \"{}\"\n\n[wallet]\nhome_dir = \".scaffold/wallet\"\n",
         project_root.join("cache").display(),
+        TEST_PIN,
         lez_path.display(),
         TEST_PIN,
+        spel_path.display(),
     );
 
     if let Some(port) = localnet_port {
@@ -1572,8 +2588,80 @@ fn setup_wallet_project(project_root: &Path, sequencer_addr: Option<&str>) {
     let lez_path = project_root.join("lez");
     fs::create_dir_all(&lez_path).expect("create lez path");
     write_wallet_stub(&lez_path);
+    write_spel_stub(&project_root.join("spel"));
     write_scaffold_toml(project_root, &lez_path);
     write_wallet_config(project_root, sequencer_addr);
+}
+
+/// Place a minimal `spel` stub at `<spel_path>/target/release/spel`. It
+/// emits the canonical `   ImageID (hex bytes): <hex>` line that
+/// `extract_program_id` parses, with a deterministic-per-binary hash so
+/// tests can assert exact values. Honors:
+///   `SPEL_FAIL=1`              → exit non-zero (proxy exit-code test)
+///   `SPEL_PROGRAM_ID_FAIL=<n>` → exit non-zero only when arg2 basename
+///                                contains `<n>` (program-id-unavailable
+///                                test for one program out of several).
+fn write_spel_stub(spel_path: &Path) {
+    let bin = spel_path.join("target/release/spel");
+    fs::create_dir_all(bin.parent().expect("parent")).expect("mkdir spel target");
+    let script = r#"#!/bin/sh
+set -eu
+
+if [ "${SPEL_FAIL:-0}" = "1" ]; then
+  echo "spel stub: forced failure" >&2
+  exit 7
+fi
+
+if [ "$#" -ge 2 ] && [ "$1" = "inspect" ]; then
+  bin_path="$2"
+  bin_name="$(basename "$bin_path")"
+  if [ -n "${SPEL_PROGRAM_ID_FAIL:-}" ]; then
+    case "$bin_name" in
+      *"$SPEL_PROGRAM_ID_FAIL"*)
+        echo "spel stub: forced inspect failure for $bin_name" >&2
+        exit 8
+        ;;
+    esac
+  fi
+  # Build a deterministic 64-char hex ID directly from the basename: emit
+  # each byte as two lowercase hex digits, repeat the resulting string until
+  # it is at least 64 chars, then truncate. No CRC or hash table — both the
+  # stub and `expected_stub_program_id` in Rust use the same trivial formula.
+  hex="$(printf '%s' "$bin_name" | od -An -vtx1 | tr -d ' \n')"
+  while [ "${#hex}" -lt 64 ]; do
+    hex="$hex$hex"
+  done
+  full="$(printf '%s' "$hex" | cut -c1-64)"
+  printf '   ImageID (hex bytes): %s\n' "$full"
+  exit 0
+fi
+
+# Echo other invocations so the proxy test can verify args reach the binary.
+echo "spel stub invoked: $*"
+exit 0
+"#;
+    fs::write(&bin, script).expect("write spel stub");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&bin).expect("stub metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin, perms).expect("chmod spel stub");
+    }
+}
+
+/// Recompute the program ID the spel stub emits for a given binary basename.
+/// Mirrors the trivial hex-of-basename formula in `write_spel_stub` (`od -tx1`
+/// then repeat to 64 chars) so tests can assert exact hex without invoking
+/// the stub themselves. No hash table, no polynomial — if the formula ever
+/// drifts, both sides of the equation are right next to each other.
+fn expected_stub_program_id(bin_name: &str) -> String {
+    let mut hex: String = bin_name.bytes().map(|b| format!("{b:02x}")).collect();
+    while hex.len() < 64 {
+        hex = format!("{hex}{hex}");
+    }
+    hex.truncate(64);
+    hex
 }
 
 fn write_wallet_config(project_root: &Path, sequencer_addr: Option<&str>) {
@@ -1674,6 +2762,11 @@ if [ "$#" -ge 2 ] && [ "$1" = "deploy-program" ]; then
   if [ "${FAIL_PROGRAM:-}" = "$bin_name" ]; then
     echo "simulated deploy failure for $bin_name" >&2
     exit 2
+  fi
+  # WALLET_NO_TX=1: simulate the wallet not surfacing a tx identifier so
+  # tests can assert the deploy JSON omits the `tx` key when None.
+  if [ "${WALLET_NO_TX:-0}" = "1" ]; then
+    exit 0
   fi
   echo "tx_hash=deploy-$bin_name"
   exit 0
@@ -1936,6 +3029,45 @@ fn completions_zsh_compdef_directive_covers_both_names() {
 }
 
 #[test]
+fn completions_cover_basecamp_subcommands() {
+    // Regression guard: the completion scripts are generated from the full
+    // clap command tree, so every `basecamp` sub-subcommand should appear in
+    // both bash and zsh output. If someone accidentally hides a basecamp
+    // subcommand (e.g. gating it with clap feature flags), shell-tab users
+    // would silently lose completion — this test catches that at build time.
+    const BASECAMP_SUBS: &[&str] = &[
+        "setup",
+        "modules",
+        "install",
+        "launch",
+        "build-portable",
+        "doctor",
+        "docs",
+    ];
+
+    for shell in &["bash", "zsh"] {
+        let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+            .args(["completions", shell])
+            .output()
+            .unwrap_or_else(|e| panic!("run lgs completions {shell}: {e}"));
+        assert!(output.status.success(), "expected success exit for {shell}");
+        let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+        assert!(
+            stdout.contains("basecamp"),
+            "{shell} completion script missing `basecamp`:\n{stdout}"
+        );
+        for sub in BASECAMP_SUBS {
+            assert!(
+                stdout.contains(sub),
+                "{shell} completion script missing `basecamp {sub}`; \
+                 stdout head:\n{}",
+                stdout.lines().take(40).collect::<Vec<_>>().join("\n")
+            );
+        }
+    }
+}
+
+#[test]
 fn completions_bash_output_is_syntax_clean() {
     let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .args(["completions", "bash"])
@@ -2085,24 +3217,132 @@ fn init_creates_scaffold_toml_and_dirs() {
 }
 
 #[test]
-fn init_refuses_existing_scaffold_toml() {
+fn init_refuses_already_at_v0_2_0_scaffold_toml() {
     let temp = tempdir().expect("tempdir");
     let scaffold_path = temp.path().join("scaffold.toml");
-    let original = "# pre-existing\n";
+    // First, run init to lay down a fresh v0.2.0 file.
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+    let original = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
+
+    // Second invocation must refuse with the "already migrated" hint.
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already at schema"));
+
+    let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
+    assert_eq!(
+        after, original,
+        "init must not overwrite an already-migrated scaffold.toml"
+    );
+}
+
+#[test]
+fn init_migrates_pre_v0_2_0_scaffold_toml_in_place() {
+    let temp = tempdir().expect("tempdir");
+    let scaffold_path = temp.path().join("scaffold.toml");
+    let original = "# user comment\n[scaffold]\nversion = \"0.1.0\"\n\n[repos.lez]\nurl = \"u\"\nsource = \"u\"\npath = \"p\"\npin = \"abc\"\n";
     fs::write(&scaffold_path, original).expect("seed scaffold.toml");
 
     Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .current_dir(temp.path())
         .arg("init")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("scaffold.toml already exists"));
+        .success()
+        .stdout(predicate::str::contains("migrated to schema v0.2.0"));
 
     let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
-    assert_eq!(
-        after, original,
-        "init must not overwrite existing scaffold.toml"
+    assert!(
+        after.contains("# user comment"),
+        "user comments must be preserved; got:\n{after}"
     );
+    assert!(
+        after.contains("version = \"0.2.0\""),
+        "[scaffold].version must be bumped; got:\n{after}"
+    );
+    assert!(
+        after.contains("[repos.spel]"),
+        "[repos.spel] must be appended; got:\n{after}"
+    );
+    assert!(
+        !after.contains("url ="),
+        "url field must be stripped; got:\n{after}"
+    );
+}
+
+#[test]
+fn init_splits_basecamp_lgpm_flake_into_repos_lgpm() {
+    let temp = tempdir().expect("tempdir");
+    let scaffold_path = temp.path().join("scaffold.toml");
+    // Pre-0.2.0: lgpm pinned via [basecamp].lgpm_flake (canonical
+    // github:owner/repo/<sha>#attr form). After `lgs init`, the flake ref
+    // must be split into source/pin/attr under [repos.lgpm].
+    let original = r#"[scaffold]
+version = "0.1.0"
+
+[repos.lez]
+source = "https://example/lez.git"
+pin = "deadbeef"
+
+[repos.spel]
+source = "https://example/spel.git"
+pin = "deadbeef"
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = "github:logos-co/logos-package-manager/cafef00dcafef00dcafef00dcafef00dcafef00d#cli"
+port_base = 60000
+port_stride = 10
+
+[wallet]
+home_dir = ".scaffold/wallet"
+"#;
+    fs::write(&scaffold_path, original).expect("seed scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
+    assert!(
+        !after.contains("lgpm_flake"),
+        "lgpm_flake key must be removed; got:\n{after}"
+    );
+    assert!(
+        after.contains("[repos.lgpm]"),
+        "[repos.lgpm] section must be appended; got:\n{after}"
+    );
+    assert!(
+        after.contains("github:logos-co/logos-package-manager"),
+        "[repos.lgpm].source must carry the flake source; got:\n{after}"
+    );
+    assert!(
+        after.contains("cafef00dcafef00dcafef00dcafef00dcafef00d"),
+        "[repos.lgpm].pin must be the SHA from the flake ref; got:\n{after}"
+    );
+    assert!(
+        after.contains("attr = \"cli\""),
+        "[repos.lgpm].attr must carry the flake attr; got:\n{after}"
+    );
+
+    // Re-running any non-init command must now succeed at the parse step
+    // (we only check parsing here; downstream commands will fail for other
+    // reasons in a stub setup).
+    Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already at schema"));
 }
 
 #[test]
@@ -2193,5 +3433,159 @@ fn completions_zsh_registers_both_names_in_pristine_shell() {
     assert!(
         stdout.contains("logos-scaffold=_lgs"),
         "expected logos-scaffold to be registered at compinit time, got: {stdout}"
+    );
+}
+
+/// Pre-0.2.0 scaffold.toml with all the legacy signals (url field on
+/// [repos.lez], [basecamp.modules.*], [basecamp].lgpm_flake/pin/source).
+/// Every non-init command must hard-fail when this is present and the
+/// migration hint must point at `init`.
+const PRE_V0_2_0_SCAFFOLD_TOML: &str = r#"# preserved comment
+[scaffold]
+version = "0.1.0"
+cache_root = "cache"
+
+[repos.lez]
+url = "https://example/lez.git"
+source = "https://example/lez.git"
+path = "lez"
+pin = "deadbeef"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+
+[framework]
+kind = "default"
+version = "0.1.0"
+
+[framework.idl]
+spec = "lssa-idl/0.1.0"
+path = "idl"
+
+[localnet]
+port = 3040
+risc0_dev_mode = true
+
+[basecamp]
+pin = "deadbeef"
+source = "https://example/basecamp"
+lgpm_flake = "github:logos-co/logos-package-manager/cafef00dcafef00dcafef00dcafef00dcafef00d#cli"
+port_base = 60000
+port_stride = 10
+
+[basecamp.modules.foo]
+flake = "path:./foo"
+role = "project"
+"#;
+
+fn assert_pre_v0_2_0_rejection(args: &[&str]) {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), PRE_V0_2_0_SCAFFOLD_TOML)
+        .expect("seed pre-v0.2.0 scaffold.toml");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("run lgs {args:?}: {e}"));
+
+    assert!(
+        !output.status.success(),
+        "lgs {args:?} must hard-fail on pre-0.2.0 scaffold.toml; got status {:?}, stdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("init"),
+        "lgs {args:?} stderr must point at `init`; got:\n{stderr}",
+    );
+
+    let after = fs::read_to_string(temp.path().join("scaffold.toml"))
+        .expect("scaffold.toml still readable");
+    assert_eq!(
+        after, PRE_V0_2_0_SCAFFOLD_TOML,
+        "lgs {args:?} must not mutate scaffold.toml when it rejects pre-0.2.0",
+    );
+}
+
+#[test]
+fn setup_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["setup"]);
+}
+
+#[test]
+fn build_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["build"]);
+}
+
+#[test]
+fn deploy_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["deploy"]);
+}
+
+#[test]
+fn doctor_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["doctor"]);
+}
+
+#[test]
+fn report_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["report"]);
+}
+
+#[test]
+fn basecamp_setup_hard_fails_on_pre_v0_2_0_scaffold_toml() {
+    assert_pre_v0_2_0_rejection(&["basecamp", "setup"]);
+}
+
+#[test]
+fn deploy_json_hard_fails_with_clean_stdout_on_pre_v0_2_0_scaffold_toml() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), PRE_V0_2_0_SCAFFOLD_TOML)
+        .expect("seed pre-v0.2.0 scaffold.toml");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(["deploy", "--json"])
+        .output()
+        .expect("run lgs deploy --json");
+
+    assert!(!output.status.success(), "deploy --json must fail");
+    assert!(
+        output.stdout.is_empty(),
+        "deploy --json must keep stdout clean on rejection; got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("init"),
+        "stderr must point at `init`; got:\n{stderr}"
+    );
+}
+
+#[test]
+fn doctor_json_hard_fails_with_clean_stdout_on_pre_v0_2_0_scaffold_toml() {
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), PRE_V0_2_0_SCAFFOLD_TOML)
+        .expect("seed pre-v0.2.0 scaffold.toml");
+
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
+        .current_dir(temp.path())
+        .args(["doctor", "--json"])
+        .output()
+        .expect("run lgs doctor --json");
+
+    assert!(!output.status.success(), "doctor --json must fail");
+    assert!(
+        output.stdout.is_empty(),
+        "doctor --json must keep stdout clean on rejection; got: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("init"),
+        "stderr must point at `init`; got:\n{stderr}"
     );
 }

@@ -6,7 +6,6 @@ use std::process::Command;
 
 use anyhow::bail;
 
-use crate::model::RepoRef;
 use crate::process::{run_capture, run_checked};
 use crate::DynResult;
 
@@ -34,17 +33,6 @@ impl RepoSyncOptions {
             source_mismatch: SourceMismatchPolicy::AutoRecloneIfClean,
         }
     }
-}
-
-pub(crate) fn sync_repo_to_pin(
-    repo: &mut RepoRef,
-    label: &str,
-    opts: RepoSyncOptions,
-) -> DynResult<()> {
-    let path = PathBuf::from(&repo.path);
-    sync_repo_to_pin_at_path_with_opts(&path, &repo.source, &repo.pin, label, opts)?;
-    repo.pin = git_head_sha(&path)?;
-    Ok(())
 }
 
 pub(crate) fn sync_repo_to_pin_at_path_with_opts(

@@ -1,19 +1,20 @@
 use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use anyhow::bail;
 
 use super::wallet_support::wallet_password;
 use crate::commands::wallet_support::WALLET_CONFIG_PRIMARY;
-use crate::constants::{DEFAULT_LEZ_PIN, SEQUENCER_BIN_REL_PATH, WALLET_BIN_REL_PATH};
+use crate::constants::{
+    DEFAULT_LEZ, DEFAULT_SPEL, SEQUENCER_BIN_REL_PATH, SPEL_BIN_REL_PATH, WALLET_BIN_REL_PATH,
+};
 use crate::doctor_checks::{
     check_binary, check_container_runtime, check_path, check_port_warn, check_repo,
     check_standalone_support, one_line, print_rows,
 };
 use crate::model::{CheckRow, CheckStatus, DoctorReport, DoctorSummary};
 use crate::process::{pid_running, run_capture, run_with_stdin, set_command_echo};
-use crate::project::load_project;
+use crate::project::{load_project, resolve_cache_root, resolve_repo_path};
 use crate::state::read_localnet_state;
 use crate::DynResult;
 
@@ -70,7 +71,8 @@ fn cmd_doctor_inner(as_json: bool) -> DynResult<()> {
 
 pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
     let project = load_project()?;
-    let lez = PathBuf::from(&project.config.lez.path);
+    let lez = resolve_repo_path(&project, &project.config.lez, "lez")?;
+    let spel = resolve_repo_path(&project, &project.config.spel, "spel")?;
     let wallet_home = project.root.join(&project.config.wallet_home_dir);
     let localnet_state_path = project.root.join(".scaffold/state/localnet.state");
 
@@ -86,28 +88,74 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
 
     rows.push(check_repo("lez", &lez, &project.config.lez.pin));
 
+    // Drift check vs. the scaffold-shipped default — distinct from
+    // `check_repo("lez", …)` above, which only validates the on-disk clone
+    // is at the *configured* pin (whatever the user wrote in scaffold.toml).
     rows.push(CheckRow {
-        status: if project.config.lez.pin == DEFAULT_LEZ_PIN {
+        status: if project.config.lez.pin == DEFAULT_LEZ.sha {
             CheckStatus::Pass
         } else {
             CheckStatus::Warn
         },
-        name: "lez standalone pin".to_string(),
+        name: "lez pin matches scaffold default".to_string(),
         detail: format!(
             "configured pin={} expected={}",
-            project.config.lez.pin, DEFAULT_LEZ_PIN
+            project.config.lez.pin, DEFAULT_LEZ.sha
         ),
-        remediation: if project.config.lez.pin == DEFAULT_LEZ_PIN {
+        remediation: if project.config.lez.pin == DEFAULT_LEZ.sha {
             None
         } else {
             Some(format!(
                 "Set repos.lez.pin in scaffold.toml to {} and run `{}`",
-                DEFAULT_LEZ_PIN, STEP_SETUP
+                DEFAULT_LEZ.sha, STEP_SETUP
             ))
         },
     });
 
     rows.push(check_standalone_support(&lez));
+
+    rows.push(check_repo("spel", &spel, &project.config.spel.pin));
+
+    rows.push(CheckRow {
+        status: if project.config.spel.pin == DEFAULT_SPEL.sha {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Warn
+        },
+        name: "spel pin matches scaffold default".to_string(),
+        detail: format!(
+            "configured pin={} expected={}",
+            project.config.spel.pin, DEFAULT_SPEL.sha
+        ),
+        remediation: if project.config.spel.pin == DEFAULT_SPEL.sha {
+            None
+        } else {
+            Some(format!(
+                "Set repos.spel.pin in scaffold.toml to {} and run `{}`",
+                DEFAULT_SPEL.sha, STEP_SETUP
+            ))
+        },
+    });
+
+    rows.push(check_path(
+        "spel binary",
+        &spel.join(SPEL_BIN_REL_PATH),
+        "Run `logos-scaffold setup`",
+    ));
+
+    rows.push(check_spel_lez_alignment(&spel));
+
+    let (resolved_cache_root, cache_root_source) = resolve_cache_root(&project)?;
+    rows.push(CheckRow {
+        status: CheckStatus::Pass,
+        name: "cache root".to_string(),
+        detail: format!(
+            "{} (from {})",
+            resolved_cache_root.display(),
+            cache_root_source.label()
+        ),
+        remediation: None,
+    });
 
     rows.push(check_path(
         "sequencer binary",
@@ -282,6 +330,13 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
         }
     }
 
+    Ok(finalize_report(rows))
+}
+
+/// Roll up rows into a `DoctorReport` with summary, status, and next-steps.
+/// Shared by top-level `doctor` and `basecamp doctor` so output formatting
+/// stays identical.
+pub(crate) fn finalize_report(rows: Vec<CheckRow>) -> DoctorReport {
     let summary = DoctorSummary {
         pass: rows
             .iter()
@@ -307,12 +362,96 @@ pub(crate) fn build_doctor_report() -> DynResult<DoctorReport> {
 
     let next_steps = derive_next_steps(&rows);
 
-    Ok(DoctorReport {
+    DoctorReport {
         status: doctor_status.to_string(),
         summary,
         checks: rows,
         next_steps,
-    })
+    }
+}
+
+/// Print a `DoctorReport` to stdout in human-readable form. Matches what
+/// `cmd_doctor` emits — same formatting for `basecamp doctor`.
+pub(crate) fn print_report(report: &DoctorReport) {
+    print_rows(&report.checks);
+    println!(
+        "Summary: {} PASS, {} WARN, {} FAIL",
+        report.summary.pass, report.summary.warn, report.summary.fail
+    );
+    println!("Doctor status: {}", report.status);
+    if !report.next_steps.is_empty() {
+        println!("Next steps:");
+        for step in &report.next_steps {
+            println!("- {step}");
+        }
+    }
+}
+
+/// Verify that the spel pin scaffold builds also pins LEZ at the same
+/// commit/tag scaffold itself uses (`DEFAULT_LEZ.sha` /
+/// `DEFAULT_LEZ.tag`). When the two diverge, spel's sequencer-RPC client
+/// speaks a different LEZ protocol than the sequencer scaffold builds,
+/// which can break `lgs spel -- ...` subcommands that hit the sequencer
+/// (image-ID computation via `spel inspect` is unaffected — it only
+/// touches the guest ELF).
+///
+/// Reads `<spel_path>/spel-cli/Cargo.toml` and looks for either the SHA
+/// or the tag form of scaffold's pinned LEZ. Skipped (Pass) when the
+/// file isn't present yet — that means spel hasn't been cloned/built;
+/// the `spel binary` row already covers that case.
+fn check_spel_lez_alignment(spel_path: &std::path::Path) -> CheckRow {
+    let manifest = spel_path.join("spel-cli/Cargo.toml");
+    if !manifest.exists() {
+        return CheckRow {
+            status: CheckStatus::Pass,
+            name: "spel vendors matching LEZ".to_string(),
+            detail: "skipped: spel not cloned yet (run `logos-scaffold setup`)".to_string(),
+            remediation: None,
+        };
+    }
+    let text = match fs::read_to_string(&manifest) {
+        Ok(t) => t,
+        Err(err) => {
+            return CheckRow {
+                status: CheckStatus::Warn,
+                name: "spel vendors matching LEZ".to_string(),
+                detail: format!("could not read {}: {err}", manifest.display()),
+                remediation: Some(
+                    "Re-run `logos-scaffold setup` to refresh the vendored spel checkout"
+                        .to_string(),
+                ),
+            };
+        }
+    };
+    // spel's spel-cli/Cargo.toml references LEZ on every dep line, e.g.
+    //   nssa = { git = "https://github.com/.../logos-execution-zone.git", tag = "v0.2.0-rc1" }
+    //   wallet = { git = "...", rev = "ffcbc15972adbf557939bf3e2852af276422631b" }
+    // Match either form against scaffold's pin.
+    let aligned = text.contains(DEFAULT_LEZ.tag) || text.contains(DEFAULT_LEZ.sha);
+    if aligned {
+        CheckRow {
+            status: CheckStatus::Pass,
+            name: "spel vendors matching LEZ".to_string(),
+            detail: format!(
+                "spel pins LEZ at {} ({}) — matches scaffold",
+                DEFAULT_LEZ.tag, DEFAULT_LEZ.sha
+            ),
+            remediation: None,
+        }
+    } else {
+        CheckRow {
+            status: CheckStatus::Warn,
+            name: "spel vendors matching LEZ".to_string(),
+            detail: format!(
+                "spel-cli/Cargo.toml does not reference LEZ {} or {}; spel may speak a different sequencer-RPC protocol than scaffold's wallet/sequencer build",
+                DEFAULT_LEZ.tag, DEFAULT_LEZ.sha
+            ),
+            remediation: Some(format!(
+                "Bump repos.spel.pin to a spel commit whose spel-cli/Cargo.toml pins LEZ at {}, then run `{}`",
+                DEFAULT_LEZ.tag, STEP_SETUP
+            )),
+        }
+    }
 }
 
 fn is_localnet_connectivity_failure(stdout: &str, stderr: &str) -> bool {
@@ -364,4 +503,73 @@ fn derive_next_steps(rows: &[CheckRow]) -> Vec<String> {
         out.push(STEP_DOCTOR.to_string());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn write_spel_cargo(spel_root: &std::path::Path, contents: &str) {
+        let dir = spel_root.join("spel-cli");
+        fs::create_dir_all(&dir).expect("mkdir spel-cli");
+        fs::write(dir.join("Cargo.toml"), contents).expect("write Cargo.toml");
+    }
+
+    #[test]
+    fn spel_lez_alignment_passes_when_spel_pins_default_lez_tag() {
+        let tmp = tempdir().expect("tempdir");
+        write_spel_cargo(
+            tmp.path(),
+            &format!(
+                "[package]\nname = \"spel\"\n\n[dependencies]\n\
+                 nssa = {{ git = \"https://github.com/x/lez.git\", tag = \"{}\" }}\n",
+                DEFAULT_LEZ.tag,
+            ),
+        );
+        let row = check_spel_lez_alignment(tmp.path());
+        assert_eq!(row.status, CheckStatus::Pass, "got: {row:?}");
+    }
+
+    #[test]
+    fn spel_lez_alignment_passes_when_spel_pins_default_lez_sha() {
+        let tmp = tempdir().expect("tempdir");
+        write_spel_cargo(
+            tmp.path(),
+            &format!(
+                "[dependencies]\n\
+                 wallet = {{ git = \"https://github.com/x/lez.git\", rev = \"{}\" }}\n",
+                DEFAULT_LEZ.sha,
+            ),
+        );
+        let row = check_spel_lez_alignment(tmp.path());
+        assert_eq!(row.status, CheckStatus::Pass, "got: {row:?}");
+    }
+
+    #[test]
+    fn spel_lez_alignment_warns_when_spel_pins_other_lez() {
+        let tmp = tempdir().expect("tempdir");
+        write_spel_cargo(
+            tmp.path(),
+            "[dependencies]\n\
+             wallet = { git = \"https://github.com/x/lez.git\", rev = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\" }\n",
+        );
+        let row = check_spel_lez_alignment(tmp.path());
+        assert_eq!(row.status, CheckStatus::Warn);
+        assert!(
+            row.detail.contains(DEFAULT_LEZ.tag) && row.detail.contains(DEFAULT_LEZ.sha),
+            "warn detail must name both expected forms: {row:?}"
+        );
+        assert!(row.remediation.is_some(), "must include remediation");
+    }
+
+    #[test]
+    fn spel_lez_alignment_passes_silently_when_spel_not_built() {
+        // No spel-cli/Cargo.toml on disk → spel hasn't been cloned;
+        // the `spel binary` row covers that case, this row stays Pass.
+        let tmp = tempdir().expect("tempdir");
+        let row = check_spel_lez_alignment(tmp.path());
+        assert_eq!(row.status, CheckStatus::Pass);
+        assert!(row.detail.contains("skipped"));
+    }
 }

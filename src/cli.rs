@@ -11,6 +11,7 @@ use crate::cli_help::{
     EXAMPLES_SETUP, EXAMPLES_WALLET, EXAMPLES_WALLET_DEFAULT_SET, EXAMPLES_WALLET_LIST,
     EXAMPLES_WALLET_TOPUP,
 };
+use crate::commands::basecamp::{cmd_basecamp, BasecampAction};
 use crate::commands::build::cmd_build_shortcut;
 use crate::commands::client::cmd_client;
 use crate::commands::completions::cmd_completions;
@@ -22,6 +23,7 @@ use crate::commands::localnet::{cmd_localnet, LocalnetAction};
 use crate::commands::new::{cmd_new, NewCommand};
 use crate::commands::report::cmd_report;
 use crate::commands::setup::cmd_setup;
+use crate::commands::spel::cmd_spel;
 use crate::commands::wallet::{cmd_wallet, WalletAction};
 use crate::constants::VERSION;
 use crate::process::set_command_echo;
@@ -75,6 +77,8 @@ enum Commands {
     Deploy(DeployArgs),
     Localnet(LocalnetArgs),
     Wallet(WalletArgs),
+    #[command(about = "Manage pre-seeded basecamp profiles for p2p dogfooding")]
+    Basecamp(BasecampArgs),
     Doctor(DoctorArgs),
     #[command(about = "Collect a sanitized diagnostics archive for issue reporting")]
     Report(ReportArgs),
@@ -90,6 +94,41 @@ enum Commands {
     Init,
     #[command(hide = true)]
     Help,
+    /// Test-only hooks — hidden from `--help` output. Keeps the binary
+    /// verifiable end-to-end without polluting the user-visible CLI surface.
+    #[command(hide = true)]
+    SelfTest(SelfTestArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct SelfTestArgs {
+    #[command(subcommand)]
+    command: SelfTestSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SelfTestSubcommand {
+    /// Drive `run_logged` against a trivial subprocess. Used by the CLI
+    /// integration suite to pin the logged / `--print-output` output
+    /// shapes against regressions.
+    RunLogged(SelfTestRunLoggedArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct SelfTestRunLoggedArgs {
+    /// Absolute path to write the captured log to.
+    #[arg(long, value_name = "PATH")]
+    log: PathBuf,
+    /// Step label passed to `run_logged`. Appears in progress / failure lines.
+    #[arg(long, default_value = "self-test step")]
+    step: String,
+    /// Run `/bin/false` instead of `/bin/true` — exercises the failure bail.
+    #[arg(long)]
+    fail: bool,
+    /// Set `LOGOS_SCAFFOLD_PRINT_OUTPUT=1` for this call — exercises the
+    /// streamed shape instead of the captured one.
+    #[arg(long)]
+    print_output: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -135,8 +174,6 @@ struct NewArgs {
     vendor_deps: bool,
     #[arg(long, alias = "lssa-path")]
     lez_path: Option<PathBuf>,
-    #[arg(long)]
-    cache_root: Option<PathBuf>,
     #[arg(long, default_value = "default", help = TEMPLATE_HELP.as_str())]
     template: String,
 }
@@ -311,6 +348,92 @@ struct WalletDefaultSetArgs {
     address_flag: Option<String>,
 }
 
+#[derive(Debug, clap::Args)]
+struct BasecampArgs {
+    #[command(subcommand)]
+    command: BasecampSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum BasecampSubcommand {
+    #[command(
+        about = "Fetch, build, and seed pinned basecamp + lgpm + alice/bob profiles. See `basecamp docs` for project requirements."
+    )]
+    Setup,
+    #[command(
+        about = "Capture the set of modules + runtime dependencies to install; auto-discovers or takes explicit --flake/--path. See `basecamp docs` for project requirements."
+    )]
+    Modules(BasecampModulesArgs),
+    #[command(
+        about = "Build the project's .lgx and install it into basecamp profile(s). See `basecamp docs` for project requirements."
+    )]
+    Install(BasecampInstallArgs),
+    #[command(
+        about = "Launch basecamp for a named profile with clean-slate semantics. See `basecamp docs` for project requirements."
+    )]
+    Launch(BasecampLaunchArgs),
+    #[command(
+        name = "build-portable",
+        about = "Build the project's .#lgx-portable artefacts for hand-loading into a basecamp AppImage. See `basecamp docs` for project requirements."
+    )]
+    BuildPortable(BasecampBuildPortableArgs),
+    #[command(
+        about = "Basecamp-specific doctor: captured modules, manifest variants, and state drift. See `basecamp docs` for project requirements."
+    )]
+    Doctor(BasecampDoctorArgs),
+    #[command(
+        about = "Print the canonical project-compatibility rules (embedded copy of docs/basecamp-module-requirements.md)"
+    )]
+    Docs,
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampDoctorArgs {
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampModulesArgs {
+    /// Path to a pre-built .lgx file to capture as a project source (repeatable)
+    #[arg(long, value_name = "PATH")]
+    path: Vec<PathBuf>,
+    /// Flake reference producing .lgx to capture as a project source, e.g. `./sub#lgx` (repeatable)
+    #[arg(long, value_name = "REF")]
+    flake: Vec<String>,
+    /// Print the currently captured set and exit without mutating state
+    #[arg(long)]
+    show: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampBuildPortableArgs {
+    // `build-portable` takes no CLI source flags: it attr-swaps
+    // `state.project_sources` (`#lgx` → `#lgx-portable`) and builds that.
+    // `state.dependencies` are ignored — the target AppImage provides them.
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampInstallArgs {
+    // `install` takes no source-set flags: source set lives in `basecamp.state`
+    // and is managed by `basecamp modules`. If state is empty on the first
+    // `install`, it transparently invokes `modules` in auto-discover mode.
+    /// Stream nix output directly to the terminal instead of logging to
+    /// `.scaffold/logs/<ts>-install.log` and printing a one-line status.
+    /// Equivalent to `LOGOS_SCAFFOLD_PRINT_OUTPUT=1`. Useful for CI.
+    #[arg(long)]
+    print_output: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct BasecampLaunchArgs {
+    #[arg(value_name = "PROFILE")]
+    profile: String,
+    /// Skip the clean-slate scrub and reinstall step
+    #[arg(long)]
+    no_clean: bool,
+}
+
 pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
     apply_quiet_from_env();
     let passthrough_start = leading_global_flags_end(&args);
@@ -319,6 +442,9 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
     }
     if let Some(action) = wallet_passthrough_action(&args, passthrough_start)? {
         return cmd_wallet(action);
+    }
+    if let Some(spel_args) = spel_passthrough_args(&args)? {
+        return cmd_spel(spel_args);
     }
 
     let bin_name = args
@@ -348,7 +474,6 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             name: args.name,
             vendor_deps: args.vendor_deps,
             lez_path: args.lez_path,
-            cache_root: args.cache_root,
             template: args.template,
         }),
         Some(Commands::Setup(_)) => cmd_setup(),
@@ -405,6 +530,27 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             };
             cmd_wallet(action)
         }
+        Some(Commands::Basecamp(args)) => {
+            let action = match args.command {
+                BasecampSubcommand::Setup => BasecampAction::Setup,
+                BasecampSubcommand::Modules(args) => BasecampAction::Modules {
+                    paths: args.path,
+                    flakes: args.flake,
+                    show: args.show,
+                },
+                BasecampSubcommand::Install(args) => BasecampAction::Install {
+                    print_output: args.print_output,
+                },
+                BasecampSubcommand::Launch(args) => BasecampAction::Launch {
+                    profile: args.profile,
+                    no_clean: args.no_clean,
+                },
+                BasecampSubcommand::BuildPortable(_) => BasecampAction::BuildPortable,
+                BasecampSubcommand::Doctor(args) => BasecampAction::Doctor { json: args.json },
+                BasecampSubcommand::Docs => BasecampAction::Docs,
+            };
+            cmd_basecamp(action)
+        }
         Some(Commands::Doctor(args)) => cmd_doctor(args.json),
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
         Some(Commands::Completions(args)) => {
@@ -416,6 +562,16 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
         }
         Some(Commands::Init) => cmd_init(&bin_name),
         Some(Commands::Help) => print_help(&bin_name),
+        Some(Commands::SelfTest(args)) => match args.command {
+            SelfTestSubcommand::RunLogged(a) => {
+                crate::commands::self_test::cmd_self_test_run_logged(
+                    &a.log,
+                    &a.step,
+                    a.fail,
+                    a.print_output,
+                )
+            }
+        },
         None => print_help(&bin_name),
     }
 }
@@ -446,6 +602,35 @@ fn leading_global_flags_end(args: &[String]) -> usize {
         i += 1;
     }
     i
+}
+
+/// Forward `lgs spel -- <args...>` to the project-vendored `spel` binary.
+/// Mirrors `wallet_passthrough_action` so the same `--` convention applies
+/// across passthroughs. When `spel` is invoked without `--`, intercept early
+/// and surface a hint pointing at the right form — clap's "unknown
+/// subcommand" message would otherwise leave the user guessing.
+fn spel_passthrough_args(args: &[String]) -> DynResult<Option<Vec<String>>> {
+    if args.len() < 2 || args[1] != "spel" {
+        return Ok(None);
+    }
+    if args.len() < 3 {
+        return Err(anyhow!(
+            "`spel` requires arguments. Use the passthrough form, e.g. `logos-scaffold spel -- inspect <bin>`."
+        ));
+    }
+    if args[2] != "--" {
+        return Err(anyhow!(
+            "`spel {0} ...` is not a scaffold subcommand. Did you mean `logos-scaffold spel -- {0} ...`? \
+             The `--` separator forwards every following argument to the project-vendored `spel` binary.",
+            args[2]
+        ));
+    }
+    if args.len() == 3 {
+        return Err(anyhow!(
+            "spel passthrough requires at least one argument after `--`. Example: `logos-scaffold spel -- inspect <bin>`"
+        ));
+    }
+    Ok(Some(args[3..].to_vec()))
 }
 
 fn wallet_passthrough_action(args: &[String], start: usize) -> DynResult<Option<WalletAction>> {

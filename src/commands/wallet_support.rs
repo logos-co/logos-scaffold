@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::constants::{DEFAULT_WALLET_PASSWORD, WALLET_BIN_REL_PATH};
 use crate::model::Project;
+use crate::project::resolve_repo_path;
 use crate::state::write_text;
 use crate::DynResult;
 
@@ -21,7 +22,7 @@ pub(crate) struct WalletRuntimeContext {
 }
 
 pub(crate) fn load_wallet_runtime(project: &Project) -> DynResult<WalletRuntimeContext> {
-    let lez = PathBuf::from(&project.config.lez.path);
+    let lez = resolve_repo_path(project, &project.config.lez, "lez")?;
     let wallet_binary = lez.join(WALLET_BIN_REL_PATH);
     if !wallet_binary.exists() {
         bail!(
