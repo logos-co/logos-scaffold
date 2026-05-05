@@ -161,6 +161,60 @@ fn wallet_passthrough_works_with_leading_quiet_flag() {
 }
 
 #[test]
+fn logos_scaffold_quiet_env_suppresses_command_echo_case_insensitively() {
+    // Pins the contract advertised by `cli_help::EXAMPLES_ROOT` and the
+    // `--quiet` help string: `LOGOS_SCAFFOLD_QUIET=` accepts `1`, `true`,
+    // `yes`, `on` case-insensitively. Without the env var the wallet
+    // passthrough echoes `$ <wallet-bin> account list` via `run_forwarded`;
+    // any accepted truthy value must suppress that line.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    let baseline = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["wallet", "--", "account", "list"])
+        .assert()
+        .success();
+    let baseline_stdout = String::from_utf8_lossy(&baseline.get_output().stdout).into_owned();
+    assert!(
+        baseline_stdout.contains("$ "),
+        "baseline (no quiet) must echo `$ <cmd>`, got:\n{baseline_stdout}"
+    );
+
+    // Each row must suppress the `$ ` echo. Mixed-case values pin the
+    // case-insensitive branch — they used to slip through the `matches!`
+    // arm and still echo.
+    for value in ["1", "true", "TRUE", "True", "yes", "YES", "Yes", "on", "ON"] {
+        let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+            .current_dir(temp.path())
+            .env("LOGOS_SCAFFOLD_QUIET", value)
+            .args(["wallet", "--", "account", "list"])
+            .assert()
+            .success();
+        let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+        assert!(
+            !stdout.contains("$ "),
+            "LOGOS_SCAFFOLD_QUIET={value} should suppress `$ ` echo, got:\n{stdout}"
+        );
+    }
+
+    // Negative cases: empty / `0` / `false` / garbage must NOT suppress.
+    for value in ["", "0", "false", "no", "off", "garbage"] {
+        let out = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+            .current_dir(temp.path())
+            .env("LOGOS_SCAFFOLD_QUIET", value)
+            .args(["wallet", "--", "account", "list"])
+            .assert()
+            .success();
+        let stdout = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+        assert!(
+            stdout.contains("$ "),
+            "LOGOS_SCAFFOLD_QUIET={value:?} must NOT suppress echo, got:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn create_help_does_not_mutate_filesystem() {
     let temp = tempdir().expect("tempdir");
 

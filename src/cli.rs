@@ -589,7 +589,12 @@ pub(crate) fn print_help(bin_name: &str) -> DynResult<()> {
 
 fn apply_quiet_from_env() {
     if std::env::var("LOGOS_SCAFFOLD_QUIET")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "yes") || v.eq_ignore_ascii_case("on"))
+        .map(|v| {
+            v == "1"
+                || v.eq_ignore_ascii_case("true")
+                || v.eq_ignore_ascii_case("yes")
+                || v.eq_ignore_ascii_case("on")
+        })
         .unwrap_or(false)
     {
         set_command_echo(false);

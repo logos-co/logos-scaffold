@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -492,12 +492,25 @@ fn cmd_localnet_reset_dry_run(
     verify_timeout_sec: u64,
     sequencer_bin: &Path,
 ) -> DynResult<()> {
+    // `lez` and `sequencer_bin` are derived from `scaffold.cache_root`, which
+    // is relative in `scaffold.toml`. State / wallet paths are already joined
+    // onto `project.root`. Absolutize the lez-derived paths too so every line
+    // of the plan is copy-pasteable into a shell from any CWD.
+    let abs = |p: &Path| -> PathBuf {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            project.root.join(p)
+        }
+    };
+    let rocksdb_path = abs(&lez.join("rocksdb"));
+    let sequencer_bin_abs = abs(sequencer_bin);
+
     println!("dry-run: localnet reset (no changes made)");
     println!(
         "planned: stop sequencer if tracked (state file: {})",
         state_path.display()
     );
-    let rocksdb_path = lez.join("rocksdb");
     println!(
         "planned: delete sequencer DB at {} (exists: {})",
         rocksdb_path.display(),
@@ -529,15 +542,15 @@ fn cmd_localnet_reset_dry_run(
         log_path.display(),
         verify_timeout_sec
     );
-    if !sequencer_bin.exists() {
+    if !sequencer_bin_abs.exists() {
         println!(
             "warning: missing sequencer binary at {}; a real reset would fail before any destructive step",
-            sequencer_bin.display()
+            sequencer_bin_abs.display()
         );
     } else {
         println!(
             "prerequisite ok: sequencer binary exists at {}",
-            sequencer_bin.display()
+            sequencer_bin_abs.display()
         );
     }
     let state = read_localnet_state(state_path).unwrap_or_default();
@@ -550,7 +563,17 @@ fn cmd_localnet_reset_dry_run(
         println!("current tracked sequencer pid: none");
     }
     if port_open(localnet_addr) {
-        println!("note: listener currently on {localnet_addr} (port {localnet_port})");
+        // Foreign-listener case: nothing tracked but the port is held. The
+        // real reset stops nothing, then `wait_for_port_free` times out and
+        // returns `ResetError::ForeignListener` before any cleanup. Surface
+        // that here so the dry-run doesn't silently imply a clean run.
+        if state.sequencer_pid.is_none() {
+            println!(
+                "warning: foreign listener on {localnet_addr} (port {localnet_port}); a real reset would abort with foreign-listener error before any destructive step"
+            );
+        } else {
+            println!("note: listener currently on {localnet_addr} (port {localnet_port})");
+        }
     } else {
         println!("note: no listener on {localnet_addr} currently");
     }
