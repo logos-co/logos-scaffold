@@ -14,7 +14,7 @@ use crate::constants::{
     SCAFFOLD_TOML_SCHEMA_VERSION,
 };
 use crate::migrate::migrate_to_v0_2_0;
-use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig};
+use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RunConfig};
 use crate::state::write_text;
 use crate::template::project::ensure_scaffold_in_gitignore;
 use crate::DynResult;
@@ -66,6 +66,7 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
 
     // Fresh init — schema 0.2.0 by construction.
     let cfg = fresh_default_config();
+
     write_text(&scaffold_path, &serialize_config(&cfg)?)?;
     fs::create_dir_all(target.join(".scaffold/state"))
         .with_context(|| format!("creating {}/.scaffold/state", target.display()))?;
@@ -103,6 +104,7 @@ fn fresh_default_config() -> Config {
         },
         localnet: LocalnetConfig::default(),
         modules: std::collections::BTreeMap::new(),
+        run: RunConfig::default(),
         basecamp: None,
     }
 }
