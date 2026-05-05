@@ -223,6 +223,7 @@ mod tests {
                 },
                 localnet: LocalnetConfig::default(),
                 modules: std::collections::BTreeMap::new(),
+                run: crate::model::RunConfig::default(),
                 basecamp: None,
             },
         }

@@ -12,7 +12,7 @@ use crate::constants::{
     DEFAULT_FRAMEWORK_VERSION, DEFAULT_LEZ, DEFAULT_LGPM_PIN, DEFAULT_SPEL, FRAMEWORK_KIND_DEFAULT,
     FRAMEWORK_KIND_LEZ_FRAMEWORK, LEZ_SOURCE, SCAFFOLD_TOML_SCHEMA_VERSION,
 };
-use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig};
+use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig, RunConfig};
 use crate::project::default_cache_root;
 use crate::repo::{sync_repo_to_pin_at_path_with_opts, RepoSyncOptions};
 use crate::state::write_text;
@@ -131,6 +131,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         },
         localnet: LocalnetConfig::default(),
         modules: std::collections::BTreeMap::new(),
+        run: RunConfig::default(),
         basecamp: None,
     };
 

@@ -23,7 +23,7 @@ use super::wallet_support::{
 /// regardless of which layout cargo/risc0 chose. The `methods/...` half of
 /// this constant is the same project-relative directory that `build.rs`
 /// compiles via `crate::constants::METHODS_DIR`; keep them in sync.
-const GUEST_BIN_SEARCH_ROOTS: &[&str] = &["target/riscv-guest", "methods/target"];
+pub(crate) const GUEST_BIN_SEARCH_ROOTS: &[&str] = &["target/riscv-guest", "methods/target"];
 const DEFAULT_SEQUENCER_ADDR: &str = "http://127.0.0.1:3040";
 
 /// `spel inspect` line prefix that carries the risc0 image ID — the value the
@@ -278,7 +278,7 @@ fn preflight_sequencer_reachability(sequencer_addr: &str) -> DynResult<()> {
     }
 }
 
-fn discover_deployable_programs(project_root: &Path) -> DynResult<Vec<String>> {
+pub(crate) fn discover_deployable_programs(project_root: &Path) -> DynResult<Vec<String>> {
     let programs_dir = project_root.join("methods/guest/src/bin");
     if !programs_dir.exists() {
         bail!(
@@ -430,7 +430,7 @@ const SPEL_INSPECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// missing, non-zero exit, output unparseable, timeout). Callers print an
 /// "unavailable" hint instead of failing the deploy — the deploy itself has
 /// already succeeded by the time this runs.
-fn extract_program_id(spel_bin: &Path, binary_path: &Path) -> Option<String> {
+pub(crate) fn extract_program_id(spel_bin: &Path, binary_path: &Path) -> Option<String> {
     use std::io::Read;
     use std::process::Stdio;
     use std::time::Instant;
