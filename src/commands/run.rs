@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{bail, Context};
@@ -10,7 +11,7 @@ use crate::commands::idl::build_idl_for_current_project;
 use crate::commands::localnet::{build_localnet_status_for_project, cmd_localnet, LocalnetAction};
 use crate::commands::wallet::{cmd_wallet_topup_inner, TopupOutcome};
 use crate::constants::SPEL_BIN_REL_PATH;
-use crate::model::LocalnetOwnership;
+use crate::model::{LocalnetOwnership, Project};
 use crate::project::{load_project, resolve_repo_path};
 use crate::DynResult;
 
@@ -32,7 +33,7 @@ pub(crate) fn cmd_run(inv: RunInvocation) -> DynResult<()> {
     run_pipeline_once(&project, &hooks)
 }
 
-fn run_pipeline_once(project: &crate::model::Project, hooks: &[String]) -> DynResult<()> {
+fn run_pipeline_once(project: &Project, hooks: &[String]) -> DynResult<()> {
     let has_hooks = !hooks.is_empty();
     // Steps: build, build idl, localnet, topup, deploy, [+1 if hooks]
     let total_steps: u32 = if has_hooks { 6 } else { 5 };
@@ -76,7 +77,7 @@ fn run_pipeline_once(project: &crate::model::Project, hooks: &[String]) -> DynRe
     Ok(())
 }
 
-fn ensure_localnet(project: &crate::model::Project) -> DynResult<()> {
+fn ensure_localnet(project: &Project) -> DynResult<()> {
     let status = build_localnet_status_for_project(project);
     match status.ownership {
         LocalnetOwnership::Managed if status.ready => {
@@ -102,7 +103,7 @@ fn ensure_localnet(project: &crate::model::Project) -> DynResult<()> {
     }
 }
 
-fn print_deploy_summary(project: &crate::model::Project) -> DynResult<()> {
+fn print_deploy_summary(project: &Project) -> DynResult<()> {
     let programs_dir = project.root.join("methods/guest/src/bin");
     if !programs_dir.exists() {
         return Ok(());
@@ -132,7 +133,7 @@ fn print_deploy_summary(project: &crate::model::Project) -> DynResult<()> {
     Ok(())
 }
 
-fn build_hook_command(project: &crate::model::Project, hook_command: &str) -> Command {
+fn build_hook_command(project: &Project, hook_command: &str) -> Command {
     let port = project.config.localnet.port;
     let sequencer_url = format!("http://127.0.0.1:{port}");
     let wallet_home = project
@@ -164,21 +165,18 @@ fn build_hook_command(project: &crate::model::Project, hook_command: &str) -> Co
     // hooks can call `spel` or the dogfood client without parsing the
     // deploy summary. Multi-program env fan-out arrives in a later branch
     // of this stack.
-    if let Some((name, binary_path)) = single_program_metadata(project) {
+    if let Some(binary_path) = single_program_binary(project) {
         if let Some(spel_bin) = resolve_spel_bin(project) {
             if let Some(id) = extract_program_id(&spel_bin, &binary_path) {
                 cmd.env("SCAFFOLD_PROGRAM_ID", id);
             }
         }
         cmd.env("SCAFFOLD_GUEST_BIN", &binary_path);
-        let _ = name; // currently unused; introduced when multi-program lands
     }
     cmd
 }
 
-fn single_program_metadata(
-    project: &crate::model::Project,
-) -> Option<(String, std::path::PathBuf)> {
+fn single_program_binary(project: &Project) -> Option<PathBuf> {
     let programs_dir = project.root.join("methods/guest/src/bin");
     if !programs_dir.exists() {
         return None;
@@ -189,16 +187,15 @@ fn single_program_metadata(
     }
     let binaries = discover_program_binaries(&project.root, &programs);
     let stem = programs.into_iter().next()?;
-    let bin = binaries.get(&stem).cloned()?;
-    Some((stem, bin))
+    binaries.get(&stem).cloned()
 }
 
-fn resolve_spel_bin(project: &crate::model::Project) -> Option<std::path::PathBuf> {
+fn resolve_spel_bin(project: &Project) -> Option<PathBuf> {
     let spel = resolve_repo_path(project, &project.config.spel, "spel").ok()?;
     Some(spel.join(SPEL_BIN_REL_PATH))
 }
 
-fn run_post_deploy_hook(project: &crate::model::Project, hook_command: &str) -> DynResult<()> {
+fn run_post_deploy_hook(project: &Project, hook_command: &str) -> DynResult<()> {
     let status = build_hook_command(project, hook_command)
         .status()
         .context("failed to execute post-deploy hook")?;

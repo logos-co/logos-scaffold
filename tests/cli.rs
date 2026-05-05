@@ -3569,6 +3569,45 @@ fn run_with_multiple_post_deploy_hooks_uses_array_form() {
         .stdout(predicate::str::contains("[1/6] Building..."));
 }
 
+#[test]
+fn run_no_post_deploy_flag_skips_configured_hooks() {
+    // --no-post-deploy must collapse total_steps back to 5 even when
+    // scaffold.toml configures hooks. The build still fails first, but the
+    // step counter in stdout proves the override was honored.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config(temp.path(), &["echo configured"]);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .arg("--no-post-deploy")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/5] Building..."));
+}
+
+#[test]
+fn run_post_deploy_flag_overrides_configured_hooks() {
+    // --post-deploy replaces config hooks. With one config hook ([1/6]) and
+    // two flag overrides, the resulting step count stays at /6 — proving
+    // that the flag took effect and config wasn't merged on top.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+    append_run_config(temp.path(), &["echo configured"]);
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("run")
+        .arg("--post-deploy")
+        .arg("echo override-a")
+        .arg("--post-deploy")
+        .arg("echo override-b")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("[1/6] Building..."));
+}
+
 fn append_run_config(project_root: &Path, post_deploy: &[&str]) {
     let toml_path = project_root.join("scaffold.toml");
     let mut content = fs::read_to_string(&toml_path).expect("read scaffold.toml");
