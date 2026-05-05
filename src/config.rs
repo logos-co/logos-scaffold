@@ -1,4 +1,4 @@
-//! Parser, serializer, and migration helpers for `scaffold.toml`.
+//! Parser and serializer for `scaffold.toml`.
 //!
 //! Schema version 0.2.0 (see `SCAFFOLD_TOML_SCHEMA_VERSION` in `constants.rs`)
 //! organizes the file into three orthogonal namespaces:
@@ -15,9 +15,9 @@
 //!   `[framework]`, `[localnet]`, `[basecamp]` (port allocation only).
 //!
 //! Pre-0.2.0 configs (with `[basecamp].pin` / `.source` / `.lgpm_flake`,
-//! `[basecamp.modules.*]`, or `[repos.{lez,spel}].url`) are rejected by the
-//! parser with a targeted error pointing at `init`. `init` is the single
-//! migration entry point.
+//! `[basecamp.modules.*]`, or `[repos.{lez,spel}].url`) are rejected by
+//! `detect_old_schema` with a targeted error pointing at `init`. The
+//! corresponding rewrite lives in `crate::migrate`.
 
 use anyhow::{anyhow, bail, Context};
 use toml_edit::{value, DocumentMut, Item, Table};
@@ -498,33 +498,6 @@ pub(crate) fn default_lgpm_repo(pin: &str) -> RepoRef {
     }
 }
 
-/// Parse a flake-style ref like `github:owner/repo/<sha>#attr` into its
-/// `(source, pin, attr)` components for migration of pre-0.2.0
-/// `[basecamp].lgpm_flake` strings. Returns `None` if the ref doesn't
-/// match the expected shape; the caller surfaces that as a hand-edit hint.
-pub(crate) fn split_flake_ref(flake_ref: &str) -> Option<(String, String, String)> {
-    let (without_attr, attr) = match flake_ref.split_once('#') {
-        Some((head, tail)) if !tail.is_empty() => (head, tail.to_string()),
-        _ => return None,
-    };
-    // Expect `<scheme>:<owner>/<repo>/<sha>` or `<scheme>:<owner>/<repo>` (no
-    // pin — caller decides). We split off the trailing path segment as the
-    // pin if it looks SHA-shaped; otherwise the whole thing is the source
-    // and the caller has to fill in the pin separately.
-    let (scheme, rest) = without_attr.split_once(':')?;
-    let segments: Vec<&str> = rest.split('/').collect();
-    if segments.len() < 2 {
-        return None;
-    }
-    let last = segments[segments.len() - 1];
-    if last.len() == 40 && last.chars().all(|c| c.is_ascii_hexdigit()) {
-        let source = format!("{scheme}:{}", segments[..segments.len() - 1].join("/"));
-        Some((source, last.to_string(), attr))
-    } else {
-        None
-    }
-}
-
 // The old `parse_inline_string_array`, `unquote`, and `escape_toml_string`
 // helpers are no longer needed — toml_edit handles array parsing, quote
 // unwrapping, and string escaping for `value(..)` calls. The hand-rolled
@@ -725,31 +698,6 @@ role = "project"
             !serialized.contains("url ="),
             "url field should not be emitted in 0.2.0 schema:\n{serialized}"
         );
-    }
-
-    #[test]
-    fn split_flake_ref_pulls_apart_canonical_lgpm_form() {
-        let parsed = split_flake_ref(
-            "github:logos-co/logos-package-manager/e5c25989861f4487c3dc8c7b3bc0062bcbc3221f#cli",
-        )
-        .expect("split");
-        assert_eq!(parsed.0, "github:logos-co/logos-package-manager");
-        assert_eq!(parsed.1, "e5c25989861f4487c3dc8c7b3bc0062bcbc3221f");
-        assert_eq!(parsed.2, "cli");
-    }
-
-    #[test]
-    fn split_flake_ref_returns_none_when_no_pin_in_path() {
-        // No SHA in the path — caller must fill in the pin by hand.
-        assert!(split_flake_ref("github:logos-co/logos-package-manager#cli").is_none());
-    }
-
-    #[test]
-    fn split_flake_ref_returns_none_when_no_attr() {
-        assert!(split_flake_ref(
-            "github:logos-co/logos-package-manager/e5c25989861f4487c3dc8c7b3bc0062bcbc3221f"
-        )
-        .is_none());
     }
 
     #[test]

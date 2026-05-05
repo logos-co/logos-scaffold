@@ -3,17 +3,17 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{bail, Context};
-use toml_edit::{value, DocumentMut, Item, Table};
+use toml_edit::DocumentMut;
 
 use crate::config::{
-    default_basecamp_repo, default_lez_repo, default_lgpm_repo, default_spel_repo,
-    serialize_config, split_flake_ref,
+    default_basecamp_repo, default_lez_repo, default_lgpm_repo, default_spel_repo, serialize_config,
 };
 use crate::constants::{
-    BASECAMP_ATTR, BASECAMP_SOURCE, DEFAULT_BASECAMP_PIN, DEFAULT_FRAMEWORK_IDL_PATH,
-    DEFAULT_FRAMEWORK_IDL_SPEC, DEFAULT_FRAMEWORK_VERSION, DEFAULT_LEZ, DEFAULT_LGPM_PIN,
-    DEFAULT_SPEL, FRAMEWORK_KIND_DEFAULT, LGPM_ATTR, LGPM_SOURCE, SCAFFOLD_TOML_SCHEMA_VERSION,
+    DEFAULT_BASECAMP_PIN, DEFAULT_FRAMEWORK_IDL_PATH, DEFAULT_FRAMEWORK_IDL_SPEC,
+    DEFAULT_FRAMEWORK_VERSION, DEFAULT_LEZ, DEFAULT_LGPM_PIN, DEFAULT_SPEL, FRAMEWORK_KIND_DEFAULT,
+    SCAFFOLD_TOML_SCHEMA_VERSION,
 };
+use crate::migrate::migrate_to_v0_2_0;
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig};
 use crate::state::write_text;
 use crate::template::project::ensure_scaffold_in_gitignore;
@@ -107,264 +107,11 @@ fn fresh_default_config() -> Config {
     }
 }
 
-#[derive(Default)]
-struct MigrationReport {
-    changes: Vec<String>,
-    /// Set when migration succeeded but a field was unparseable and the user
-    /// must hand-edit. Currently only triggered by malformed `lgpm_flake`.
-    hand_edit_hint: Option<String>,
-}
-
-/// Mutate `doc` in place from any pre-0.2.0 schema to v0.2.0. Preserves
-/// comments, key ordering, and unrelated sections via toml_edit. Returns a
-/// report listing what changed; an empty report means "already migrated."
-///
-/// The input may be:
-/// - A pre-spel scaffold.toml (no `[repos.spel]` section). The original
-///   migration's job — append the section.
-/// - A 0.1.x-era scaffold.toml with `url` fields, `[basecamp].pin/.source/
-///   .lgpm_flake`, or `[basecamp.modules.*]`. Reshape all of those.
-/// - A mix of the above.
-fn migrate_to_v0_2_0(doc: &mut DocumentMut) -> DynResult<MigrationReport> {
-    let mut report = MigrationReport::default();
-
-    // Ensure [scaffold] exists; bump version.
-    let scaffold = doc.entry("scaffold").or_insert(Item::Table({
-        let mut t = Table::new();
-        t.set_implicit(false);
-        t
-    }));
-    let scaffold_table = scaffold
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("[scaffold] is not a table"))?;
-    let current_version = scaffold_table
-        .get("version")
-        .and_then(Item::as_str)
-        .unwrap_or("")
-        .to_string();
-    if current_version != SCAFFOLD_TOML_SCHEMA_VERSION {
-        scaffold_table["version"] = value(SCAFFOLD_TOML_SCHEMA_VERSION);
-        report.changes.push(format!(
-            "bumped [scaffold].version: {:?} -> {:?}",
-            if current_version.is_empty() {
-                "<unset>"
-            } else {
-                current_version.as_str()
-            },
-            SCAFFOLD_TOML_SCHEMA_VERSION,
-        ));
-    }
-
-    // [repos.lssa] -> [repos.lez] alias rename. Only triggered if the
-    // explicit lssa section exists; harmless otherwise.
-    if let Some(repos) = doc.get_mut("repos").and_then(Item::as_table_mut) {
-        if repos.contains_key("lssa") && !repos.contains_key("lez") {
-            if let Some(lssa) = repos.remove("lssa") {
-                repos.insert("lez", lssa);
-                report
-                    .changes
-                    .push("renamed [repos.lssa] -> [repos.lez]".to_string());
-            }
-        }
-    }
-
-    // Drop `url` from [repos.lez] / [repos.spel].
-    for name in ["lez", "spel"] {
-        if let Some(repo) = doc
-            .get_mut("repos")
-            .and_then(Item::as_table_mut)
-            .and_then(|r| r.get_mut(name).and_then(Item::as_table_mut))
-        {
-            if repo.remove("url").is_some() {
-                report
-                    .changes
-                    .push(format!("removed [repos.{name}].url (use `source` only)"));
-            }
-        }
-    }
-
-    // Append [repos.spel] if missing (pre-spel migration semantics).
-    let spel_missing = doc
-        .get("repos")
-        .and_then(Item::as_table)
-        .and_then(|r| r.get("spel"))
-        .is_none();
-    if spel_missing {
-        // Vendor-detection: if existing [repos.lez].path is `.scaffold/repos/lez`,
-        // mirror the layout for spel. Otherwise leave path empty (portable).
-        let lez_path = doc
-            .get("repos")
-            .and_then(Item::as_table)
-            .and_then(|r| r.get("lez").and_then(Item::as_table))
-            .and_then(|t| t.get("path").and_then(Item::as_str))
-            .unwrap_or("")
-            .to_string();
-        let mut spel = default_spel_repo(DEFAULT_SPEL.sha);
-        if lez_path == ".scaffold/repos/lez" {
-            spel.path = ".scaffold/repos/spel".to_string();
-        }
-        write_repo_ref_via_toml_edit(doc, "spel", &spel);
-        report
-            .changes
-            .push("appended [repos.spel] with default pin".to_string());
-    }
-
-    // Migrate [basecamp].pin / .source -> [repos.basecamp].
-    let mut basecamp_pin = None;
-    let mut basecamp_source = None;
-    let mut lgpm_flake = None;
-    if let Some(bc) = doc.get_mut("basecamp").and_then(Item::as_table_mut) {
-        if let Some(s) = bc.get("pin").and_then(Item::as_str) {
-            basecamp_pin = Some(s.to_string());
-        }
-        if let Some(s) = bc.get("source").and_then(Item::as_str) {
-            basecamp_source = Some(s.to_string());
-        }
-        if let Some(s) = bc.get("lgpm_flake").and_then(Item::as_str) {
-            lgpm_flake = Some(s.to_string());
-        }
-    }
-
-    let need_basecamp_repo = basecamp_pin.is_some() || basecamp_source.is_some();
-    if need_basecamp_repo {
-        let pin = basecamp_pin
-            .clone()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| DEFAULT_BASECAMP_PIN.to_string());
-        let source = basecamp_source
-            .clone()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| BASECAMP_SOURCE.to_string());
-        let mut repo = default_basecamp_repo(&pin);
-        repo.source = source;
-        repo.attr = BASECAMP_ATTR.to_string();
-        write_repo_ref_via_toml_edit(doc, "basecamp", &repo);
-        report
-            .changes
-            .push("migrated [basecamp].pin / .source -> [repos.basecamp]".to_string());
-    }
-
-    // Migrate [basecamp].lgpm_flake -> [repos.lgpm].
-    if let Some(flake_ref) = lgpm_flake {
-        if !flake_ref.is_empty() {
-            match split_flake_ref(&flake_ref) {
-                Some((source, pin, attr)) => {
-                    let mut repo = default_lgpm_repo(&pin);
-                    repo.source = source;
-                    repo.attr = if attr.is_empty() {
-                        LGPM_ATTR.to_string()
-                    } else {
-                        attr
-                    };
-                    write_repo_ref_via_toml_edit(doc, "lgpm", &repo);
-                    report
-                        .changes
-                        .push("migrated [basecamp].lgpm_flake -> [repos.lgpm]".to_string());
-                }
-                None => {
-                    // Unparseable — write a placeholder repo with default
-                    // pin and tell the user to fix it by hand. We still
-                    // strip the old key so the file ends up valid.
-                    let repo = default_lgpm_repo(DEFAULT_LGPM_PIN);
-                    write_repo_ref_via_toml_edit(doc, "lgpm", &repo);
-                    report.hand_edit_hint = Some(format!(
-                        "could not parse [basecamp].lgpm_flake = {flake_ref:?}; wrote default \
-                         [repos.lgpm] (source={LGPM_SOURCE}, pin={DEFAULT_LGPM_PIN}). Edit \
-                         scaffold.toml to set the right pin."
-                    ));
-                    report
-                        .changes
-                        .push("migrated [basecamp].lgpm_flake -> [repos.lgpm] (default pin; verify by hand)".to_string());
-                }
-            }
-        }
-    }
-
-    // [basecamp.modules.*] -> [modules.*]
-    let mut moved_modules = Vec::new();
-    if let Some(bc) = doc.get_mut("basecamp").and_then(Item::as_table_mut) {
-        if let Some(modules_item) = bc.get("modules") {
-            if let Some(modules_table) = modules_item.as_table() {
-                for (name, item) in modules_table.iter() {
-                    if let Some(t) = item.as_table() {
-                        moved_modules.push((name.to_string(), t.clone()));
-                    }
-                }
-            }
-        }
-        bc.remove("modules");
-    }
-    if !moved_modules.is_empty() {
-        let modules_root = doc.entry("modules").or_insert(Item::Table({
-            let mut t = Table::new();
-            t.set_implicit(true);
-            t
-        }));
-        let modules_table = modules_root
-            .as_table_mut()
-            .ok_or_else(|| anyhow::anyhow!("[modules] is not a table"))?;
-        for (name, t) in &moved_modules {
-            modules_table.insert(name, Item::Table(t.clone()));
-        }
-        report.changes.push(format!(
-            "moved [basecamp.modules.*] -> [modules.*] ({} entr{})",
-            moved_modules.len(),
-            if moved_modules.len() == 1 { "y" } else { "ies" },
-        ));
-    }
-
-    // Strip migrated keys from [basecamp].
-    if let Some(bc) = doc.get_mut("basecamp").and_then(Item::as_table_mut) {
-        for stale in ["pin", "source", "lgpm_flake"] {
-            bc.remove(stale);
-        }
-        // If [basecamp] is now empty (no port_base/port_stride either),
-        // drop the section entirely.
-        if bc.iter().next().is_none() {
-            doc.as_table_mut().remove("basecamp");
-        }
-    }
-
-    Ok(report)
-}
-
-fn write_repo_ref_via_toml_edit(doc: &mut DocumentMut, name: &str, repo: &crate::model::RepoRef) {
-    let repos = doc.entry("repos").or_insert(Item::Table({
-        let mut t = Table::new();
-        t.set_implicit(true);
-        t
-    }));
-    let repos_table = repos.as_table_mut().expect("repos is a table");
-    repos_table.set_implicit(true);
-    let table = repos_table
-        .entry(name)
-        .or_insert(Item::Table(Table::new()))
-        .as_table_mut()
-        .expect("repo is a table");
-    table["source"] = value(&repo.source);
-    table["pin"] = value(&repo.pin);
-    if repo.build != crate::model::RepoBuild::default() {
-        table["build"] = value(repo.build.as_str());
-    } else {
-        table.remove("build");
-    }
-    if !repo.attr.is_empty() {
-        table["attr"] = value(&repo.attr);
-    } else {
-        table.remove("attr");
-    }
-    if !repo.path.is_empty() {
-        table["path"] = value(&repo.path);
-    } else {
-        table.remove("path");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::parse_config;
-    use crate::constants::{LEZ_SOURCE, SPEL_SOURCE};
+    use crate::constants::{BASECAMP_ATTR, LEZ_SOURCE, LGPM_ATTR, SPEL_SOURCE};
     use std::fs;
     use tempfile::tempdir;
 
