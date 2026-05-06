@@ -1095,8 +1095,7 @@ ls .scaffold/basecamp/portable 2>/dev/null || find .scaffold -maxdepth 4 -name '
 - Changes to wallet flows or wallet-related defaults: rerun `D4`.
 - Changes to diagnostics, report contents, or redaction logic: rerun `D5`.
 - Changes to example runner binaries or template `src/bin/*` code: rerun `D6`.
-- Changes to `run` step ordering, post-deploy env vars, restart/reset precedence, or `[run]` config parsing: rerun `D7`.
-- Changes to `[run.profiles]` semantics, post-deploy CLI overrides, deploy idempotence (`run_deploy.json` schema, hash policy), or `--watch` behavior: rerun `D8`.
+- Changes to `run` step ordering, post-deploy env vars, post-deploy CLI override flag handling, or `[run]` config parsing: rerun `D7`.
 - Changes to LEZ template scaffolding or generated outputs: rerun `L1`, `L2`, `L3`, and `L4`.
 - Changes to CLI argument parsing, help text, or error messages: rerun `E1`.
 - Changes to `create`/`new` flags or template selection logic: rerun `E2`.
