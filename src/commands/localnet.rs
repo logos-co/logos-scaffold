@@ -193,6 +193,7 @@ fn cmd_localnet_start(
     }
 
     patch_sequencer_port(lez, localnet_port)?;
+    strip_external_deps_from_sequencer_config(lez)?;
 
     // Use a path relative to lez (the child's cwd), not relative to the
     // parent's cwd.  `current_dir(lez)` applies before exec, so a parent-
@@ -440,6 +441,34 @@ fn build_status_report(
 /// Update the port in `sequencer_config.json` so the sequencer listens on the
 /// configured port.  The pinned LEZ version does not accept `--port` as a CLI
 /// flag — it reads the port from this file.
+
+/// Remove external service dependencies from `sequencer_config.json` so the
+/// sequencer runs in standalone mode without requiring a bedrock node or indexer.
+/// In scaffold localnet mode, neither service is available and the sequencer
+/// panics at startup if these fields are present and point to unreachable services.
+fn strip_external_deps_from_sequencer_config(lez: &Path) -> DynResult<()> {
+    let config_path = lez.join(SEQUENCER_CONFIG_REL_PATH);
+    let text = fs::read_to_string(&config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let mut doc: Value =
+        serde_json::from_str(&text).context("failed to parse sequencer_config.json")?;
+
+    if let Some(obj) = doc.as_object_mut() {
+        obj.remove("bedrock_config");
+        obj.remove("indexer_rpc_url");
+    } else {
+        bail!(
+            "sequencer_config.json is not a JSON object: {}",
+            config_path.display()
+        );
+    }
+
+    let updated = serde_json::to_string_pretty(&doc).context("failed to serialize config")?;
+    fs::write(&config_path, format!("{updated}\n"))
+        .with_context(|| format!("failed to write {}", config_path.display()))?;
+    Ok(())
+}
+
 fn patch_sequencer_port(lez: &Path, port: u16) -> DynResult<()> {
     let config_path = lez.join(SEQUENCER_CONFIG_REL_PATH);
     let text = fs::read_to_string(&config_path)
