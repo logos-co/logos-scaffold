@@ -544,7 +544,10 @@ home_dir = ".scaffold/wallet"
         );
 
         let after = fs::read_to_string(target.join("scaffold.toml")).expect("read");
-        assert!(after.contains("0.2.0"), "scaffold.toml migrated; got:\n{after}");
+        assert!(
+            after.contains("0.2.0"),
+            "scaffold.toml migrated; got:\n{after}"
+        );
     }
 
     #[test]
