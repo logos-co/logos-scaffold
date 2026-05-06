@@ -195,6 +195,42 @@ fn wallet_passthrough_works_with_leading_quiet_flag() {
 }
 
 #[test]
+fn wallet_passthrough_accepts_quiet_between_subcommand_and_separator() {
+    // Copilot review on PR #86: `--quiet` is `global = true`, so an agent
+    // would reasonably try `lgs wallet -q -- account list` (or `--quiet`).
+    // The passthrough sniffer must accept the in-between form and still
+    // suppress the `$ <wallet-bin>` echo line on stdout.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("wallet")
+        .arg("-q")
+        .arg("--")
+        .arg("account")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Preconfigured Public/"));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        !stdout.contains("$ "),
+        "in-between -q must suppress the `$ <cmd>` echo line, got:\n{stdout}"
+    );
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("wallet")
+        .arg("--quiet")
+        .arg("--")
+        .arg("account")
+        .arg("list")
+        .assert()
+        .success();
+}
+
+#[test]
 fn logos_scaffold_quiet_env_suppresses_command_echo_case_insensitively() {
     // Pins the contract advertised by `cli_help::EXAMPLES_ROOT` and the
     // `--quiet` help string: `LOGOS_SCAFFOLD_QUIET=` accepts `1`, `true`,
@@ -1989,6 +2025,42 @@ fn spel_proxy_works_with_leading_quiet_flag() {
         .current_dir(temp.path())
         .arg("-q")
         .arg("spel")
+        .arg("--")
+        .arg("inspect")
+        .arg("methods/guest/foo.bin")
+        .assert()
+        .success();
+}
+
+#[test]
+fn spel_proxy_accepts_quiet_between_subcommand_and_separator() {
+    // Copilot review on PR #86: same global-quiet composition fix as for
+    // wallet passthrough. `lgs spel -q -- inspect ...` must be intercepted
+    // (not handed to clap, which has no `spel` subcommand) and must
+    // suppress the `$ <spel-bin>` echo on stdout.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    let assert = Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("spel")
+        .arg("-q")
+        .arg("--")
+        .arg("inspect")
+        .arg("methods/guest/foo.bin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ImageID (hex bytes):"));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        !stdout.contains("$ "),
+        "in-between -q must suppress the `$ <cmd>` echo line, got:\n{stdout}"
+    );
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("spel")
+        .arg("--quiet")
         .arg("--")
         .arg("inspect")
         .arg("methods/guest/foo.bin")

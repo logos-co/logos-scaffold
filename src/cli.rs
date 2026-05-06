@@ -641,6 +641,22 @@ fn leading_global_flags_end(args: &[String]) -> usize {
     i
 }
 
+/// Advance past any consecutive `-q`/`--quiet` tokens in `args` starting
+/// at `from`. Returns the new index and whether at least one was consumed.
+/// Used inside the passthrough sniffers so `lgs wallet -q -- <args...>` /
+/// `lgs spel -q -- <args...>` are recognized, matching clap's `global = true`
+/// semantics on the `--quiet` flag. Caller is responsible for calling
+/// `set_command_echo(false)` if the second tuple element is `true`.
+fn skip_inline_quiet(args: &[String], from: usize) -> (usize, bool) {
+    let mut i = from;
+    let mut seen = false;
+    while i < args.len() && (args[i] == "-q" || args[i] == "--quiet") {
+        seen = true;
+        i += 1;
+    }
+    (i, seen)
+}
+
 /// Forward `lgs spel -- <args...>` to the project-vendored `spel` binary.
 /// Mirrors `wallet_passthrough_action` so the same `--` convention applies
 /// across passthroughs. When `spel` is invoked without `--`, intercept early
@@ -648,49 +664,60 @@ fn leading_global_flags_end(args: &[String]) -> usize {
 /// subcommand" message would otherwise leave the user guessing. `start` is
 /// the index after any leading global flags (e.g. `-q`), matching the
 /// signature of `wallet_passthrough_action` so `lgs -q spel -- <args...>`
-/// composes the same way.
+/// composes the same way. `lgs spel -q -- <args...>` (the in-between form)
+/// is also accepted via `skip_inline_quiet`.
 fn spel_passthrough_args(args: &[String], start: usize) -> DynResult<Option<Vec<String>>> {
     if args.len() <= start || args[start] != "spel" {
         return Ok(None);
     }
-    if args.len() <= start + 1 {
+    let (sep_idx, quiet_seen) = skip_inline_quiet(args, start + 1);
+    if args.len() <= sep_idx {
         return Err(anyhow!(
             "`spel` requires arguments. Use the passthrough form, e.g. `logos-scaffold spel -- inspect <bin>`."
         ));
     }
-    if args[start + 1] != "--" {
+    if args[sep_idx] != "--" {
         return Err(anyhow!(
             "`spel {0} ...` is not a scaffold subcommand. Did you mean `logos-scaffold spel -- {0} ...`? \
              The `--` separator forwards every following argument to the project-vendored `spel` binary.",
-            args[start + 1]
+            args[sep_idx]
         ));
     }
-    if args.len() == start + 2 {
+    if args.len() == sep_idx + 1 {
         return Err(anyhow!(
             "spel passthrough requires at least one argument after `--`. Example: `logos-scaffold spel -- inspect <bin>`"
         ));
     }
-    Ok(Some(args[start + 2..].to_vec()))
+    if quiet_seen {
+        set_command_echo(false);
+    }
+    Ok(Some(args[sep_idx + 1..].to_vec()))
 }
 
 fn wallet_passthrough_action(args: &[String], start: usize) -> DynResult<Option<WalletAction>> {
-    if args.len() <= start + 1 {
+    if args.len() <= start || args[start] != "wallet" {
         return Ok(None);
     }
-
-    if args[start] == "wallet" && args[start + 1] == "--" {
-        if args.len() == start + 2 {
-            return Err(anyhow!(
-                "wallet passthrough requires at least one argument after `--`. Example: `logos-scaffold wallet -- account list`. Discover inner flags with: `logos-scaffold wallet -- --help` (from a project directory)."
-            ));
-        }
-
-        return Ok(Some(WalletAction::Proxy {
-            args: args[start + 2..].to_vec(),
-        }));
+    let (sep_idx, quiet_seen) = skip_inline_quiet(args, start + 1);
+    // Only intercept as passthrough when the next token is `--`; otherwise
+    // it's `wallet list`, `wallet topup`, etc. — let clap parse it. This
+    // also means a stray `lgs wallet -q` (no `--`) falls through to clap,
+    // which surfaces a normal "missing subcommand" error rather than us
+    // hijacking it.
+    if sep_idx >= args.len() || args[sep_idx] != "--" {
+        return Ok(None);
     }
-
-    Ok(None)
+    if args.len() == sep_idx + 1 {
+        return Err(anyhow!(
+            "wallet passthrough requires at least one argument after `--`. Example: `logos-scaffold wallet -- account list`. Discover inner flags with: `logos-scaffold wallet -- --help` (from a project directory)."
+        ));
+    }
+    if quiet_seen {
+        set_command_echo(false);
+    }
+    Ok(Some(WalletAction::Proxy {
+        args: args[sep_idx + 1..].to_vec(),
+    }))
 }
 
 fn merge_optional_address(
