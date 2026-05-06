@@ -71,7 +71,7 @@ logos-scaffold wallet topup [<address> | --address <address-ref>] [--dry-run]
 logos-scaffold wallet default set <address-ref>
 logos-scaffold wallet default set --address <address-ref>
 logos-scaffold wallet -- <wallet-command...>
-logos-scaffold run [--profile <name>] [--reset | --no-reset] [--post-deploy <cmd>...] [--no-post-deploy] [--watch]
+logos-scaffold run [--post-deploy <cmd>...] [--no-post-deploy]
 logos-scaffold spel -- <spel-command...>
 logos-scaffold basecamp setup
 logos-scaffold basecamp modules [--path PATH]... [--flake REF]... [--show]
@@ -98,7 +98,7 @@ logos-scaffold help
 - `wallet topup` checks account state first (`wallet account get --account-id ...`), runs `wallet auth-transfer init --account-id ...` only when the destination is uninitialized, then performs Piñata faucet claim (`wallet pinata claim --to ...`). If address is omitted, scaffold uses project default wallet from `.scaffold/state/wallet.state`.
 - `wallet default set` stores a project-scoped default wallet address in `.scaffold/state/wallet.state`.
 - `wallet -- ...` forwards raw wallet CLI arguments to the project-local wallet binary while preserving project wallet environment.
-- `run` combines build, IDL build, localnet start, wallet topup, and deploy into a single command. If a `[run]` section with `post_deploy` is present in `scaffold.toml`, each hook is executed after deploy via `sh -c` (cwd = project root) with `SEQUENCER_URL`, `NSSA_WALLET_HOME_DIR`, `SCAFFOLD_PROJECT_ROOT`, `SCAFFOLD_IDL_DIR`, and the per-program `SCAFFOLD_PROGRAMS` / `SCAFFOLD_PROGRAM_ID_<name>` / `SCAFFOLD_GUEST_BIN_<name>` env vars. If a localnet is already running it is reused; otherwise it is started. `--reset` (or `[run].reset = true`) wipes rocksdb and the project wallet, restarts the sequencer, re-seeds the default wallet, and continues the pipeline — for fixture-based deterministic test loops that need a fresh chain per invocation, or as a manual recovery for a wedged project. `--profile <name>` selects a named profile from `[run.profiles.<name>]`; `[run].default_profile` sets a default. `--post-deploy <cmd>` (repeatable) overrides the resolved profile's hooks; `--no-post-deploy` skips them entirely.
+- `run` combines build, IDL build, localnet start, wallet topup, and deploy into a single command. If a `[run]` section with `post_deploy` is present in `scaffold.toml`, each hook is executed after deploy via `sh -c` (cwd = project root) with `SEQUENCER_URL`, `NSSA_WALLET_HOME_DIR`, `SCAFFOLD_PROJECT_ROOT`, and `SCAFFOLD_IDL_DIR` env vars; when the project has exactly one deployable program, `SCAFFOLD_PROGRAM_ID` and `SCAFFOLD_GUEST_BIN` are also set. If a localnet is already running it is reused; otherwise it is started. `--post-deploy <cmd>` (repeatable) overrides the configured hooks; `--no-post-deploy` skips them entirely.
 - `spel -- ...` forwards raw spel CLI arguments to the project-vendored `spel` binary so any spel subcommand (`inspect`, `pda`, `generate-idl`, …) runs against the project's pinned version without a global install.
 - `basecamp setup` pins basecamp + `lgpm` (read from `[repos.basecamp]` / `[repos.lgpm]` — both `build = "nix-flake"`), builds both (logged to `.scaffold/logs/<timestamp>-setup-*.log`), and seeds per-profile XDG directories for `alice` and `bob` under `.scaffold/basecamp/profiles/`. Runtime config (`port_base`, `port_stride`) is in `[basecamp]`.
 - `basecamp modules` is the sole writer of the captured module set, which lives in top-level `[modules.<name>]` sections (each with `flake` and `role = "project" | "dependency"`). Modules aren't basecamp's property — they're the project's Logos modules, which basecamp happens to be one consumer of. Zero-arg runs auto-discovery: walks project flakes (root `.#lgx` first, else immediate sub-flakes), derives a `module_name` per source (from `metadata.json.name` for local paths; heuristic from the github repo slug for remote refs, with a one-line assumption note you can correct in `scaffold.toml`), then resolves each declared dep name by: (1) already keyed in `[modules]`, (2) basecamp preinstall list, (3) the source's own `flake.lock`, (4) scaffold-default pin. Unresolved deps **fail fast** — no silent skip. `--flake <ref>` / `--path <file>` capture explicit project sources; `--show` prints the current set without mutating. Re-runs are idempotent: existing `[modules]` entries are preserved so hand-edits survive. Project contract: see [docs/basecamp-module-requirements.md](./docs/basecamp-module-requirements.md).
@@ -153,7 +153,7 @@ Existing fields are preserved verbatim.
 
 ### One-step build + deploy with `run`
 
-Or use `run` to do build → localnet → topup → deploy in one step:
+Or use `run` to do build → IDL → localnet → topup → deploy in one step:
 
 ```bash
 lgs new my-app
@@ -166,36 +166,11 @@ with [spel](https://github.com/logos-co/spel)), add a `[run]` section to
 `scaffold.toml`. `post_deploy` is a list of shell commands executed in order;
 the run aborts at the first non-zero exit:
 
-Single-program project (uses the `SCAFFOLD_PROGRAM_NAME` /
-`SCAFFOLD_GUEST_BIN` shortcuts described in the env table below):
-
 ```toml
 [run]
 post_deploy = [
-  "lgs spel -- --idl $SCAFFOLD_IDL_DIR/${SCAFFOLD_PROGRAM_NAME}.json -p $SCAFFOLD_GUEST_BIN init",
-  "lgs spel -- --idl $SCAFFOLD_IDL_DIR/${SCAFFOLD_PROGRAM_NAME}.json -p $SCAFFOLD_GUEST_BIN increment --by 5",
-]
-```
-
-Multi-program project (shortcuts are unset; reference each program by
-its source filename stem):
-
-```toml
-[run]
-post_deploy = [
-  # Initialize the counter program.
-  "lgs spel -- --idl $SCAFFOLD_IDL_DIR/counter.json -p $SCAFFOLD_GUEST_BIN_counter init",
-  # Initialize the greeter program with a message.
-  "lgs spel -- --idl $SCAFFOLD_IDL_DIR/greeter.json -p $SCAFFOLD_GUEST_BIN_greeter init --message hello",
-  # Iterate over every deployed program and print its image ID.
-  # Note: this loop assumes program filenames contain only [A-Za-z0-9_]
-  # — see the "Indexed env-var name rewriting" callout below.
-  '''
-  for prog in $SCAFFOLD_PROGRAMS; do
-    pid_var="SCAFFOLD_PROGRAM_ID_$prog"
-    echo "$prog -> ${!pid_var}"
-  done
-  ''',
+  "lgs spel -- --idl $SCAFFOLD_IDL_DIR/counter.json -p $SCAFFOLD_GUEST_BIN init",
+  "lgs spel -- --idl $SCAFFOLD_IDL_DIR/counter.json -p $SCAFFOLD_GUEST_BIN increment --by 5",
 ]
 ```
 
@@ -214,75 +189,12 @@ environment variables pre-set:
 | `NSSA_WALLET_HOME_DIR` | Absolute path to project wallet directory |
 | `SCAFFOLD_PROJECT_ROOT` | Absolute path to project root |
 | `SCAFFOLD_IDL_DIR` | Absolute path to IDL output directory |
-| `SCAFFOLD_PROGRAMS` | Space-separated list of deployable program names (raw filenames; see callout below) |
-| `SCAFFOLD_PROGRAM_ID_<name>` | risc0 image ID (hex) per program. Unset when `spel inspect` cannot extract it |
-| `SCAFFOLD_GUEST_BIN_<name>` | Absolute path to the guest `.bin` per program |
-| `SCAFFOLD_DEPLOY_SKIPPED_<name>` | `1` if the deploy step was short-circuited by the hash cache, else `0` |
-| `SCAFFOLD_PROGRAM_NAME` / `SCAFFOLD_PROGRAM_ID` / `SCAFFOLD_GUEST_BIN` / `SCAFFOLD_DEPLOY_SKIPPED` | Single-program shortcuts. Set only when exactly one program was deployed |
+| `SCAFFOLD_PROGRAM_ID` | risc0 image ID (hex) of the deployed program. Set only when the project has exactly one deployable program; unset if `spel inspect` cannot extract the ID |
+| `SCAFFOLD_GUEST_BIN` | Absolute path to the guest `.bin`. Set only when the project has exactly one deployable program |
 
-The single-program shortcuts (`SCAFFOLD_PROGRAM_NAME` / `_ID` / `_BIN` /
-`_DEPLOY_SKIPPED`) are unset for multi-program projects so hooks fail
-loudly rather than silently picking up a value from a stale config.
-
-##### Indexed env-var name rewriting
-
-The `<name>` in `SCAFFOLD_PROGRAM_ID_<name>` (and the `_BIN_<name>` /
-`_DEPLOY_SKIPPED_<name>` siblings) is the program's source filename stem
-(from `methods/guest/src/bin/<name>.rs`) with any character outside
-`[A-Za-z0-9_]` rewritten to `_`. POSIX env-var names cannot contain
-hyphens, dots, or slashes, so a program named `my-program.rs` becomes
-`SCAFFOLD_PROGRAM_ID_my_program` (lowercase preserved, only the
-hyphen rewritten).
-
-This means `$SCAFFOLD_PROGRAMS` and the indexed-var suffix do **not**
-round-trip identically when a name contains rewritten characters: the
-program list reports `my-program`, but the env var is keyed by
-`my_program`. Two safe patterns:
-
-- Reference programs by hardcoded filename in your hooks
-  (`$SCAFFOLD_GUEST_BIN_counter`, not a loop variable). Cleanest.
-- Or sanitize inside the loop before constructing the var name:
-
-  ```sh
-  for prog in $SCAFFOLD_PROGRAMS; do
-    suffix=$(echo "$prog" | tr -c '[:alnum:]_' '_')
-    pid_var="SCAFFOLD_PROGRAM_ID_$suffix"
-    echo "$prog -> ${!pid_var}"
-  done
-  ```
-
-To make the rewrite visible at runtime, `lgs run` prints a one-line
-`note:` listing the resolved suffix for any program whose name was
-rewritten, just before invoking the first hook. The simplest fix is
-usually to rename the file so its stem stays inside `[A-Za-z0-9_]`
-(cargo's `bin` convention discourages hyphens anyway).
-
-#### Named profiles
-
-For projects with multiple post-deploy workflows (dev iteration, e2e
-fixture replay, smoke verify, fuzz), define them as named profiles and
-select with `--profile`:
-
-```toml
-[run]
-default_profile = "dev"
-
-[run.profiles.dev]
-post_deploy = "scripts/post-deploy-dev.sh"
-
-[run.profiles.e2e]
-reset = true
-post_deploy = "scripts/e2e-runs.sh"
-```
-
-```bash
-lgs run                # uses default_profile = "dev"
-lgs run --profile e2e  # uses [run.profiles.e2e]
-```
-
-When `--profile` is not passed, scaffold picks `default_profile` if set,
-otherwise falls back to inline `[run]` keys (the legacy/unnamed slot).
-An unknown `--profile` name errors with the list of known profiles.
+`SCAFFOLD_PROGRAM_ID` and `SCAFFOLD_GUEST_BIN` are unset for
+multi-program projects so hooks fail loudly rather than silently
+picking up the wrong program.
 
 #### One-off override / skip
 
@@ -295,76 +207,7 @@ lgs run --no-post-deploy                                 # skip all hooks
 ```
 
 `--post-deploy` and `--no-post-deploy` conflict with each other and
-both override whatever the resolved profile defines.
-
-#### Deploy idempotence
-
-`run` skips the deploy step when every guest program's `.bin` plus its
-IDL JSON hashes (SHA-256, domain-separated) to the same value as the
-prior deploy. State lives at `.scaffold/state/run_deploy.json`. Adding
-or removing a program in `methods/guest/src/bin/`, or editing the IDL
-output for a program, invalidates the cache and forces a deploy.
-A `--reset` clears the state file as a side effect of the wipe. To
-force a fresh deploy without resetting the chain, delete the state
-file manually:
-
-```bash
-rm .scaffold/state/run_deploy.json
-lgs run
-```
-
-#### Watch mode
-
-For tight inner-loop work, `--watch` re-runs build → IDL → deploy → hooks
-on every file change under the project root (ignoring `.scaffold/`,
-`target/`, `.git/`, and the framework's IDL output directory). The
-initial run is the full pipeline; subsequent re-runs reuse the running
-localnet (reset is suppressed on re-runs). Hook failures don't end the
-loop — the watcher waits for the next change.
-
-```bash
-lgs run --watch                  # full pipeline, then iterate
-lgs run --profile dev --watch    # iterate against the dev profile
-```
-
-#### Reset
-
-`--reset` (or `[run].reset = true` / `[run.profiles.<name>].reset = true`)
-wipes rocksdb and the project wallet, restarts the sequencer, **re-seeds
-the default wallet from the preconfigured public account**, and
-continues the pipeline through topup → deploy → hooks. The post-reset
-state is byte-equivalent to a fresh `lgs setup`.
-
-Two equally-legitimate use cases:
-
-- **Fixture-based deterministic test suites** — fixed chain seeds produce
-  fixed PDA keys, so consecutive runs collide on duplicate writes without
-  reset. `reset = true` in such a profile is the *normal per-run
-  behavior*, not an escape hatch.
-- **Manual recovery** — "give me a fresh project state, regardless of
-  what happened in the previous run."
-
-```bash
-lgs run --reset
-```
-
-```toml
-[run.profiles.e2e]
-reset = true
-post_deploy = "scripts/e2e-run.sh"
-```
-
-The CLI flag overrides the config (`--no-reset` opts out of a
-config-true default).
-
-`lgs run --reset` is asymmetric with `lgs localnet reset` by design:
-
-| Surface | Wallet treatment |
-|---|---|
-| `lgs run --reset` | Always wipes + re-seeds default wallet (lifecycle reset for the deploy cycle) |
-| `lgs localnet reset` | Preserves wallet by default; `--reset-wallet` opts in to delete (surgical primitive for multi-account projects) |
-
-`setup` automatically seeds `.scaffold/state/wallet.state` with the first preconfigured public account when no default is present.
+both override whatever `[run].post_deploy` defines.
 
 Checkpoint commands:
 

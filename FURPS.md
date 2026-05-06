@@ -70,41 +70,34 @@
 
 ### Functionality
 
-1. `lgs run` collapses the inner-loop sequence — build → IDL build → ensure-localnet (or restart, or reset) → wallet topup → deploy → optional post-deploy hooks — into one command. Every step's failure aborts the pipeline with a numbered step header (`[3/N] …`) so the failing phase is unambiguous in console output.
+1. `lgs run` collapses the inner-loop sequence — build → IDL build → ensure-localnet → wallet topup → deploy → optional post-deploy hooks — into one command. Every step's failure aborts the pipeline with a numbered step header (`[3/N] …`) so the failing phase is unambiguous in console output.
 2. Source edits drive fresh on-chain program identity automatically: when the guest ELF changes, its risc0 image ID changes, and the new program's storage starts empty. Scaffold relies on this for the default cycle and adds no per-run reset.
-3. Deploy idempotence: scaffold persists a SHA-256 per program (binary + IDL JSON, domain-separated) at `.scaffold/state/run_deploy.json`. When every per-program hash matches the prior deploy, the deploy step is skipped with a one-line notice. `--reset` clears the cache as a side effect of the wipe; deleting the file manually is the supported way to force a fresh deploy without touching chain state.
-4. Post-deploy hooks: `[run].post_deploy` (or `[run.profiles.<name>].post_deploy`) is a list of shell commands executed in order via `sh -c` with `cwd` set to the project root. Hooks see a documented env contract: `SEQUENCER_URL`, `NSSA_WALLET_HOME_DIR`, `SCAFFOLD_PROJECT_ROOT`, `SCAFFOLD_IDL_DIR`, plus per-program `SCAFFOLD_PROGRAMS` / `SCAFFOLD_PROGRAM_ID_<name>` / `SCAFFOLD_GUEST_BIN_<name>` / `SCAFFOLD_DEPLOY_SKIPPED_<name>` and single-program shortcuts `SCAFFOLD_PROGRAM_NAME` / `SCAFFOLD_PROGRAM_ID` / `SCAFFOLD_GUEST_BIN` / `SCAFFOLD_DEPLOY_SKIPPED` (set only when exactly one program is deployed). Hook names with characters outside `[A-Za-z0-9_]` are sanitized for env-var-suffix legality.
-5. Named profiles: `[run.profiles.<name>]` carries per-profile `reset` / `post_deploy`. `[run].default_profile = "<name>"` selects a default. `--profile <name>` overrides; an unknown name errors with the list of known profiles. With no `--profile` and no `default_profile`, scaffold uses the inline `[run]` keys.
-6. CLI overrides: `--reset` / `--no-reset` and `--post-deploy <cmd>` (repeatable) override the resolved profile's values for one invocation. `--no-post-deploy` skips hooks entirely. Conflicting flag pairs (`--reset --no-reset`, `--post-deploy --no-post-deploy`) are rejected at clap parse time.
-7. Reset semantics: `--reset` (or `[run].reset = true` / `[run.profiles.<name>].reset = true`) wipes rocksdb + wallet directory, restarts the sequencer, **re-seeds the default wallet from the preconfigured public account**, and continues the pipeline. Suitable both as a manual recovery and as the per-run default for fixture-based deterministic test suites where PDA-key collisions force a wipe. Asymmetric with `lgs localnet reset` (the surgical primitive that preserves the wallet by default) — different abstraction levels, different defaults.
-8. Watch mode (`--watch`): after the initial pipeline, scaffold watches the project root via `notify` and re-runs build → IDL → deploy → hooks on every file change, debounced ~500ms. Re-runs reuse the running localnet (reset is forced off in the loop) and tolerate hook failures (loop continues, waiting for the next change). The IDL output directory and `.scaffold/`, `target/`, `.git/` are excluded so writes during a re-run don't self-trigger.
+3. Post-deploy hooks: `[run].post_deploy` is a list of shell commands executed in order via `sh -c` with `cwd` set to the project root. Hooks see a documented env contract: `SEQUENCER_URL`, `NSSA_WALLET_HOME_DIR`, `SCAFFOLD_PROJECT_ROOT`, `SCAFFOLD_IDL_DIR`, plus single-program shortcuts `SCAFFOLD_PROGRAM_ID` / `SCAFFOLD_GUEST_BIN` (set only when exactly one program is deployable).
+4. CLI overrides: `--post-deploy <cmd>` (repeatable) replaces `[run].post_deploy` for one invocation. `--no-post-deploy` skips hooks entirely. The two flags conflict and are rejected at clap parse time.
+5. Localnet reuse: if a managed sequencer is already running, the run reuses it. If the configured port is held by an unrelated process, the run aborts with a diagnostic naming the foreign PID.
+6. Topup safety: a wallet-topup confirmation timeout aborts before deploy so the developer is never left wondering whether deploy used a half-funded wallet.
 
 ### Usability
 
 1. The command produces a single human-readable output stream with numbered step headers and one-line summaries per phase. No JSON output flag — `--json` is reserved for `deploy`'s programmatic consumers.
-2. Hook env vars are addressable by program name (`SCAFFOLD_PROGRAM_ID_counter`), not by integer index. Adding a second program doesn't shift the first program's variable name.
-3. Single-program shortcuts (`SCAFFOLD_PROGRAM_ID` etc.) make the common case ergonomic without sacrificing multi-program correctness — shortcuts are unset when exactly one program is *not* deployed.
-4. `--reset` prints a post-wipe confirmation showing the deleted wallet path and the re-seeded default account address, so a dev who customized the wallet learns at the moment of wipe rather than via downstream confusion.
-5. Hook log markers (`===> post_deploy[i/n]:` and `<=== post_deploy[i/n] OK`) frame each hook's stdout for grep-friendly log reading.
+2. The single-program shortcuts (`SCAFFOLD_PROGRAM_ID` / `SCAFFOLD_GUEST_BIN`) cover the most common dogfooding shape (one guest program per project) without leaking ambiguous values into multi-program projects — they're unset when the project has more than one deployable program.
+3. Hook log markers (`===> post_deploy[i/n]:` and `<=== post_deploy[i/n] OK`) frame each hook's stdout for grep-friendly log reading.
 
 ### Reliability
 
-1. After `lgs run --reset`, `.scaffold/state/wallet.state` is byte-equivalent to the file produced by `rm -rf .scaffold && lgs setup`. Locks the re-seed path to the setup-path's seed logic; an integration test enforces this contract.
-2. Conflicting CLI flag pairs (`--reset --no-reset`, `--post-deploy --no-post-deploy`) are rejected at parse time, not silently coerced.
-3. Watch loop never tears down the localnet between iterations; only the initial iteration starts the sequencer.
-4. Hash cache invalidation: adding or removing a program in `methods/guest/src/bin/` always triggers a deploy (the hash map differs from the prior). Editing only the IDL output for a program also invalidates the cache via the IDL fold-in.
+1. The conflicting flag pair (`--post-deploy --no-post-deploy`) is rejected at parse time, not silently coerced.
+2. The pipeline anchors itself at the discovered project root: `lgs run` from a subdirectory builds and deploys from the project root, not from cwd.
 
 ### Performance
 
-1. The initial run is bounded by the underlying tools (cargo build, IDL test harness, sequencer startup, wallet topup, wallet deploy-program). Scaffold adds no waiting steps beyond a 30-second block-production verification when reset runs.
-2. Watch mode re-runs reuse the running localnet, so the per-edit overhead is build + IDL + deploy + hooks; localnet restart is not in the hot path.
+1. The run is bounded by the underlying tools (cargo build, IDL test harness, sequencer startup, wallet topup, wallet deploy-program); scaffold adds no waiting steps beyond what each underlying command already imposes.
+2. Single-program metadata (program ID, guest binary path) is resolved once per invocation and reused across every post-deploy hook, so multiple hooks don't multiply `spel inspect` cost.
 
 ### Supportability
 
-1. `[run]` and `[run.profiles.<name>]` round-trip cleanly through `parse_config` / `serialize_config`. Default values are omitted from the serialized output to keep diffs minimal.
-2. The hook env contract is documented in `README.md` and validated by unit tests in `src/commands/run.rs::tests`.
-3. Conflict-flag rejection messages list the conflicting flags and exit non-zero, matching clap's standard error format.
-4. Dogfooding scenarios D7 and D8 in `DOGFOODING.md` cover the pipeline, profiles, idempotence, watch loop, reset semantics, and the program-info env contract.
+1. `[run]` round-trips cleanly through `parse_config` / `serialize_config`. Default values are omitted from the serialized output to keep diffs minimal.
+2. The hook env contract is documented in `README.md` and validated by unit and integration tests in `src/commands/run.rs::tests` and `tests/cli.rs`.
+3. Flag-conflict rejection messages list the conflicting flags and exit non-zero, matching clap's standard error format.
 
 ### + (Privacy, Anonymity, Censorship-Resistance)
 
@@ -117,10 +110,9 @@
 
 - `cmd_build_shortcut` for the build phase.
 - `build_idl_for_current_project` for IDL generation (no-op for non-lez-framework projects).
-- `cmd_localnet` (start/stop) and `cmd_localnet_reset` for localnet lifecycle.
+- `cmd_localnet` (start) for localnet lifecycle when no managed sequencer is already running.
 - `cmd_wallet_topup_inner` for the topup phase.
 - `cmd_deploy` for deploy submission and `extract_program_id` for image-ID extraction.
-- `notify` crate for the `--watch` filesystem event source.
 
 ## FURPS+ — Basecamp
 

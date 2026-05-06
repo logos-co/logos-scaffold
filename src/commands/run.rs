@@ -12,7 +12,7 @@ use crate::commands::localnet::{build_localnet_status_for_project, cmd_localnet,
 use crate::commands::wallet::{cmd_wallet_topup_inner, TopupOutcome};
 use crate::constants::SPEL_BIN_REL_PATH;
 use crate::model::{LocalnetOwnership, Project};
-use crate::project::{load_project, resolve_repo_path};
+use crate::project::{load_project, resolve_repo_path, run_in_project_dir};
 use crate::DynResult;
 
 /// All knobs that control a `lgs run` invocation. Built by `cli.rs` from
@@ -30,7 +30,11 @@ pub(crate) fn cmd_run(inv: RunInvocation) -> DynResult<()> {
         .post_deploy_override
         .unwrap_or_else(|| project.config.run.post_deploy.clone());
 
-    run_pipeline_once(&project, &hooks)
+    // Anchor the pipeline at the discovered project root. Otherwise commands
+    // that resolve paths relative to cwd (`cmd_build_shortcut`,
+    // `build_idl_for_current_project`, etc.) would build/deploy from whichever
+    // subdirectory the user invoked `lgs run` in.
+    run_in_project_dir(Some(&project.root), || run_pipeline_once(&project, &hooks))
 }
 
 fn run_pipeline_once(project: &Project, hooks: &[String]) -> DynResult<()> {
@@ -65,9 +69,13 @@ fn run_pipeline_once(project: &Project, hooks: &[String]) -> DynResult<()> {
     if has_hooks {
         let n = hooks.len();
         println!("[6/{total_steps}] Running {n} post-deploy hook(s)...");
+        // Resolve the single-program shortcut metadata once: `extract_program_id`
+        // shells out to `spel inspect` with a per-call timeout, so doing it
+        // inside the loop would multiply latency by the hook count.
+        let single_program = resolve_single_program_metadata(project);
         for (i, hook) in hooks.iter().enumerate() {
             println!("===> post_deploy[{}/{n}]: {hook}", i + 1);
-            run_post_deploy_hook(project, hook)?;
+            run_post_deploy_hook(project, hook, single_program.as_ref())?;
             println!("<=== post_deploy[{}/{n}] OK", i + 1);
         }
     } else {
@@ -75,6 +83,23 @@ fn run_pipeline_once(project: &Project, hooks: &[String]) -> DynResult<()> {
     }
 
     Ok(())
+}
+
+/// Single-program shortcut metadata exposed to post-deploy hooks via env vars.
+/// Resolved once per `run` invocation and reused across hooks.
+struct SingleProgram {
+    binary_path: PathBuf,
+    program_id: Option<String>,
+}
+
+fn resolve_single_program_metadata(project: &Project) -> Option<SingleProgram> {
+    let binary_path = single_program_binary(project)?;
+    let program_id =
+        resolve_spel_bin(project).and_then(|spel_bin| extract_program_id(&spel_bin, &binary_path));
+    Some(SingleProgram {
+        binary_path,
+        program_id,
+    })
 }
 
 fn ensure_localnet(project: &Project) -> DynResult<()> {
@@ -133,7 +158,11 @@ fn print_deploy_summary(project: &Project) -> DynResult<()> {
     Ok(())
 }
 
-fn build_hook_command(project: &Project, hook_command: &str) -> Command {
+fn build_hook_command(
+    project: &Project,
+    hook_command: &str,
+    single_program: Option<&SingleProgram>,
+) -> Command {
     let port = project.config.localnet.port;
     let sequencer_url = format!("http://127.0.0.1:{port}");
     let wallet_home = project
@@ -163,15 +192,12 @@ fn build_hook_command(project: &Project, hook_command: &str) -> Command {
     // Single-program shortcut: when there's exactly one deployable program,
     // expose its program-id and guest-binary path as env vars so simple
     // hooks can call `spel` or the dogfood client without parsing the
-    // deploy summary. Multi-program env fan-out arrives in a later branch
-    // of this stack.
-    if let Some(binary_path) = single_program_binary(project) {
-        if let Some(spel_bin) = resolve_spel_bin(project) {
-            if let Some(id) = extract_program_id(&spel_bin, &binary_path) {
-                cmd.env("SCAFFOLD_PROGRAM_ID", id);
-            }
+    // deploy summary.
+    if let Some(sp) = single_program {
+        if let Some(id) = &sp.program_id {
+            cmd.env("SCAFFOLD_PROGRAM_ID", id);
         }
-        cmd.env("SCAFFOLD_GUEST_BIN", &binary_path);
+        cmd.env("SCAFFOLD_GUEST_BIN", &sp.binary_path);
     }
     cmd
 }
@@ -195,8 +221,12 @@ fn resolve_spel_bin(project: &Project) -> Option<PathBuf> {
     Some(spel.join(SPEL_BIN_REL_PATH))
 }
 
-fn run_post_deploy_hook(project: &Project, hook_command: &str) -> DynResult<()> {
-    let status = build_hook_command(project, hook_command)
+fn run_post_deploy_hook(
+    project: &Project,
+    hook_command: &str,
+    single_program: Option<&SingleProgram>,
+) -> DynResult<()> {
+    let status = build_hook_command(project, hook_command, single_program)
         .status()
         .context("failed to execute post-deploy hook")?;
 
@@ -263,7 +293,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("echo \"$SEQUENCER_URL\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, None).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         assert_eq!(content.trim(), "http://127.0.0.1:3040");
@@ -276,7 +306,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("echo \"$NSSA_WALLET_HOME_DIR\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, None).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         assert!(
@@ -292,7 +322,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("echo \"$SCAFFOLD_PROJECT_ROOT\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, None).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         let canonical = temp
@@ -309,7 +339,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("echo \"$SCAFFOLD_IDL_DIR\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, None).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         assert!(
@@ -326,7 +356,7 @@ mod tests {
         project.config.localnet.port = 9999;
 
         let hook = format!("echo \"$SEQUENCER_URL\" > '{}'", env_file.display());
-        run_post_deploy_hook(&project, &hook).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, None).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&env_file).expect("read env output");
         assert_eq!(content.trim(), "http://127.0.0.1:9999");
@@ -337,7 +367,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let project = make_test_project(temp.path().to_path_buf());
 
-        let result = run_post_deploy_hook(&project, "exit 42");
+        let result = run_post_deploy_hook(&project, "exit 42", None);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -353,7 +383,7 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         let hook = format!("pwd > '{}'", pwd_file.display());
-        run_post_deploy_hook(&project, &hook).expect("hook should succeed");
+        run_post_deploy_hook(&project, &hook, None).expect("hook should succeed");
 
         let content = std::fs::read_to_string(&pwd_file).expect("read pwd output");
         let canonical = temp
@@ -401,5 +431,118 @@ mod tests {
         let project = make_test_project(temp.path().to_path_buf());
 
         print_deploy_summary(&project).expect("should succeed with missing dir");
+    }
+
+    #[test]
+    fn hook_receives_full_env_contract_in_one_invocation() {
+        // Integration-style assertion: every documented always-on env var
+        // reaches the hook in a single shell invocation, in the same form
+        // `cmd_run` would produce.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_file = temp.path().join("env_out.txt");
+        let project = make_test_project(temp.path().to_path_buf());
+
+        let hook = format!(
+            "{{ \
+                echo \"SEQUENCER_URL=$SEQUENCER_URL\"; \
+                echo \"NSSA_WALLET_HOME_DIR=$NSSA_WALLET_HOME_DIR\"; \
+                echo \"SCAFFOLD_PROJECT_ROOT=$SCAFFOLD_PROJECT_ROOT\"; \
+                echo \"SCAFFOLD_IDL_DIR=$SCAFFOLD_IDL_DIR\"; \
+            }} > '{}'",
+            env_file.display()
+        );
+        run_post_deploy_hook(&project, &hook, None).expect("hook should succeed");
+
+        let content = std::fs::read_to_string(&env_file).expect("read env output");
+        let canonical = temp
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| temp.path().to_path_buf());
+        let lines: Vec<&str> = content.lines().collect();
+
+        assert_eq!(lines[0], "SEQUENCER_URL=http://127.0.0.1:3040");
+        assert!(
+            lines[1].starts_with("NSSA_WALLET_HOME_DIR=") && lines[1].ends_with(".scaffold/wallet"),
+            "wallet home line was: {}",
+            lines[1]
+        );
+        assert_eq!(
+            lines[2],
+            format!("SCAFFOLD_PROJECT_ROOT={}", canonical.display())
+        );
+        assert!(
+            lines[3].starts_with("SCAFFOLD_IDL_DIR=") && lines[3].ends_with("/idl"),
+            "idl dir line was: {}",
+            lines[3]
+        );
+    }
+
+    #[test]
+    fn hook_receives_single_program_env_when_provided() {
+        // When `SingleProgram` is passed, `SCAFFOLD_PROGRAM_ID` and
+        // `SCAFFOLD_GUEST_BIN` reach the hook environment.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_file = temp.path().join("env_out.txt");
+        let project = make_test_project(temp.path().to_path_buf());
+
+        let single = SingleProgram {
+            binary_path: temp.path().join("counter.bin"),
+            program_id: Some("deadbeef".to_string()),
+        };
+
+        let hook = format!(
+            "echo \"$SCAFFOLD_PROGRAM_ID|$SCAFFOLD_GUEST_BIN\" > '{}'",
+            env_file.display()
+        );
+        run_post_deploy_hook(&project, &hook, Some(&single)).expect("hook should succeed");
+
+        let content = std::fs::read_to_string(&env_file).expect("read env output");
+        let expected_bin = temp.path().join("counter.bin");
+        assert_eq!(
+            content.trim(),
+            format!("deadbeef|{}", expected_bin.display())
+        );
+    }
+
+    #[test]
+    fn hook_omits_program_id_env_when_extraction_failed() {
+        // When `extract_program_id` returns None, the env var must be unset
+        // rather than set to an empty string — a hook that tests `[ -z
+        // "$SCAFFOLD_PROGRAM_ID" ]` should see it as unset.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_file = temp.path().join("env_out.txt");
+        let project = make_test_project(temp.path().to_path_buf());
+
+        let single = SingleProgram {
+            binary_path: temp.path().join("counter.bin"),
+            program_id: None,
+        };
+
+        let hook = format!(
+            "if [ -z \"${{SCAFFOLD_PROGRAM_ID+set}}\" ]; then echo unset; else echo set; fi > '{}'",
+            env_file.display()
+        );
+        run_post_deploy_hook(&project, &hook, Some(&single)).expect("hook should succeed");
+
+        let content = std::fs::read_to_string(&env_file).expect("read env output");
+        assert_eq!(content.trim(), "unset");
+    }
+
+    #[test]
+    fn hook_omits_single_program_env_when_metadata_absent() {
+        // Multi-program (or no-program) projects pass `None`, and the
+        // single-program shortcut env vars must not be set.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env_file = temp.path().join("env_out.txt");
+        let project = make_test_project(temp.path().to_path_buf());
+
+        let hook = format!(
+            "echo \"id=${{SCAFFOLD_PROGRAM_ID+set}}|bin=${{SCAFFOLD_GUEST_BIN+set}}\" > '{}'",
+            env_file.display()
+        );
+        run_post_deploy_hook(&project, &hook, None).expect("hook should succeed");
+
+        let content = std::fs::read_to_string(&env_file).expect("read env output");
+        assert_eq!(content.trim(), "id=|bin=");
     }
 }

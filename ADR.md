@@ -329,11 +329,10 @@ The dev's "change → build → deploy → interact" cycle was multiple commands
 (`build`, `localnet start`, `wallet topup`, `deploy`, then ad-hoc post-deploy
 calls). Scaffold could have stayed at primitives and let projects script the
 sequence themselves; instead, `lgs run` collapses the sequence into one
-command with numbered step headers, optional post-deploy hooks, named
-profiles, and a watch loop.
+command with numbered step headers and optional post-deploy hooks.
 
 Tradeoff: scaffold takes on responsibility for the pipeline shape. Adding or
-reordering steps becomes a coordinated change across cmd_run, cli args,
+reordering steps becomes a coordinated change across `cmd_run`, cli args,
 serializer, and the dogfooding doc. Upside: every project gets the same
 discoverable inner-loop story without per-project shell-script drift, and
 the env contract that hooks see is uniform across projects.
@@ -346,25 +345,15 @@ new step is needed, it joins the chain rather than offering a knob.
 ## Hook Env Contract is a Documented Public Surface
 
 Post-deploy hooks run via `sh -c` with `cwd` at the project root. The env
-they see is stable, documented in README, and validated by unit tests:
+they see is stable, documented in README, and validated by unit and
+integration tests:
 
 - `SEQUENCER_URL` / `NSSA_WALLET_HOME_DIR` / `SCAFFOLD_PROJECT_ROOT` /
   `SCAFFOLD_IDL_DIR` — pipeline state.
-- `SCAFFOLD_PROGRAMS` (space-separated names) plus per-program
-  `SCAFFOLD_PROGRAM_ID_<name>` / `SCAFFOLD_GUEST_BIN_<name>` /
-  `SCAFFOLD_DEPLOY_SKIPPED_<name>` — deployed-program metadata, indexed by
-  program name (the same identifier the dev sees in
-  `methods/guest/src/bin/`, in `deploy` output, in `spel` arg flags).
-  Sanitized for env-var-suffix legality.
-- `SCAFFOLD_PROGRAM_NAME` / `SCAFFOLD_PROGRAM_ID` / `SCAFFOLD_GUEST_BIN` /
-  `SCAFFOLD_DEPLOY_SKIPPED` — single-program shortcuts. Set only when
-  exactly one program is deployed; absent for multi-program projects so
-  hooks can't accidentally pick up a stale shortcut from a prior config.
-
-Indexed-by-name was preferred over indexed-by-integer because adding a
-second program shouldn't shift the first program's variable. Bash
-indirection (`${!var}`) makes per-name access ergonomic without jq for
-multi-program hooks.
+- `SCAFFOLD_PROGRAM_ID` / `SCAFFOLD_GUEST_BIN` — single-program shortcuts.
+  Set only when exactly one program is deployable; absent for
+  multi-program projects so hooks fail loudly rather than silently
+  picking up the wrong program.
 
 `NSSA_WALLET_HOME_DIR` keeps its upstream-wallet name rather than being
 renamed to a `SCAFFOLD_*` prefix: hooks that exec the wallet binary
@@ -372,151 +361,9 @@ renamed to a `SCAFFOLD_*` prefix: hooks that exec the wallet binary
 binary's `WalletCore::from_env()` reads. Renaming for hook ergonomics
 would silently break those hooks.
 
-## Hash-Based Deploy Idempotence
-
-For tight inner loops, re-deploying an unchanged binary is wasted work
-(seconds per program). Scaffold persists per-program SHA-256 hashes at
-`.scaffold/state/run_deploy.json`; the deploy step is skipped when every
-hash matches the prior run. To force a fresh deploy, use `--reset`
-(which clears the cache as a side effect of the wipe) or delete the
-state file manually. No dedicated bypass flag — the workflows that
-really need a fresh deploy almost always also need a fresh chain, which
-is what `--reset` provides; the standalone "deploy again without
-touching the chain" case is rare enough to keep the surface narrow.
-
-The hash domain includes both the guest `.bin` and the per-program IDL
-JSON (with a `\x00idl\x00` domain separator), so an ABI-only edit
-invalidates the cache even when the compiled binary is byte-identical.
-This catches the case where `lez-framework`'s IDL output changes without
-the underlying ELF changing.
-
-The state file is wiped on `--reset` because reset implies "fresh chain,"
-and the prior deploy's on-chain state is gone — a fresh deploy is
-required regardless of hash equality.
-
-Tradeoff: the cache adds a small read-and-compute step before deploy
-(walking the binary directory, hashing each `.bin` and IDL, comparing).
-The cost is bounded by binary count × file size; in practice negligible
-compared to the savings of skipping a real deploy. The state file format
-is unversioned today; a future schema change must coordinate a wipe path
-or version field.
-
-## Named Profiles and CLI Override Resolution
-
-A single `[run]` block worked for one workflow per project, but real
-projects have multiple post-deploy intents (`play`, `e2e`, `smoke`,
-`fuzz`). Hardcoding "one hook fits all" forced shell scripts that branch
-on env vars, which obscured intent.
-
-`[run.profiles.<name>]` is the schema for multi-workflow projects.
-`[run].default_profile` selects which profile runs when `--profile`
-is absent. Inline `[run]` keys (the legacy/unnamed slot) are still
-honored when neither `--profile` nor `default_profile` resolves —
-backward compatibility for single-workflow projects that pre-date the
-profiles feature.
-
-CLI overrides for one invocation: `--profile <name>` selects a profile;
-`--post-deploy <cmd>` (repeatable) replaces the resolved profile's hooks;
-`--no-post-deploy` skips hooks entirely. These conflict with each other
-at clap parse time so an inconsistent invocation is rejected, not
-silently coerced.
-
-`resolve_profile` enumerates three precedence cases (explicit selector →
-`default_profile` → inline) and produces actionable errors listing known
-profiles when a name is missing. The model deduplicates by storing the
-inline keys in a `RunProfile` field (`RunConfig.inline`) shared with the
-named profiles map — one source of truth for "what's in a profile."
-
-## `lgs run --reset` is a Lifecycle Reset, Not the Localnet Primitive
-
-`lgs run --reset` (renamed from `--reset-localnet`) wipes rocksdb + wallet,
-restarts the sequencer, **re-seeds the default wallet from the
-preconfigured public account**, and continues the deploy cycle. It
-re-establishes the documented "fresh project" state that a clean
-`lgs setup` produces.
-
-`lgs localnet reset` is the **lower-level primitive**. Wipes rocksdb only
-by default; preserves the wallet. Useful when a dev wants chain-fresh but
-keeps hand-seeded extra accounts (Alice/Bob/Charlie) and re-runs their
-own project setup script afterward.
-
-The asymmetry is intentional: `lgs run` owns the full lifecycle and
-assumes "fresh project," `lgs localnet reset` is surgical and assumes
-"the dev knows what they're doing." Renaming the run-level flag from
-`--reset-localnet` to `--reset` removes the false parallel — the original
-name read as "do what `lgs localnet reset` does" but actually did more
-(wallet wipe + re-seed) and differently (no opt-out).
-
-The flag is suitable for two equally-legitimate use cases, treated
-identically by the code: (1) **fixture-based deterministic test suites**
-where fixed seeds collide on PDA keys across consecutive runs, so
-per-run reset is the *normal* behavior; and (2) **manual recovery** —
-"it's all fucked up." Same code path, different motivation.
-
-No top-level `lgs reset` command is added today. The two existing
-surfaces cover the known use cases. If a "wipe without deploy" need
-surfaces, that's a separate command rather than another flag.
-
-A `--preserve-wallet` flag on `lgs run --reset` is explicitly **not**
-added until evidence shows a project that wants it. Multi-account
-projects use the `lgs localnet reset` primitive instead.
-
-## `lgs run` Surface: Two Localnet Modes, No Bypass Flags
-
-After dogfooding, the `lgs run` knobs collapsed to two clean localnet
-intents — "use what's running" (default) and "fresh project" (`--reset`)
-— with everything in between deliberately removed.
-
-Removed surface:
-
-- **`--restart-localnet` / `--no-restart-localnet`** and the
-  corresponding `[run].restart_localnet` TOML key. The flag occupied a
-  thin middle ground: "stop+start the sequencer process, preserve
-  rocksdb and wallet." That intent is mostly vestigial because source
-  edits drive fresh program identity for free via image-ID rotation,
-  and the rare "the sequencer process is wedged but I want my chain
-  state" case is already covered by the lower-level
-  `lgs localnet stop && lgs localnet start` primitive. Keeping the flag
-  inside `lgs run` blurred the abstraction line we drew between
-  full-lifecycle commands and surgical primitives.
-- **`--force-deploy`**. The flag bypassed the hash-cache idempotence
-  check. Two narrow use cases motivated it (debugging the deploy step,
-  CI safety net), but both have cleaner workarounds: `--reset` (clears
-  the cache as a side effect of the wipe) or `rm
-  .scaffold/state/run_deploy.json`. Re-deploying a content-addressed
-  binary produces no new on-chain effect, so the flag's only output was
-  "did the submission run again," which is rarely what someone actually
-  needs.
-
-Both flags can be added back if dogfooding surfaces a real workflow
-that needs them — but the bar is "name the workflow," not "it might be
-useful." KISS says don't ship surface for hypothetical demand.
-
-The clean two-mode story now reads: **default is "use what's running,
-start if needed"; `--reset` is "fresh project, suitable for fixture-CI
-and manual recovery alike."**
-
-## Watch Mode Is Tail-Iteration, Not a Daemon
-
-`lgs run --watch` is for tight inner-loop iteration: after the initial
-pipeline, scaffold watches the project root via `notify` and re-runs
-build → IDL → deploy → hooks on every file change, debounced ~500ms.
-
-Reset is forced off on re-runs — re-establishing localnet state mid-loop
-would clobber whatever the hooks just observed. Hook failures don't end
-the loop (the dev fixes the source and the next file event re-triggers);
-a permanent error is the dev's signal to Ctrl-C and investigate.
-
-The IDL output directory is added to the ignore list alongside
-`.scaffold/`, `target/`, and `.git/`, because the IDL build itself
-writes JSON files into `framework.idl.path` on every iteration — without
-ignoring it, the watcher would self-trigger and loop forever.
-
-Watch mode is intentionally a CLI flag rather than a top-level
-`lgs watch` command: it's not a daemon, it's the same pipeline plus
-"re-run on change." Splitting it would force users to choose between
-"lgs run does X" and "lgs watch does X again." Keeping them
-together makes "the run command, but iterating" the explicit framing.
+The single-program metadata is resolved once per `lgs run` invocation
+and reused across every hook so multiple hooks don't multiply the cost
+of `spel inspect`.
 
 ## Build Output Discovery
 
