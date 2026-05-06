@@ -197,17 +197,22 @@ fn cmd_wallet_topup(
             );
         }
         if is_confirmation_timeout_failure(&combined) {
-            println!("wallet topup submitted, but confirmation timed out");
-            println!("  Address: {resolved_to}");
-            println!("  Method: pinata faucet claim");
-            println!("  Network: local sequencer ({sequencer_addr})");
-            println!(
-                "  Hint: verify balance with `logos-scaffold wallet -- account list` or retry `logos-scaffold wallet topup`."
+            // Submission reached the sequencer but confirmation didn't arrive
+            // before the wallet binary's timeout. We genuinely don't know
+            // whether the topup landed, so exit non-zero — agents that depend
+            // on the exit code will retry / surface the uncertainty rather
+            // than silently treat "submitted but unconfirmed" as success.
+            let tx_line = match extract_tx_identifier(&output.stdout, &output.stderr) {
+                Some(tx) => format!("\n  Tx: {tx}"),
+                None => String::new(),
+            };
+            bail!(
+                "wallet topup submitted, but confirmation timed out (status: pending — topup may still land)\n  \
+                 Address: {resolved_to}\n  \
+                 Method: pinata faucet claim\n  \
+                 Network: local sequencer ({sequencer_addr}){tx_line}\n  \
+                 Hint: verify balance with `logos-scaffold wallet -- account list`, or retry with `logos-scaffold wallet topup`."
             );
-            if let Some(tx) = extract_tx_identifier(&output.stdout, &output.stderr) {
-                println!("  Tx: {tx}");
-            }
-            return Ok(());
         }
         bail!(
             "wallet topup failed: {summary}\nHint: run `logos-scaffold wallet list` to inspect addresses, then retry with `--address` or set a default wallet."
