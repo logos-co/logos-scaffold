@@ -472,7 +472,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
     if let Some(action) = wallet_passthrough_action(&args, passthrough_start)? {
         return cmd_wallet(action);
     }
-    if let Some(spel_args) = spel_passthrough_args(&args)? {
+    if let Some(spel_args) = spel_passthrough_args(&args, passthrough_start)? {
         return cmd_spel(spel_args);
     }
 
@@ -645,29 +645,32 @@ fn leading_global_flags_end(args: &[String]) -> usize {
 /// Mirrors `wallet_passthrough_action` so the same `--` convention applies
 /// across passthroughs. When `spel` is invoked without `--`, intercept early
 /// and surface a hint pointing at the right form — clap's "unknown
-/// subcommand" message would otherwise leave the user guessing.
-fn spel_passthrough_args(args: &[String]) -> DynResult<Option<Vec<String>>> {
-    if args.len() < 2 || args[1] != "spel" {
+/// subcommand" message would otherwise leave the user guessing. `start` is
+/// the index after any leading global flags (e.g. `-q`), matching the
+/// signature of `wallet_passthrough_action` so `lgs -q spel -- <args...>`
+/// composes the same way.
+fn spel_passthrough_args(args: &[String], start: usize) -> DynResult<Option<Vec<String>>> {
+    if args.len() <= start || args[start] != "spel" {
         return Ok(None);
     }
-    if args.len() < 3 {
+    if args.len() <= start + 1 {
         return Err(anyhow!(
             "`spel` requires arguments. Use the passthrough form, e.g. `logos-scaffold spel -- inspect <bin>`."
         ));
     }
-    if args[2] != "--" {
+    if args[start + 1] != "--" {
         return Err(anyhow!(
             "`spel {0} ...` is not a scaffold subcommand. Did you mean `logos-scaffold spel -- {0} ...`? \
              The `--` separator forwards every following argument to the project-vendored `spel` binary.",
-            args[2]
+            args[start + 1]
         ));
     }
-    if args.len() == 3 {
+    if args.len() == start + 2 {
         return Err(anyhow!(
             "spel passthrough requires at least one argument after `--`. Example: `logos-scaffold spel -- inspect <bin>`"
         ));
     }
-    Ok(Some(args[3..].to_vec()))
+    Ok(Some(args[start + 2..].to_vec()))
 }
 
 fn wallet_passthrough_action(args: &[String], start: usize) -> DynResult<Option<WalletAction>> {

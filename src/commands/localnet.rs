@@ -495,10 +495,13 @@ fn cmd_localnet_reset_dry_run(
     verify_timeout_sec: u64,
     sequencer_bin: &Path,
 ) -> DynResult<()> {
-    // `lez` and `sequencer_bin` are derived from `scaffold.cache_root`, which
-    // is relative in `scaffold.toml`. State / wallet paths are already joined
-    // onto `project.root`. Absolutize the lez-derived paths too so every line
-    // of the plan is copy-pasteable into a shell from any CWD.
+    // `lez` and `sequencer_bin` come out of the cache-root resolver, which can
+    // return either an absolute path (env override, explicit absolute
+    // `[repos.lez].path`, or scaffold default cache layer) or a path relative
+    // to `project.root` (the portable default for vendored / new projects).
+    // State / wallet paths are already joined onto `project.root`. Pass
+    // every lez-derived path through `abs` so the dry-run output stays
+    // copy-pasteable into a shell regardless of which case applied.
     let abs = |p: &Path| -> PathBuf {
         if p.is_absolute() {
             p.to_path_buf()

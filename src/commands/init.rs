@@ -55,6 +55,12 @@ pub(crate) fn cmd_init_at(
         }
 
         let backup_path = scaffold_path.with_extension("toml.bak");
+        // If a previous migration (or a hand-curated backup) already wrote
+        // scaffold.toml.bak, `fs::copy` would silently overwrite it and the
+        // user would lose the older backup with no warning. Refuse instead
+        // and surface both ways out: rename/delete the existing .bak, or
+        // pass --no-backup to skip the backup entirely.
+        let backup_collision = !no_backup && backup_path.exists();
         if dry_run {
             println!(
                 "dry-run: would migrate scaffold.toml at {} to schema v{} (no changes made)",
@@ -62,10 +68,18 @@ pub(crate) fn cmd_init_at(
                 SCAFFOLD_TOML_SCHEMA_VERSION,
             );
             if !no_backup {
-                println!(
-                    "dry-run: would write backup of current scaffold.toml to {}",
-                    backup_path.display(),
-                );
+                if backup_collision {
+                    println!(
+                        "dry-run: WOULD ABORT — backup target already exists at {}. \
+                         Move/delete it, or re-run with --no-backup to skip the backup.",
+                        backup_path.display(),
+                    );
+                } else {
+                    println!(
+                        "dry-run: would write backup of current scaffold.toml to {}",
+                        backup_path.display(),
+                    );
+                }
             }
             for change in report.changes {
                 println!("  - {change}");
@@ -77,6 +91,15 @@ pub(crate) fn cmd_init_at(
                 "Re-run without --dry-run to apply, or `{bin_name} init --no-backup` to skip the .bak."
             );
             return Ok(());
+        }
+
+        if backup_collision {
+            bail!(
+                "refusing to overwrite existing scaffold.toml.bak at {}.\n\
+                 Move or delete it first, or re-run with --no-backup to migrate without writing a backup.\n\
+                 Preview the migration with `{bin_name} init --dry-run`.",
+                backup_path.display(),
+            );
         }
 
         // Write the backup before mutating, so a crash mid-`write_text` (or a
@@ -573,6 +596,53 @@ home_dir = ".scaffold/wallet"
         assert!(
             !target.join("scaffold.toml.bak").exists(),
             "no-backup flag must skip writing scaffold.toml.bak"
+        );
+    }
+
+    #[test]
+    fn init_migration_refuses_to_overwrite_existing_backup() {
+        // PR #86 review: `fs::copy` to scaffold.toml.bak would silently clobber
+        // an existing backup (e.g. from a prior migration the user kept around,
+        // or a hand-curated snapshot). Refuse instead and surface both ways out.
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        let original = r#"[scaffold]
+version = "0.1.0"
+
+[repos.lez]
+source = "https://example.com/lez.git"
+pin = "abc"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+"#;
+        fs::write(target.join("scaffold.toml"), original).expect("seed");
+        // Pre-existing .bak that must NOT be clobbered.
+        let prior_backup = b"prior backup content the user wants to keep";
+        fs::write(target.join("scaffold.toml.bak"), prior_backup).expect("seed bak");
+
+        let err = cmd_init_at(target, "lgs", false, false).expect_err("should refuse");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("scaffold.toml.bak"), "{msg}");
+        assert!(msg.contains("--no-backup"), "{msg}");
+
+        let after_bak = fs::read(target.join("scaffold.toml.bak")).expect("read bak");
+        assert_eq!(
+            after_bak, prior_backup,
+            "refusal must leave the existing backup untouched"
+        );
+        let after = fs::read_to_string(target.join("scaffold.toml")).expect("read");
+        assert_eq!(
+            after, original,
+            "refusal must leave scaffold.toml unmigrated"
+        );
+
+        // The escape hatch keeps the migration moving without writing a backup.
+        cmd_init_at(target, "lgs", false, true).expect("migrate with --no-backup");
+        let after = fs::read_to_string(target.join("scaffold.toml")).expect("read");
+        assert!(
+            after.contains("0.2.0"),
+            "no-backup form must still migrate; got:\n{after}"
         );
     }
 

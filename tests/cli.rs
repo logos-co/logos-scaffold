@@ -1965,6 +1965,38 @@ fn spel_proxy_forwards_args_to_vendored_binary() {
 }
 
 #[test]
+fn spel_proxy_works_with_leading_quiet_flag() {
+    // Suppressed copilot comment on PR #86: `spel_passthrough_args` was
+    // hard-coded to look at args[1], so `lgs -q spel -- ...` skipped the
+    // passthrough entirely and fell through to clap (which has no `spel`
+    // subcommand). Mirrors `wallet_passthrough_works_with_leading_quiet_flag`
+    // for symmetry with the other passthrough.
+    let temp = tempdir().expect("tempdir");
+    setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("--quiet")
+        .arg("spel")
+        .arg("--")
+        .arg("inspect")
+        .arg("methods/guest/foo.bin")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ImageID (hex bytes):"));
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("-q")
+        .arg("spel")
+        .arg("--")
+        .arg("inspect")
+        .arg("methods/guest/foo.bin")
+        .assert()
+        .success();
+}
+
+#[test]
 fn spel_proxy_forwards_nonzero_exit_code() {
     let temp = tempdir().expect("tempdir");
     setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
@@ -2473,11 +2505,15 @@ fn basecamp_launch_bails_when_no_modules_captured() {
     .expect("write state");
     fs::create_dir_all(project.join(".scaffold/basecamp/profiles/alice")).expect("mkdir profile");
 
+    // `--yes` clears the C2 destructive-default gate so the assertion below
+    // exercises the no-modules-captured bail (which still fires on a clean
+    // launch with an empty module set, regardless of the gate).
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .current_dir(project)
         .arg("basecamp")
         .arg("launch")
         .arg("alice")
+        .arg("--yes")
         .assert()
         .failure()
         .stderr(predicate::str::contains("basecamp modules"))
