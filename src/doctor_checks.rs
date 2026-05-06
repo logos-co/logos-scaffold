@@ -146,6 +146,64 @@ pub(crate) fn check_port_warn(name: &str, addr: &str, remediation: &str) -> Chec
     }
 }
 
+/// Probe for the `logos-blockchain-circuits` artifact required by
+/// downstream `logos-blockchain-pol` build scripts. Without this, `setup`
+/// (which compiles `sequencer_service --features standalone`) panics
+/// inside cargo with a raw build-script trace. Surfaced both as a doctor
+/// row and as a precheck in `setup` so the user sees a single
+/// scaffold-styled error before any compile work runs.
+///
+/// Pass when either:
+/// - `LOGOS_BLOCKCHAIN_CIRCUITS` is set to a path that exists and is a directory, or
+/// - `$HOME/.logos-blockchain-circuits/` exists and is a directory.
+///
+/// An empty / missing-path env var must NOT mask the home-dir probe.
+pub(crate) fn check_logos_blockchain_circuits() -> CheckRow {
+    let env_dir = std::env::var_os("LOGOS_BLOCKCHAIN_CIRCUITS")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty() && p.is_dir());
+
+    if let Some(path) = env_dir {
+        return CheckRow {
+            status: CheckStatus::Pass,
+            name: "logos-blockchain-circuits".to_string(),
+            detail: format!("found via $LOGOS_BLOCKCHAIN_CIRCUITS at {}", path.display()),
+            remediation: None,
+        };
+    }
+
+    let home_dir = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|h| h.join(".logos-blockchain-circuits"));
+
+    if let Some(path) = home_dir.as_ref().filter(|p| p.is_dir()) {
+        return CheckRow {
+            status: CheckStatus::Pass,
+            name: "logos-blockchain-circuits".to_string(),
+            detail: format!("found at {}", path.display()),
+            remediation: None,
+        };
+    }
+
+    let home_hint = home_dir
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "~/.logos-blockchain-circuits".to_string());
+
+    CheckRow {
+        status: CheckStatus::Fail,
+        name: "logos-blockchain-circuits".to_string(),
+        detail: format!(
+            "not found: $LOGOS_BLOCKCHAIN_CIRCUITS unset and {} is missing",
+            home_hint
+        ),
+        remediation: Some(format!(
+            "Obtain the logos-blockchain-circuits release and either set LOGOS_BLOCKCHAIN_CIRCUITS=<path> or place it at {}",
+            home_hint
+        )),
+    }
+}
+
 pub(crate) fn check_standalone_support(lez_path: &Path) -> CheckRow {
     let files = [
         lez_path.join("Cargo.toml"),

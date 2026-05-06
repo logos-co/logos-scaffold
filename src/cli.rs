@@ -61,6 +61,20 @@ enum Commands {
     Deploy(DeployArgs),
     Localnet(LocalnetArgs),
     Wallet(WalletArgs),
+    /// `spel` is dispatched via the early `spel_passthrough_args` intercept
+    /// before clap parses argv (the user types `lgs spel -- <args>`). The
+    /// variant exists so clap lists `spel` in `--help` output and renders
+    /// the `long_about` for `lgs spel --help`. The match arm below is
+    /// unreachable at runtime.
+    #[command(
+        about = "Forward arguments to the project-vendored `spel` binary",
+        long_about = "Forward arguments to the project-vendored `spel` binary.\n\n\
+                      Use the form: `logos-scaffold spel -- <spel-subcommand...>`\n\n\
+                      Examples:\n  \
+                      logos-scaffold spel -- inspect path/to/program.bin\n  \
+                      logos-scaffold spel -- generate-idl"
+    )]
+    Spel(SpelArgs),
     #[command(about = "Manage pre-seeded basecamp profiles for p2p dogfooding")]
     Basecamp(BasecampArgs),
     Doctor(DoctorArgs),
@@ -258,9 +272,22 @@ struct LocalnetResetArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[command(
+    long_about = "Manage the project's vendored wallet.\n\n\
+                  For raw wallet CLI access, use the passthrough form: \
+                  `logos-scaffold wallet -- <wallet-args...>`\n\n\
+                  Example: logos-scaffold wallet -- account list"
+)]
 struct WalletArgs {
     #[command(subcommand)]
     command: WalletSubcommand,
+}
+
+#[derive(Debug, clap::Args)]
+struct SpelArgs {
+    /// Trailing args forwarded to the project-vendored `spel` binary.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -416,7 +443,15 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 print!("{err}");
                 return Ok(());
             }
-            _ => return Err(anyhow!(err.to_string())),
+            _ => {
+                // clap's Display already begins with "error: " for parse
+                // failures; entry_main also prefixes "error: " on the
+                // anyhow it gets back. Strip clap's so the user sees a
+                // single prefix instead of `error: error: ...`.
+                let msg = err.to_string();
+                let trimmed = msg.strip_prefix("error: ").unwrap_or(&msg).to_string();
+                return Err(anyhow!(trimmed));
+            }
         },
     };
 
@@ -456,6 +491,17 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 },
             };
             cmd_localnet(action)
+        }
+        Some(Commands::Spel(_)) => {
+            // The early `spel_passthrough_args` intercept above always
+            // wins for the runtime `spel -- <args>` form. The clap variant
+            // exists only so `--help` lists `spel` and renders its
+            // `long_about`; reaching this arm means clap parsed `spel`
+            // without `--`, which the intercept would already have
+            // rejected with a hint. Kept as `unreachable!` so a future
+            // refactor of the intercept surfaces immediately rather than
+            // silently no-op'ing.
+            unreachable!("spel is intercepted by spel_passthrough_args before clap parses argv")
         }
         Some(Commands::Wallet(args)) => {
             let action = match args.command {
@@ -544,6 +590,13 @@ pub(crate) fn print_help(bin_name: &str) -> DynResult<()> {
 /// subcommand" message would otherwise leave the user guessing.
 fn spel_passthrough_args(args: &[String]) -> DynResult<Option<Vec<String>>> {
     if args.len() < 2 || args[1] != "spel" {
+        return Ok(None);
+    }
+    // Let `lgs spel --help` / `-h` reach clap so the user sees the
+    // variant's `long_about` (which documents the passthrough form).
+    // Without this, the intercept below would trigger the "Did you mean"
+    // error path and shadow clap's help.
+    if args.len() >= 3 && (args[2] == "--help" || args[2] == "-h") {
         return Ok(None);
     }
     if args.len() < 3 {
