@@ -38,6 +38,24 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
 
     let cwd = env::current_dir()?;
     let target = cwd.join(&cmd.name);
+
+    if target.exists() {
+        bail!("target exists: {}", target.display());
+    }
+
+    // Run the rest in an inner function so we can clean up `target` on
+    // failure. Without this, a sync/template error (e.g. a typo on
+    // `--lez-path`) leaves a half-built project directory behind. The
+    // `target.exists()` guard above guarantees we only delete a directory
+    // we created ourselves in this run.
+    let result = cmd_new_inner(&cmd, &target, &template_variant);
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&target);
+    }
+    result
+}
+
+fn cmd_new_inner(cmd: &NewCommand, target: &Path, template_variant: &str) -> DynResult<()> {
     let crate_name = {
         let fallback = "app";
         let file_name = target
@@ -46,10 +64,6 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
             .unwrap_or(fallback);
         to_cargo_crate_name(file_name)
     };
-
-    if target.exists() {
-        bail!("target exists: {}", target.display());
-    }
 
     fs::create_dir_all(target.join(".scaffold/state"))?;
     fs::create_dir_all(target.join(".scaffold/logs"))?;
@@ -62,8 +76,23 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
 
     let lez_source = cmd
         .lez_path
+        .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| LEZ_SOURCE.to_string());
+
+    // First-run noise reduction: scaffold normally echoes every git
+    // subprocess (`$ git clone ...`, `$ git fetch --all --tags`,
+    // `$ git checkout <pin>`). For a fresh `lgs new` that's three
+    // shell-prefixed lines before any human-friendly status. Suppress
+    // the echo for the LEZ sync only — `setup`, `localnet`, etc. keep
+    // their existing echo behavior. `git clone --no-hardlinks` still
+    // prints its own progress to stderr, which is reassuring during a
+    // slow first clone.
+    println!(
+        "Cloning lez at pin {} from {} (this may take a minute the first time)...",
+        DEFAULT_LEZ.sha, lez_source
+    );
+    let _echo_guard = crate::process::EchoGuard::suppress();
 
     let lez_repo_path = if cmd.vendor_deps {
         let root = target.join(".scaffold/repos");
@@ -122,7 +151,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         lgpm_repo: Some(default_lgpm_repo(DEFAULT_LGPM_PIN)),
         wallet_home_dir: ".scaffold/wallet".to_string(),
         framework: FrameworkConfig {
-            kind: template_variant.clone(),
+            kind: template_variant.to_string(),
             version: DEFAULT_FRAMEWORK_VERSION.to_string(),
             idl: FrameworkIdlConfig {
                 spec: DEFAULT_FRAMEWORK_IDL_SPEC.to_string(),
@@ -139,18 +168,18 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
         bail!("template not found at {}", template_root.display());
     }
 
-    copy_dir_contents(&template_root, &target).context("failed to copy scaffold template")?;
+    copy_dir_contents(&template_root, target).context("failed to copy scaffold template")?;
     if template_variant == FRAMEWORK_KIND_DEFAULT {
-        patch_simple_tail_call_program_id(&target)?;
+        patch_simple_tail_call_program_id(target)?;
     }
     let overlay_ctx = OverlayRenderContext {
         crate_name: &crate_name,
         lez_pin: &cfg.lez.pin,
         spel_tag: DEFAULT_SPEL.tag,
     };
-    apply_overlay(&target, &template_variant, &overlay_ctx)?;
+    apply_overlay(target, template_variant, &overlay_ctx)?;
     if template_variant == FRAMEWORK_KIND_LEZ_FRAMEWORK {
-        cleanup_lez_hello_artifacts(&target)?;
+        cleanup_lez_hello_artifacts(target)?;
     }
     write_text(&target.join("scaffold.toml"), &serialize_config(&cfg)?)?;
 
