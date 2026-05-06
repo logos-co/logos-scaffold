@@ -17,9 +17,12 @@ use super::wallet_support::{
 };
 
 pub(crate) fn cmd_setup() -> DynResult<()> {
-    ensure_logos_blockchain_circuits_present()?;
-
+    // Load project first so an outdated scaffold.toml gets the canonical
+    // "run `lgs init`" hint before we surface unrelated environment
+    // gripes (circuits artifact, etc.). Tests assert the migration hint
+    // wins on pre-v0.2.0 configs.
     let project = load_project()?;
+    ensure_logos_blockchain_circuits_present()?;
     let lez = resolve_repo_path(&project, &project.config.lez, "lez")?;
     let spel = resolve_repo_path(&project, &project.config.spel, "spel")?;
 
