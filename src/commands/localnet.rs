@@ -193,7 +193,7 @@ fn cmd_localnet_start(
     }
 
     patch_sequencer_port(lez, localnet_port)?;
-    strip_external_deps_from_sequencer_config(lez)?;
+    patch_sequencer_config_for_standalone(lez)?;
 
     // Use a path relative to lez (the child's cwd), not relative to the
     // parent's cwd.  `current_dir(lez)` applies before exec, so a parent-
@@ -442,11 +442,13 @@ fn build_status_report(
 /// configured port.  The pinned LEZ version does not accept `--port` as a CLI
 /// flag — it reads the port from this file.
 
-/// Remove external service dependencies from `sequencer_config.json` so the
-/// sequencer runs in standalone mode without requiring a bedrock node or indexer.
-/// In scaffold localnet mode, neither service is available and the sequencer
-/// panics at startup if these fields are present and point to unreachable services.
-fn strip_external_deps_from_sequencer_config(lez: &Path) -> DynResult<()> {
+/// Patch `sequencer_config.json` for standalone (scaffold localnet) mode.
+///
+/// The default config references an indexer and bedrock node that are not
+/// available in scaffold localnet. The `standalone` feature uses mock clients
+/// but the config parser still requires these fields to be present and valid.
+/// We patch them to point at localhost addresses that won't be dialed at runtime.
+fn patch_sequencer_config_for_standalone(lez: &Path) -> DynResult<()> {
     let config_path = lez.join(SEQUENCER_CONFIG_REL_PATH);
     let text = fs::read_to_string(&config_path)
         .with_context(|| format!("failed to read {}", config_path.display()))?;
@@ -454,8 +456,20 @@ fn strip_external_deps_from_sequencer_config(lez: &Path) -> DynResult<()> {
         serde_json::from_str(&text).context("failed to parse sequencer_config.json")?;
 
     if let Some(obj) = doc.as_object_mut() {
-        obj.remove("bedrock_config");
-        obj.remove("indexer_rpc_url");
+        // Keep required fields present but point them at localhost so config parsing succeeds.
+        // The standalone build uses mock clients and never actually connects to these.
+        if !obj.contains_key("indexer_rpc_url") {
+            obj.insert(
+                "indexer_rpc_url".to_string(),
+                serde_json::json!("ws://127.0.0.1:8779"),
+            );
+        }
+        if !obj.contains_key("bedrock_config") {
+            obj.insert("bedrock_config".to_string(), serde_json::json!({
+                "channel_id": "0101010101010101010101010101010101010101010101010101010101010101",
+                "node_url": "http://127.0.0.1:8080"
+            }));
+        }
     } else {
         bail!(
             "sequencer_config.json is not a JSON object: {}",
