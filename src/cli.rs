@@ -272,12 +272,10 @@ struct LocalnetResetArgs {
 }
 
 #[derive(Debug, clap::Args)]
-#[command(
-    long_about = "Manage the project's vendored wallet.\n\n\
+#[command(long_about = "Manage the project's vendored wallet.\n\n\
                   For raw wallet CLI access, use the passthrough form: \
                   `logos-scaffold wallet -- <wallet-args...>`\n\n\
-                  Example: logos-scaffold wallet -- account list"
-)]
+                  Example: logos-scaffold wallet -- account list")]
 struct WalletArgs {
     #[command(subcommand)]
     command: WalletSubcommand,

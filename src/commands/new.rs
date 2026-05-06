@@ -55,11 +55,7 @@ pub(crate) fn cmd_new(cmd: NewCommand) -> DynResult<()> {
     result
 }
 
-fn cmd_new_inner(
-    cmd: &NewCommand,
-    target: &Path,
-    template_variant: &str,
-) -> DynResult<()> {
+fn cmd_new_inner(cmd: &NewCommand, target: &Path, template_variant: &str) -> DynResult<()> {
     let crate_name = {
         let fallback = "app";
         let file_name = target
