@@ -219,7 +219,11 @@ mod tests {
 
         for name in shipped_skill_names() {
             let claude = target.join(format!(".claude/skills/{name}/SKILL.md"));
-            assert!(claude.exists(), "missing claude skill: {}", claude.display());
+            assert!(
+                claude.exists(),
+                "missing claude skill: {}",
+                claude.display()
+            );
 
             let cursor = target.join(format!(".cursor/rules/{name}.mdc"));
             assert!(cursor.exists(), "missing cursor rule: {}", cursor.display());
@@ -259,8 +263,8 @@ mod tests {
         let target = mk_temp_dir("mdc-frontmatter");
         apply_skills(&target).expect("apply_skills");
 
-        let mdc = fs::read_to_string(target.join(".cursor/rules/lgs-cli.mdc"))
-            .expect("read lgs-cli.mdc");
+        let mdc =
+            fs::read_to_string(target.join(".cursor/rules/lgs-cli.mdc")).expect("read lgs-cli.mdc");
         // First line opens frontmatter; we expect description + alwaysApply
         // before the closing delimiter, with no `name:` field.
         let (frontmatter, _body) = mdc
