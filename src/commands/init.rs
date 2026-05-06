@@ -19,12 +19,17 @@ use crate::state::write_text;
 use crate::template::project::ensure_scaffold_in_gitignore;
 use crate::DynResult;
 
-pub(crate) fn cmd_init(bin_name: &str) -> DynResult<()> {
+pub(crate) fn cmd_init(bin_name: &str, dry_run: bool, no_backup: bool) -> DynResult<()> {
     let cwd = env::current_dir()?;
-    cmd_init_at(&cwd, bin_name)
+    cmd_init_at(&cwd, bin_name, dry_run, no_backup)
 }
 
-pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
+pub(crate) fn cmd_init_at(
+    target: &Path,
+    bin_name: &str,
+    dry_run: bool,
+    no_backup: bool,
+) -> DynResult<()> {
     let scaffold_path = target.join("scaffold.toml");
     if scaffold_path.exists() {
         let existing = fs::read_to_string(&scaffold_path).with_context(|| {
@@ -48,12 +53,52 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
                 SCAFFOLD_TOML_SCHEMA_VERSION,
             );
         }
+
+        let backup_path = scaffold_path.with_extension("toml.bak");
+        if dry_run {
+            println!(
+                "dry-run: would migrate scaffold.toml at {} to schema v{} (no changes made)",
+                target.display(),
+                SCAFFOLD_TOML_SCHEMA_VERSION,
+            );
+            if !no_backup {
+                println!(
+                    "dry-run: would write backup of current scaffold.toml to {}",
+                    backup_path.display(),
+                );
+            }
+            for change in report.changes {
+                println!("  - {change}");
+            }
+            if let Some(hint) = report.hand_edit_hint {
+                println!("  ! {hint}");
+            }
+            println!(
+                "Re-run without --dry-run to apply, or `{bin_name} init --no-backup` to skip the .bak."
+            );
+            return Ok(());
+        }
+
+        // Write the backup before mutating, so a crash mid-`write_text` (or a
+        // hostile concurrent writer) can't leave both the original and the
+        // partial migration unrecoverable.
+        if !no_backup {
+            fs::copy(&scaffold_path, &backup_path).with_context(|| {
+                format!(
+                    "writing backup of scaffold.toml to {} before migrating",
+                    backup_path.display()
+                )
+            })?;
+        }
         write_text(&scaffold_path, &doc.to_string())?;
         println!(
             "scaffold.toml in {} migrated to schema v{}.",
             target.display(),
             SCAFFOLD_TOML_SCHEMA_VERSION,
         );
+        if !no_backup {
+            println!("  backup: {}", backup_path.display());
+        }
         for change in report.changes {
             println!("  - {change}");
         }
@@ -66,6 +111,23 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
 
     // Fresh init — schema 0.2.0 by construction.
     let cfg = fresh_default_config();
+    if dry_run {
+        println!(
+            "dry-run: would create scaffold.toml at {} (schema v{})",
+            scaffold_path.display(),
+            SCAFFOLD_TOML_SCHEMA_VERSION,
+        );
+        println!(
+            "dry-run: would create {}/.scaffold/state and {}/.scaffold/logs",
+            target.display(),
+            target.display(),
+        );
+        println!(
+            "dry-run: would append `.scaffold` to {}",
+            target.join(".gitignore").display(),
+        );
+        return Ok(());
+    }
     write_text(&scaffold_path, &serialize_config(&cfg)?)?;
     fs::create_dir_all(target.join(".scaffold/state"))
         .with_context(|| format!("creating {}/.scaffold/state", target.display()))?;
@@ -119,7 +181,7 @@ mod tests {
     fn init_writes_parseable_v0_2_0_scaffold_toml() {
         let temp = tempdir().expect("tempdir");
         let target = temp.path();
-        cmd_init_at(target, "lgs").expect("init");
+        cmd_init_at(target, "lgs", false, false).expect("init");
 
         let text = fs::read_to_string(target.join("scaffold.toml")).expect("read scaffold.toml");
         let cfg = parse_config(&text).expect("parse scaffold.toml");
@@ -142,7 +204,7 @@ mod tests {
     fn init_does_not_write_url_field() {
         let temp = tempdir().expect("tempdir");
         let target = temp.path();
-        cmd_init_at(target, "lgs").expect("init");
+        cmd_init_at(target, "lgs", false, false).expect("init");
         let text = fs::read_to_string(target.join("scaffold.toml")).expect("read");
         assert!(
             !text.contains("url ="),
@@ -154,7 +216,7 @@ mod tests {
     fn init_does_not_persist_cache_root() {
         let temp = tempdir().expect("tempdir");
         let target = temp.path();
-        cmd_init_at(target, "lgs").expect("init");
+        cmd_init_at(target, "lgs", false, false).expect("init");
         let text = fs::read_to_string(target.join("scaffold.toml")).expect("read");
         let has_active = text
             .lines()
@@ -169,8 +231,8 @@ mod tests {
     fn init_refuses_when_already_at_v0_2_0() {
         let temp = tempdir().expect("tempdir");
         let target = temp.path();
-        cmd_init_at(target, "lgs").expect("init");
-        let err = cmd_init_at(target, "lgs").expect_err("should refuse");
+        cmd_init_at(target, "lgs", false, false).expect("init");
+        let err = cmd_init_at(target, "lgs", false, false).expect_err("should refuse");
         assert!(err.to_string().contains("already at schema"), "{err}");
     }
 
@@ -194,7 +256,7 @@ home_dir = ".scaffold/wallet"
 "#;
         fs::write(target.join("scaffold.toml"), seed).expect("seed");
 
-        cmd_init_at(target, "lgs").expect("migrate");
+        cmd_init_at(target, "lgs", false, false).expect("migrate");
 
         let after = fs::read_to_string(target.join("scaffold.toml")).unwrap();
         assert!(
@@ -249,7 +311,7 @@ home_dir = ".scaffold/wallet"
 "#;
         fs::write(target.join("scaffold.toml"), seed).expect("seed");
 
-        cmd_init_at(target, "lgs").expect("migrate");
+        cmd_init_at(target, "lgs", false, false).expect("migrate");
         let after = fs::read_to_string(target.join("scaffold.toml")).unwrap();
 
         // Re-parse must succeed and surface the new shape.
@@ -302,7 +364,7 @@ lgpm_flake = "not-a-flake-ref"
 home_dir = ".scaffold/wallet"
 "#;
         fs::write(target.join("scaffold.toml"), seed).expect("seed");
-        cmd_init_at(target, "lgs").expect("migrate");
+        cmd_init_at(target, "lgs", false, false).expect("migrate");
 
         let after = fs::read_to_string(target.join("scaffold.toml")).unwrap();
         let cfg = parse_config(&after).expect("re-parse");
@@ -334,7 +396,7 @@ home_dir = ".scaffold/wallet"
             LEZ_SOURCE, DEFAULT_LEZ.sha, SPEL_SOURCE, DEFAULT_SPEL.sha,
         );
         fs::write(target.join("scaffold.toml"), seed).expect("seed");
-        cmd_init_at(target, "lgs").expect("migrate");
+        cmd_init_at(target, "lgs", false, false).expect("migrate");
 
         let after = fs::read_to_string(target.join("scaffold.toml")).unwrap();
         assert!(after.contains("# preserved comment"), "{after}");
@@ -371,7 +433,7 @@ home_dir = ".scaffold/wallet"
             LEZ_SOURCE, DEFAULT_LEZ.sha, SPEL_SOURCE, DEFAULT_SPEL.sha,
         );
         fs::write(target.join("scaffold.toml"), seed).expect("seed");
-        cmd_init_at(target, "lgs").expect("migrate");
+        cmd_init_at(target, "lgs", false, false).expect("migrate");
 
         let after = fs::read_to_string(target.join("scaffold.toml")).unwrap();
         assert!(!after.contains("[repos.lssa]"), "{after}");
@@ -404,7 +466,7 @@ home_dir = ".scaffold/wallet"
             LEZ_SOURCE, LEZ_SOURCE, DEFAULT_LEZ.sha, SPEL_SOURCE, DEFAULT_SPEL.sha,
         );
         fs::write(target.join("scaffold.toml"), seed).expect("seed");
-        cmd_init_at(target, "lgs").expect("migrate");
+        cmd_init_at(target, "lgs", false, false).expect("migrate");
         let after = fs::read_to_string(target.join("scaffold.toml")).unwrap();
         assert!(!after.contains("url ="), "url stripped; got:\n{after}");
         parse_config(&after).expect("re-parse");
@@ -414,7 +476,7 @@ home_dir = ".scaffold/wallet"
     fn init_creates_scaffold_state_and_logs_dirs() {
         let temp = tempdir().expect("tempdir");
         let target = temp.path();
-        cmd_init_at(target, "lgs").expect("init");
+        cmd_init_at(target, "lgs", false, false).expect("init");
 
         assert!(target.join(".scaffold/state").is_dir());
         assert!(target.join(".scaffold/logs").is_dir());
@@ -426,10 +488,119 @@ home_dir = ".scaffold/wallet"
         let target = temp.path();
         fs::write(target.join(".gitignore"), "target\n.scaffold\n").expect("seed");
 
-        cmd_init_at(target, "lgs").expect("init");
+        cmd_init_at(target, "lgs", false, false).expect("init");
 
         let text = fs::read_to_string(target.join(".gitignore")).unwrap();
         let count = text.lines().filter(|l| l.trim() == ".scaffold").count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn init_dry_run_does_not_create_scaffold_toml() {
+        // C5: dry-run must be a pure preview — no scaffold.toml, no
+        // .scaffold/ directories, no .gitignore mutation. Agents can call
+        // dry-run as a safe "would this work?" probe before committing.
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        cmd_init_at(target, "lgs", true, false).expect("dry-run init");
+
+        assert!(
+            !target.join("scaffold.toml").exists(),
+            "dry-run must not create scaffold.toml"
+        );
+        assert!(
+            !target.join(".scaffold").exists(),
+            "dry-run must not create .scaffold/"
+        );
+    }
+
+    #[test]
+    fn init_migration_writes_backup_by_default() {
+        // C5: a migration mutates scaffold.toml in place. By default `init`
+        // now writes scaffold.toml.bak alongside so a botched migration can
+        // be reverted by hand.
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        let original = r#"[scaffold]
+version = "0.1.0"
+
+[repos.lez]
+source = "https://example.com/lez.git"
+pin = "abc"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+"#;
+        fs::write(target.join("scaffold.toml"), original).expect("seed");
+
+        cmd_init_at(target, "lgs", false, false).expect("migrate");
+
+        let backup = target.join("scaffold.toml.bak");
+        assert!(backup.exists(), "backup must exist at {}", backup.display());
+        let backup_text = fs::read_to_string(&backup).expect("read backup");
+        assert_eq!(
+            backup_text, original,
+            "backup must preserve the pre-migration scaffold.toml verbatim"
+        );
+
+        let after = fs::read_to_string(target.join("scaffold.toml")).expect("read");
+        assert!(after.contains("0.2.0"), "scaffold.toml migrated; got:\n{after}");
+    }
+
+    #[test]
+    fn init_migration_skips_backup_with_no_backup_flag() {
+        // C5: opt-out for users who manage backups via VCS or want the
+        // smallest possible filesystem footprint.
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        let original = r#"[scaffold]
+version = "0.1.0"
+
+[repos.lez]
+source = "https://example.com/lez.git"
+pin = "abc"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+"#;
+        fs::write(target.join("scaffold.toml"), original).expect("seed");
+
+        cmd_init_at(target, "lgs", false, true).expect("migrate");
+
+        assert!(
+            !target.join("scaffold.toml.bak").exists(),
+            "no-backup flag must skip writing scaffold.toml.bak"
+        );
+    }
+
+    #[test]
+    fn init_dry_run_on_pre_migration_scaffold_toml_does_not_mutate() {
+        // C5: dry-run on a migration candidate must leave scaffold.toml
+        // untouched and not create the .bak side file either.
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        let original = r#"[scaffold]
+version = "0.1.0"
+
+[repos.lez]
+source = "https://example.com/lez.git"
+pin = "abc"
+
+[wallet]
+home_dir = ".scaffold/wallet"
+"#;
+        fs::write(target.join("scaffold.toml"), original).expect("seed");
+
+        cmd_init_at(target, "lgs", true, false).expect("dry-run migrate");
+
+        let after = fs::read_to_string(target.join("scaffold.toml")).expect("read");
+        assert_eq!(
+            after, original,
+            "dry-run on migration must not mutate scaffold.toml"
+        );
+        assert!(
+            !target.join("scaffold.toml.bak").exists(),
+            "dry-run must not write scaffold.toml.bak"
+        );
     }
 }

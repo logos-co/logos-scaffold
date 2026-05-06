@@ -34,6 +34,7 @@ pub(crate) enum LocalnetAction {
     },
     Reset {
         dry_run: bool,
+        yes: bool,
         reset_wallet: bool,
         verify_timeout_sec: u64,
     },
@@ -95,6 +96,7 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
         LocalnetAction::Logs { tail } => cmd_localnet_logs(&log_path, tail),
         LocalnetAction::Reset {
             dry_run,
+            yes,
             reset_wallet,
             verify_timeout_sec,
         } => cmd_localnet_reset(
@@ -104,6 +106,7 @@ fn cmd_localnet_in_project(project: &Project, action: LocalnetAction) -> DynResu
             &log_path,
             &localnet_addr,
             dry_run,
+            yes,
             reset_wallet,
             verify_timeout_sec,
         ),
@@ -587,6 +590,7 @@ pub(crate) fn cmd_localnet_reset(
     log_path: &Path,
     localnet_addr: &str,
     dry_run: bool,
+    yes: bool,
     reset_wallet: bool,
     verify_timeout_sec: u64,
 ) -> DynResult<()> {
@@ -604,6 +608,22 @@ pub(crate) fn cmd_localnet_reset(
             reset_wallet,
             verify_timeout_sec,
             &sequencer_bin,
+        );
+    }
+
+    if !yes {
+        let wallet_hint = if reset_wallet {
+            " (with --reset-wallet, also deletes wallet keypairs irrecoverably)"
+        } else {
+            ""
+        };
+        bail!(
+            "localnet reset is destructive: it wipes the sequencer chain DB{wallet_hint}.\n\
+             Pass --yes to confirm, or --dry-run to preview the plan first.\n\
+             Examples:\n  \
+             logos-scaffold localnet reset --dry-run\n  \
+             logos-scaffold localnet reset --yes\n  \
+             logos-scaffold localnet reset --reset-wallet --yes"
         );
     }
 

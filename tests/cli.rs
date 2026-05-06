@@ -124,6 +124,40 @@ fn localnet_reset_dry_run_prints_plan_without_mutations() {
 }
 
 #[test]
+fn localnet_reset_without_yes_or_dry_run_refuses_destructive_default() {
+    // C1: `localnet reset` with no flags must refuse rather than silently
+    // wiping the sequencer DB. The error message advertises the two valid
+    // shapes (`--yes` to confirm, `--dry-run` to preview) so an agent that
+    // got the syntax wrong can copy-paste the corrected form.
+    let temp = tempdir().expect("tempdir");
+    let lez_path = temp.path().join("lez");
+    fs::create_dir_all(&lez_path).expect("create lez path");
+    write_scaffold_toml(temp.path(), &lez_path);
+    // Seed the sequencer DB so we can verify the refusal does NOT delete it.
+    let rocksdb = lez_path.join("rocksdb");
+    fs::create_dir_all(&rocksdb).expect("seed rocksdb");
+    fs::write(rocksdb.join("CURRENT"), b"sentinel").expect("seed db file");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .arg("localnet")
+        .arg("reset")
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("destructive")
+                .and(predicate::str::contains("--yes"))
+                .and(predicate::str::contains("--dry-run")),
+        );
+
+    assert!(
+        rocksdb.join("CURRENT").exists(),
+        "refusal must leave rocksdb untouched at {}",
+        rocksdb.display()
+    );
+}
+
+#[test]
 fn wallet_help_documents_inner_cli_discovery() {
     Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
         .arg("wallet")
@@ -1332,7 +1366,11 @@ fn wallet_topup_continues_when_init_reports_already_initialized() {
 }
 
 #[test]
-fn wallet_topup_timeout_is_reported_as_non_fatal() {
+fn wallet_topup_timeout_exits_non_zero_with_pending_status() {
+    // C3: confirmation timeout means we don't actually know whether the
+    // submission landed. Surface that to the agent via a non-zero exit and
+    // an explicit `status: pending` in the message, instead of the previous
+    // soft-success that tricked retry loops into thinking the topup was done.
     let temp = tempdir().expect("tempdir");
     setup_wallet_project(temp.path(), Some("http://127.0.0.1:3040"));
 
@@ -1344,10 +1382,11 @@ fn wallet_topup_timeout_is_reported_as_non_fatal() {
         .arg("--address")
         .arg(VALID_PUBLIC_ADDRESS)
         .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "wallet topup submitted, but confirmation timed out",
-        ));
+        .failure()
+        .stderr(
+            predicate::str::contains("wallet topup submitted, but confirmation timed out")
+                .and(predicate::str::contains("status: pending")),
+        );
 }
 
 #[test]
@@ -2443,6 +2482,110 @@ fn basecamp_launch_bails_when_no_modules_captured() {
         .failure()
         .stderr(predicate::str::contains("basecamp modules"))
         .stderr(predicate::str::contains("--no-clean"));
+}
+
+#[cfg(unix)]
+#[test]
+fn basecamp_launch_without_safety_flag_refuses_default_scrub() {
+    // C2: a bare `basecamp launch <profile>` used to silently scrub the
+    // profile's xdg-data and xdg-cache. Now the destructive default refuses
+    // unless the caller passes one of --yes, --no-clean, or --dry-run. The
+    // error advertises all three so a wrong invocation is corrected by
+    // copy-paste.
+    let temp = tempdir().expect("tempdir");
+    let project = temp.path();
+    let scaffold_toml = format!(
+        "{MINIMAL_SCAFFOLD_TOML}\n\
+         [repos.basecamp]\n\
+         source = \"https://example/basecamp\"\n\
+         pin = \"deadbeef\"\n\
+         build = \"nix-flake\"\n\
+         attr = \"app\"\n\
+         \n\
+         [basecamp]\n\
+         port_base = 60000\n\
+         port_stride = 10\n"
+    );
+    fs::write(project.join("scaffold.toml"), scaffold_toml).expect("write scaffold.toml");
+
+    // Pre-seed everything needed to clear the early gates so we land on the
+    // new yes/no-clean/dry-run check. /bin/echo + /bin/sh exist on every Unix
+    // and pass the path-exists checks; the command never actually exec()s.
+    let state_dir = project.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).expect("mkdir state");
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/bin/echo\nlgpm_bin=/bin/sh\n",
+    )
+    .expect("write state");
+    let profile_dir = project.join(".scaffold/basecamp/profiles/alice");
+    fs::create_dir_all(profile_dir.join("xdg-data")).expect("mkdir xdg-data");
+    fs::write(profile_dir.join("xdg-data/sentinel"), b"do-not-scrub").expect("seed sentinel");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(project)
+        .args(["basecamp", "launch", "alice"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("destructive by default")
+                .and(predicate::str::contains("--yes"))
+                .and(predicate::str::contains("--no-clean"))
+                .and(predicate::str::contains("--dry-run")),
+        );
+
+    assert!(
+        profile_dir.join("xdg-data/sentinel").exists(),
+        "refusal must leave profile data untouched"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn basecamp_launch_dry_run_prints_plan_without_scrubbing() {
+    // C2: --dry-run lists what the destructive default would scrub and
+    // reinstall, without mutating the profile or attempting to exec basecamp.
+    let temp = tempdir().expect("tempdir");
+    let project = temp.path();
+    let scaffold_toml = format!(
+        "{MINIMAL_SCAFFOLD_TOML}\n\
+         [repos.basecamp]\n\
+         source = \"https://example/basecamp\"\n\
+         pin = \"deadbeef\"\n\
+         build = \"nix-flake\"\n\
+         attr = \"app\"\n\
+         \n\
+         [basecamp]\n\
+         port_base = 60000\n\
+         port_stride = 10\n"
+    );
+    fs::write(project.join("scaffold.toml"), scaffold_toml).expect("write scaffold.toml");
+
+    let state_dir = project.join(".scaffold/state");
+    fs::create_dir_all(&state_dir).expect("mkdir state");
+    fs::write(
+        state_dir.join("basecamp.state"),
+        "pin=deadbeef\nbasecamp_bin=/bin/echo\nlgpm_bin=/bin/sh\n",
+    )
+    .expect("write state");
+    let profile_dir = project.join(".scaffold/basecamp/profiles/alice");
+    fs::create_dir_all(profile_dir.join("xdg-data")).expect("mkdir xdg-data");
+    fs::write(profile_dir.join("xdg-data/sentinel"), b"do-not-scrub").expect("seed sentinel");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(project)
+        .args(["basecamp", "launch", "alice", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("dry-run: basecamp launch alice")
+                .and(predicate::str::contains("planned: scrub")),
+        );
+
+    assert!(
+        profile_dir.join("xdg-data/sentinel").exists(),
+        "dry-run must not scrub profile data"
+    );
 }
 
 #[cfg(unix)]
@@ -3567,6 +3710,46 @@ fn assert_pre_v0_2_0_rejection(args: &[&str]) {
 #[test]
 fn setup_hard_fails_on_pre_v0_2_0_scaffold_toml() {
     assert_pre_v0_2_0_rejection(&["setup"]);
+}
+
+#[test]
+fn build_idl_fails_loudly_on_default_framework() {
+    // C4: explicit `build idl` against a non-lez-framework project used to
+    // print `Skipping…` and exit 0. Agents that piped `lgs build idl &&
+    // next-step` would silently carry on with no IDL produced. The fix
+    // bails with an explicit framework-kind message so the agent stops.
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
+        .expect("seed scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["build", "idl"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("`build idl` is only supported for `lez-framework`")
+                .and(predicate::str::contains("framework.kind = `default`")),
+        );
+}
+
+#[test]
+fn build_client_fails_loudly_on_default_framework() {
+    // C4: same as `build idl` — explicit `build client` on a default-framework
+    // project must fail rather than silently no-op.
+    let temp = tempdir().expect("tempdir");
+    fs::write(temp.path().join("scaffold.toml"), MINIMAL_SCAFFOLD_TOML)
+        .expect("seed scaffold.toml");
+
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .current_dir(temp.path())
+        .args(["build", "client"])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("`build client` is only supported for `lez-framework`")
+                .and(predicate::str::contains("framework.kind = `default`")),
+        );
 }
 
 #[test]

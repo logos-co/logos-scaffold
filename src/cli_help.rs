@@ -20,7 +20,14 @@ pub(crate) const EXAMPLES_CREATE: &str = r"Examples:
 
 pub(crate) const EXAMPLES_INIT: &str = r"Examples:
   logos-scaffold init
-  cd my-project && logos-scaffold init";
+  logos-scaffold init --dry-run
+  logos-scaffold init --no-backup
+  cd my-project && logos-scaffold init
+
+Migration safety:
+  When scaffold.toml exists at an older schema, `init` rewrites it in place.
+  By default a sibling scaffold.toml.bak is written first; pass --no-backup
+  to skip. Use --dry-run to preview the change without touching disk.";
 
 pub(crate) const EXAMPLES_SETUP: &str = r"Examples:
   logos-scaffold setup
@@ -64,10 +71,14 @@ pub(crate) const EXAMPLES_LOCALNET_LOGS: &str = r"Examples:
   logos-scaffold localnet logs --tail 500";
 
 pub(crate) const EXAMPLES_LOCALNET_RESET: &str = r"Examples:
-  logos-scaffold localnet reset
-  logos-scaffold localnet reset --reset-wallet
   logos-scaffold localnet reset --dry-run
-  logos-scaffold localnet reset --reset-wallet --dry-run --verify-timeout-sec 60";
+  logos-scaffold localnet reset --yes
+  logos-scaffold localnet reset --reset-wallet --yes
+  logos-scaffold localnet reset --reset-wallet --dry-run --verify-timeout-sec 60
+
+Safety:
+  Destructive (wipes sequencer DB; --reset-wallet also deletes keypairs irrecoverably).
+  --yes is required unless --dry-run is passed.";
 
 pub(crate) const EXAMPLES_WALLET: &str = r"Examples:
   logos-scaffold wallet list
@@ -94,6 +105,11 @@ pub(crate) const EXAMPLES_WALLET_TOPUP: &str = r"Examples:
   logos-scaffold wallet topup Public/6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV
   logos-scaffold wallet topup --address Public/6iArKUXxhUJqS7kCaPNhwMWt3ro71PDyBj7jwAyE2VQV
   logos-scaffold wallet topup --dry-run
+
+Exit codes:
+  0  topup confirmed.
+  non-zero  any other outcome, including `submitted but confirmation timed out`
+            (status: pending — the topup may still land; retry or check balance).
 
 Environment:
   LOGOS_SCAFFOLD_WALLET_PASSWORD   Optional; local dev default if unset.";

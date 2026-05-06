@@ -91,7 +91,7 @@ enum Commands {
     Completions(CompletionsArgs),
     #[command(about = "Initialize scaffold.toml in the current directory")]
     #[command(after_long_help = EXAMPLES_INIT)]
-    Init,
+    Init(InitArgs),
     #[command(hide = true)]
     Help,
     /// Test-only hooks — hidden from `--help` output. Keeps the binary
@@ -218,6 +218,20 @@ struct DeployArgs {
 }
 
 #[derive(Debug, clap::Args)]
+struct InitArgs {
+    #[arg(
+        long,
+        help = "Print what `init` would create or migrate, without writing scaffold.toml or creating .scaffold/."
+    )]
+    dry_run: bool,
+    #[arg(
+        long,
+        help = "Skip writing scaffold.toml.bak before migrating an existing config (default: a backup is written next to scaffold.toml)."
+    )]
+    no_backup: bool,
+}
+
+#[derive(Debug, clap::Args)]
 #[command(after_long_help = EXAMPLES_DOCTOR)]
 struct DoctorArgs {
     #[arg(long)]
@@ -283,6 +297,11 @@ struct LocalnetResetArgs {
         help = "Print planned reset steps and paths without stopping, deleting, or restarting."
     )]
     dry_run: bool,
+    #[arg(
+        long,
+        help = "Confirm the destructive reset (always wipes the sequencer DB; with --reset-wallet also deletes wallet keypairs). Required unless --dry-run is passed."
+    )]
+    yes: bool,
     /// Also delete the wallet home directory and wallet state. Destructive:
     /// keypairs are not recoverable after this.
     #[arg(long)]
@@ -369,7 +388,7 @@ enum BasecampSubcommand {
     )]
     Install(BasecampInstallArgs),
     #[command(
-        about = "Launch basecamp for a named profile with clean-slate semantics. See `basecamp docs` for project requirements."
+        about = "Launch basecamp for a named profile with clean-slate semantics. Destructive by default (scrubs xdg-data/xdg-cache); requires --yes, --no-clean, or --dry-run. See `basecamp docs` for project requirements."
     )]
     Launch(BasecampLaunchArgs),
     #[command(
@@ -432,6 +451,16 @@ struct BasecampLaunchArgs {
     /// Skip the clean-slate scrub and reinstall step
     #[arg(long)]
     no_clean: bool,
+    #[arg(
+        long,
+        help = "Confirm the clean-slate scrub of the profile's xdg-data and xdg-cache. Required for the destructive default launch unless --no-clean or --dry-run is passed."
+    )]
+    yes: bool,
+    #[arg(
+        long,
+        help = "Print what would be scrubbed and reinstalled without touching the profile or launching basecamp."
+    )]
+    dry_run: bool,
 }
 
 pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
@@ -501,6 +530,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 LocalnetSubcommand::Logs(args) => LocalnetAction::Logs { tail: args.tail },
                 LocalnetSubcommand::Reset(args) => LocalnetAction::Reset {
                     dry_run: args.dry_run,
+                    yes: args.yes,
                     reset_wallet: args.reset_wallet,
                     verify_timeout_sec: args.verify_timeout_sec,
                 },
@@ -544,6 +574,8 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
                 BasecampSubcommand::Launch(args) => BasecampAction::Launch {
                     profile: args.profile,
                     no_clean: args.no_clean,
+                    yes: args.yes,
+                    dry_run: args.dry_run,
                 },
                 BasecampSubcommand::BuildPortable(_) => BasecampAction::BuildPortable,
                 BasecampSubcommand::Doctor(args) => BasecampAction::Doctor { json: args.json },
@@ -560,7 +592,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             };
             cmd_completions(shell)
         }
-        Some(Commands::Init) => cmd_init(&bin_name),
+        Some(Commands::Init(args)) => cmd_init(&bin_name, args.dry_run, args.no_backup),
         Some(Commands::Help) => print_help(&bin_name),
         Some(Commands::SelfTest(args)) => match args.command {
             SelfTestSubcommand::RunLogged(a) => {
