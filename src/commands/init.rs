@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use toml_edit::DocumentMut;
 
 use crate::config::{
@@ -17,6 +17,7 @@ use crate::migrate::migrate_to_v0_2_0;
 use crate::model::{Config, FrameworkConfig, FrameworkIdlConfig, LocalnetConfig};
 use crate::state::write_text;
 use crate::template::project::ensure_scaffold_in_gitignore;
+use crate::template::skills::apply_skills;
 use crate::DynResult;
 
 pub(crate) fn cmd_init(bin_name: &str) -> DynResult<()> {
@@ -41,26 +42,34 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
         })?;
 
         let report = migrate_to_v0_2_0(&mut doc)?;
-        if report.changes.is_empty() {
-            bail!(
-                "scaffold.toml at {} is already at schema v{} — nothing to migrate",
+        let migrated = !report.changes.is_empty();
+        if migrated {
+            write_text(&scaffold_path, &doc.to_string())?;
+            println!(
+                "scaffold.toml in {} migrated to schema v{}.",
+                target.display(),
+                SCAFFOLD_TOML_SCHEMA_VERSION,
+            );
+            for change in report.changes {
+                println!("  - {change}");
+            }
+            if let Some(hint) = report.hand_edit_hint {
+                println!("  ! {hint}");
+            }
+        } else {
+            println!(
+                "scaffold.toml at {} is already at schema v{}.",
                 target.display(),
                 SCAFFOLD_TOML_SCHEMA_VERSION,
             );
         }
-        write_text(&scaffold_path, &doc.to_string())?;
-        println!(
-            "scaffold.toml in {} migrated to schema v{}.",
-            target.display(),
-            SCAFFOLD_TOML_SCHEMA_VERSION,
-        );
-        for change in report.changes {
-            println!("  - {change}");
+
+        apply_skills(target)?;
+        println!("AI skills refreshed under .claude/skills/, .cursor/rules/, AGENTS.md.");
+
+        if migrated {
+            println!("Run `{bin_name} setup` to clone and build per the new schema.");
         }
-        if let Some(hint) = report.hand_edit_hint {
-            println!("  ! {hint}");
-        }
-        println!("Run `{bin_name} setup` to clone and build per the new schema.");
         return Ok(());
     }
 
@@ -72,11 +81,13 @@ pub(crate) fn cmd_init_at(target: &Path, bin_name: &str) -> DynResult<()> {
     fs::create_dir_all(target.join(".scaffold/logs"))
         .with_context(|| format!("creating {}/.scaffold/logs", target.display()))?;
     ensure_scaffold_in_gitignore(target)?;
+    apply_skills(target)?;
 
     println!(
         "scaffold.toml created at {}. Run '{bin_name} setup' to clone LEZ and build dependencies.",
         scaffold_path.display()
     );
+    println!("AI skills installed under .claude/skills/, .cursor/rules/, and AGENTS.md.");
     println!(
         "If this project is building modules for basecamp, run '{bin_name} basecamp setup' to pin + build basecamp + lgpm and seed alice/bob profiles."
     );
@@ -166,12 +177,53 @@ mod tests {
     }
 
     #[test]
-    fn init_refuses_when_already_at_v0_2_0() {
+    fn init_is_idempotent_when_already_at_v0_2_0_and_refreshes_skills() {
         let temp = tempdir().expect("tempdir");
         let target = temp.path();
         cmd_init_at(target, "lgs").expect("init");
-        let err = cmd_init_at(target, "lgs").expect_err("should refuse");
-        assert!(err.to_string().contains("already at schema"), "{err}");
+
+        // Re-running init on an already-migrated project must succeed; it is
+        // the user-facing entry point for refreshing AI skill files alongside
+        // any pending schema migration.
+        cmd_init_at(target, "lgs").expect("re-init must succeed and refresh skills");
+        assert!(
+            target.join(".claude/skills/lgs-cli/SKILL.md").is_file(),
+            "claude skill must be present after re-init"
+        );
+        assert!(
+            target.join(".cursor/rules/lgs-cli.mdc").is_file(),
+            "cursor rule must be present after re-init"
+        );
+        assert!(
+            target.join("AGENTS.md").is_file(),
+            "AGENTS.md must be present after re-init"
+        );
+    }
+
+    #[test]
+    fn init_writes_skills_on_fresh_project() {
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path();
+        cmd_init_at(target, "lgs").expect("init");
+
+        for name in [
+            "lgs-cli",
+            "lez-template",
+            "lez-framework-template",
+            "basecamp",
+        ] {
+            assert!(
+                target
+                    .join(format!(".claude/skills/{name}/SKILL.md"))
+                    .is_file(),
+                "missing claude skill: {name}"
+            );
+            assert!(
+                target.join(format!(".cursor/rules/{name}.mdc")).is_file(),
+                "missing cursor rule: {name}"
+            );
+        }
+        assert!(target.join("AGENTS.md").is_file());
     }
 
     #[test]
