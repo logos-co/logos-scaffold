@@ -3112,29 +3112,50 @@ fn init_creates_scaffold_toml_and_dirs() {
 }
 
 #[test]
-fn init_refuses_already_at_v0_2_0_scaffold_toml() {
+fn init_refreshes_skills_when_already_at_v0_2_0_scaffold_toml() {
     let temp = tempdir().expect("tempdir");
     let scaffold_path = temp.path().join("scaffold.toml");
-    // First, run init to lay down a fresh v0.2.0 file.
+    // First, run init to lay down a fresh v0.2.0 file plus the AI skill set.
     Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .current_dir(temp.path())
         .arg("init")
         .assert()
         .success();
-    let original = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
+    let original_scaffold = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
 
-    // Second invocation must refuse with the "already migrated" hint.
+    // Second invocation must succeed (no migration needed) and refresh the
+    // shipped skill set, but it must not rewrite scaffold.toml.
     Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .current_dir(temp.path())
         .arg("init")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("already at schema"));
+        .success()
+        .stdout(predicate::str::contains("already at schema"))
+        .stdout(predicate::str::contains("AI skills refreshed"));
 
-    let after = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
+    let after_scaffold = fs::read_to_string(&scaffold_path).expect("read scaffold.toml");
     assert_eq!(
-        after, original,
+        after_scaffold, original_scaffold,
         "init must not overwrite an already-migrated scaffold.toml"
+    );
+
+    for skill in ["lgs-cli", "lez-template", "lez-framework-template", "basecamp"] {
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{skill}/SKILL.md"))
+                .is_file(),
+            "claude skill `{skill}` must be present after re-init"
+        );
+        assert!(
+            temp.path()
+                .join(format!(".cursor/rules/{skill}.mdc"))
+                .is_file(),
+            "cursor rule `{skill}` must be present after re-init"
+        );
+    }
+    assert!(
+        temp.path().join("AGENTS.md").is_file(),
+        "AGENTS.md must be present after re-init"
     );
 }
 
@@ -3229,15 +3250,15 @@ home_dir = ".scaffold/wallet"
         "[repos.lgpm].attr must carry the flake attr; got:\n{after}"
     );
 
-    // Re-running any non-init command must now succeed at the parse step
-    // (we only check parsing here; downstream commands will fail for other
-    // reasons in a stub setup).
+    // Re-running init on the now-migrated config must succeed (skills get
+    // refreshed) and report that no migration was needed.
     Command::new(assert_cmd::cargo::cargo_bin!("lgs"))
         .current_dir(temp.path())
         .arg("init")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("already at schema"));
+        .success()
+        .stdout(predicate::str::contains("already at schema"))
+        .stdout(predicate::str::contains("AI skills refreshed"));
 }
 
 #[test]
