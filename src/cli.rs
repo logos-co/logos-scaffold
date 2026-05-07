@@ -19,7 +19,7 @@ use crate::commands::run::{cmd_run, RunInvocation};
 use crate::commands::setup::cmd_setup;
 use crate::commands::spel::cmd_spel;
 use crate::commands::wallet::{cmd_wallet, WalletAction};
-use crate::constants::VERSION;
+use crate::constants::{DEFAULT_RUN_LOCALNET_TIMEOUT_SEC, VERSION};
 use crate::template::project::available_templates;
 use crate::DynResult;
 
@@ -36,6 +36,15 @@ static CREATE_ABOUT: LazyLock<String> = LazyLock::new(|| {
 static NEW_ABOUT: LazyLock<String> = LazyLock::new(|| {
     let templates = available_templates().join(", ");
     format!("Alias for `create` (templates: {templates})")
+});
+
+static RUN_LOCALNET_TIMEOUT_HELP: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "Seconds to wait for the sequencer to become ready when `run` has to \
+         start localnet itself (default: {DEFAULT_RUN_LOCALNET_TIMEOUT_SEC}). \
+         Bump this if a cold first run (fresh clone, cold caches) overshoots \
+         the default."
+    )
 });
 
 #[derive(Debug, Parser)]
@@ -219,10 +228,7 @@ struct RunArgs {
     /// for this invocation. Conflicts with --no-post-deploy.
     #[arg(long, value_name = "CMD", conflicts_with = "no_post_deploy")]
     post_deploy: Vec<String>,
-    /// Seconds to wait for the sequencer to become ready when `run` has to
-    /// start localnet itself. Bump this if a cold first run (fresh clone,
-    /// cold caches) overshoots the default.
-    #[arg(long, value_name = "SECS")]
+    #[arg(long, value_name = "SECS", help = RUN_LOCALNET_TIMEOUT_HELP.as_str())]
     localnet_timeout: Option<u64>,
 }
 

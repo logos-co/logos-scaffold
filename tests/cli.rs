@@ -3530,7 +3530,8 @@ fn run_help_advertises_localnet_timeout_flag() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("--localnet-timeout"));
+        .stdout(predicate::str::contains("--localnet-timeout"))
+        .stdout(predicate::str::contains("default: 120"));
 }
 
 #[test]

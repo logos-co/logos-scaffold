@@ -10,7 +10,7 @@ use crate::commands::deploy::{
 use crate::commands::idl::build_idl_for_current_project;
 use crate::commands::localnet::{build_localnet_status_for_project, cmd_localnet, LocalnetAction};
 use crate::commands::wallet::{cmd_wallet_topup_inner, TopupOutcome};
-use crate::constants::SPEL_BIN_REL_PATH;
+use crate::constants::{DEFAULT_RUN_LOCALNET_TIMEOUT_SEC, SPEL_BIN_REL_PATH};
 use crate::model::{LocalnetOwnership, Project};
 use crate::project::{load_project, resolve_repo_path, run_in_project_dir};
 use crate::DynResult;
@@ -24,11 +24,6 @@ pub(crate) struct RunInvocation {
     pub(crate) post_deploy_override: Option<Vec<String>>,
     pub(crate) localnet_timeout_sec: Option<u64>,
 }
-
-/// Default seconds to wait for the sequencer to become ready when `lgs run`
-/// has to start localnet itself. Cold first runs (fresh repo clone, cold
-/// nix/cargo caches) routinely overshoot the previous 20s ceiling.
-pub(crate) const DEFAULT_RUN_LOCALNET_TIMEOUT_SEC: u64 = 120;
 
 pub(crate) fn cmd_run(inv: RunInvocation) -> DynResult<()> {
     let project = load_project()?;
@@ -234,10 +229,7 @@ fn single_program_binary(project: &Project) -> DynResult<Option<PathBuf>> {
         return Ok(None);
     }
     let binaries = discover_program_binaries(&project.root, &programs);
-    let Some(stem) = programs.into_iter().next() else {
-        return Ok(None);
-    };
-    Ok(binaries.get(&stem).cloned())
+    Ok(binaries.get(&programs[0]).cloned())
 }
 
 fn resolve_spel_bin(project: &Project) -> Option<PathBuf> {
