@@ -87,7 +87,7 @@ fn run_pipeline_once(
         // Resolve the single-program shortcut metadata once: `extract_program_id`
         // shells out to `spel inspect` with a per-call timeout, so doing it
         // inside the loop would multiply latency by the hook count.
-        let single_program = resolve_single_program_metadata(project);
+        let single_program = resolve_single_program_metadata(project)?;
         for (i, hook) in hooks.iter().enumerate() {
             println!("===> post_deploy[{}/{n}]: {hook}", i + 1);
             run_post_deploy_hook(project, hook, single_program.as_ref())?;
@@ -107,14 +107,16 @@ struct SingleProgram {
     program_id: Option<String>,
 }
 
-fn resolve_single_program_metadata(project: &Project) -> Option<SingleProgram> {
-    let binary_path = single_program_binary(project)?;
+fn resolve_single_program_metadata(project: &Project) -> DynResult<Option<SingleProgram>> {
+    let Some(binary_path) = single_program_binary(project)? else {
+        return Ok(None);
+    };
     let program_id =
         resolve_spel_bin(project).and_then(|spel_bin| extract_program_id(&spel_bin, &binary_path));
-    Some(SingleProgram {
+    Ok(Some(SingleProgram {
         binary_path,
         program_id,
-    })
+    }))
 }
 
 fn ensure_localnet(project: &Project, timeout_sec: u64) -> DynResult<()> {
@@ -217,18 +219,25 @@ fn build_hook_command(
     cmd
 }
 
-fn single_program_binary(project: &Project) -> Option<PathBuf> {
+fn single_program_binary(project: &Project) -> DynResult<Option<PathBuf>> {
     let programs_dir = project.root.join("methods/guest/src/bin");
     if !programs_dir.exists() {
-        return None;
+        return Ok(None);
     }
-    let programs = discover_deployable_programs(&project.root).ok()?;
+    // Propagate I/O failures rather than treating them as "no programs":
+    // an unreadable bin dir is a real error, and silently dropping it
+    // strips the SCAFFOLD_GUEST_BIN env var from post-deploy hooks
+    // without ever surfacing the cause.
+    let programs = discover_deployable_programs(&project.root)
+        .context("failed to discover deployable programs for run")?;
     if programs.len() != 1 {
-        return None;
+        return Ok(None);
     }
     let binaries = discover_program_binaries(&project.root, &programs);
-    let stem = programs.into_iter().next()?;
-    binaries.get(&stem).cloned()
+    let Some(stem) = programs.into_iter().next() else {
+        return Ok(None);
+    };
+    Ok(binaries.get(&stem).cloned())
 }
 
 fn resolve_spel_bin(project: &Project) -> Option<PathBuf> {
