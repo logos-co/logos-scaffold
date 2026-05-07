@@ -22,22 +22,37 @@ use crate::DynResult;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RunInvocation {
     pub(crate) post_deploy_override: Option<Vec<String>>,
+    pub(crate) localnet_timeout_sec: Option<u64>,
 }
+
+/// Default seconds to wait for the sequencer to become ready when `lgs run`
+/// has to start localnet itself. Cold first runs (fresh repo clone, cold
+/// nix/cargo caches) routinely overshoot the previous 20s ceiling.
+pub(crate) const DEFAULT_RUN_LOCALNET_TIMEOUT_SEC: u64 = 120;
 
 pub(crate) fn cmd_run(inv: RunInvocation) -> DynResult<()> {
     let project = load_project()?;
     let hooks = inv
         .post_deploy_override
         .unwrap_or_else(|| project.config.run.post_deploy.clone());
+    let localnet_timeout_sec = inv
+        .localnet_timeout_sec
+        .unwrap_or(DEFAULT_RUN_LOCALNET_TIMEOUT_SEC);
 
     // Anchor the pipeline at the discovered project root. Otherwise commands
     // that resolve paths relative to cwd (`cmd_build_shortcut`,
     // `build_idl_for_current_project`, etc.) would build/deploy from whichever
     // subdirectory the user invoked `lgs run` in.
-    run_in_project_dir(Some(&project.root), || run_pipeline_once(&project, &hooks))
+    run_in_project_dir(Some(&project.root), || {
+        run_pipeline_once(&project, &hooks, localnet_timeout_sec)
+    })
 }
 
-fn run_pipeline_once(project: &Project, hooks: &[String]) -> DynResult<()> {
+fn run_pipeline_once(
+    project: &Project,
+    hooks: &[String],
+    localnet_timeout_sec: u64,
+) -> DynResult<()> {
     let has_hooks = !hooks.is_empty();
     // Steps: build, build idl, localnet, topup, deploy, [+1 if hooks]
     let total_steps: u32 = if has_hooks { 6 } else { 5 };
@@ -52,7 +67,7 @@ fn run_pipeline_once(project: &Project, hooks: &[String]) -> DynResult<()> {
 
     // Step 3: Ensure localnet is running.
     println!("[3/{total_steps}] Ensuring localnet...");
-    ensure_localnet(project)?;
+    ensure_localnet(project, localnet_timeout_sec)?;
 
     // Step 4: Wallet topup
     println!("[4/{total_steps}] Topping up wallet...");
@@ -102,7 +117,7 @@ fn resolve_single_program_metadata(project: &Project) -> Option<SingleProgram> {
     })
 }
 
-fn ensure_localnet(project: &Project) -> DynResult<()> {
+fn ensure_localnet(project: &Project, timeout_sec: u64) -> DynResult<()> {
     let status = build_localnet_status_for_project(project);
     match status.ownership {
         LocalnetOwnership::Managed if status.ready => {
@@ -124,7 +139,7 @@ fn ensure_localnet(project: &Project) -> DynResult<()> {
                  Stop it first with `logos-scaffold localnet stop` (or `kill {pid_display}`)."
             );
         }
-        _ => cmd_localnet(LocalnetAction::Start { timeout_sec: 20 }),
+        _ => cmd_localnet(LocalnetAction::Start { timeout_sec }),
     }
 }
 

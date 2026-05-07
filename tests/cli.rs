@@ -3524,6 +3524,27 @@ fn run_rejects_both_post_deploy_flags() {
 }
 
 #[test]
+fn run_help_advertises_localnet_timeout_flag() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("run")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--localnet-timeout"));
+}
+
+#[test]
+fn run_rejects_non_numeric_localnet_timeout() {
+    Command::new(assert_cmd::cargo::cargo_bin!("logos-scaffold"))
+        .arg("run")
+        .arg("--localnet-timeout")
+        .arg("abc")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value"));
+}
+
+#[test]
 fn run_fails_at_build_step_in_mock_project() {
     // The run command calls cmd_build_shortcut which runs cargo build --workspace.
     // In a mock project without a real Cargo workspace, this fails at step 1.

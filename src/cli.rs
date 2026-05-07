@@ -219,6 +219,11 @@ struct RunArgs {
     /// for this invocation. Conflicts with --no-post-deploy.
     #[arg(long, value_name = "CMD", conflicts_with = "no_post_deploy")]
     post_deploy: Vec<String>,
+    /// Seconds to wait for the sequencer to become ready when `run` has to
+    /// start localnet itself. Bump this if a cold first run (fresh clone,
+    /// cold caches) overshoots the default.
+    #[arg(long, value_name = "SECS")]
+    localnet_timeout: Option<u64>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -526,6 +531,7 @@ pub(crate) fn run(args: Vec<String>) -> DynResult<()> {
             };
             cmd_run(RunInvocation {
                 post_deploy_override: post_deploy,
+                localnet_timeout_sec: args.localnet_timeout,
             })
         }
         Some(Commands::Report(args)) => cmd_report(args.out, args.tail),
